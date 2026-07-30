@@ -434,10 +434,10 @@ data/runs/<run_id>/
 当参考图 >3 张做 multi_ref_fusion 时，输出风格倾向"平均"，
 失去单张参考的鲜明特征。
 
-## 证据（指向 index.json 的尝试记录）
-- try_00012（2张参考）：style_consistency 8.7  ← keep
-- try_00015（5张参考）：style_consistency 6.1  ← worst
-- try_00017（2张参考）：style_consistency 8.5  ← keep
+## 证据（指向 trajectory.jsonl 的轮次 / index.json 尝试记录）
+- try_00012（2张参考）：material_texture 8.7  ← keep
+- try_00015（5张参考）：material_texture 6.1  ← worst
+- try_00017（2张参考）：material_texture 8.5  ← keep
 
 ## 结论 / 建议
 风格迁移用 multi_ref_fusion 时，参考图建议 ≤2 张；
@@ -502,7 +502,7 @@ data/
 │       ├── index.json               #   尝试记录索引(§3.3.2, 轨迹的轻量索引)
 │       ├── lessons/                 #   经验 MD(本 run 归纳, 见 §3.3.3)
 │       ├── out/                     #   生成图(路径被 trajectory/index 引用)
-│       ├── ref/                     #   本次用到的参考图副本(可追溯)
+│       ├── ref/                     #   本次用到的参考图软链/副本(指向 benchmarks/samples, 可追溯)
 │       ├── human_scores/            #   人工评分(异步补, 用于校准 agent, 见 §2.6)
 │       │   └── s001.json            #   人对各图的多维评分
 │       └── calibrated_weights.json  #   本 run 校准出的维度权重(见 §2.6)
@@ -512,6 +512,13 @@ data/
     ├── weight_calibration/          #   权重校准(读 human_scores 算最优权重)
     └── generalization/              #   泛化分析(预留, 用户暂不做, 结构留好)
 ```
+
+**素材归属总规则（回答"素材放哪"）：**
+- **你手动准备的考题素材**（产品实物图、验收说明、生成约束）→ 放
+  `data/benchmarks/<bench>/samples/`。**这是你唯一需要手动管理素材的地方**。
+- **系统生成的产物**（图、轨迹、经验、checkpoint）→ 自动进 `data/runs/<run>/`，不用管。
+- **没有全局素材库**——每份考题自包含在自己的 `samples/` 里；`runs/.../ref/` 只是软链/副本
+  指向 benchmark 样本，便于 run 自追溯，不引入新素材。
 
 **核心原则**：
 - **benchmarks 与 runs 解耦**——一个 benchmark 可被多个 run（不同模型/策略）复用；

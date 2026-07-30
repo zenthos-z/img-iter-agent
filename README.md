@@ -37,18 +37,46 @@ python -m img_iter_agent  # 跑一个迭代
 ✅ 架构与技术栈已定稿（dmxapi 后端 / 全云端 / 参考图锚定风格）。见 `docs/ARCHITECTURE.md`。
 🚧 代码骨架与实现待推进。
 
-## 目录
+## 目录与素材管理
+
+**核心规则：素材按"谁创建"分三类，各归其位，绝不混放。**
 
 ```
 img-iter-agent/
-├── docs/ARCHITECTURE.md   # 架构与技术栈分析（当前核心交付）
-├── src/img_iter_agent/    # 源码（待实现）
-├── data/
-│   ├── reference/         # 风格参考图（输入）
-│   ├── outputs/           # 生成结果（不入 git）
-│   └── runs/              # 迭代运行记录（不入 git）
-└── tests/
+├── docs/ARCHITECTURE.md       # 架构与技术栈分析（核心文档）
+├── src/img_iter_agent/        # 源码（待实现）
+├── tests/
+└── data/
+    │
+    ├── benchmarks/            # 〔你准备的考题素材，✅入git，跨run复用〕
+    │   └── <bench_id>/        #   一个 benchmark = 一组考题
+    │       ├── manifest.json  #   评分维度+权重（如家具7维度）
+    │       ├── rubric.md      #   评分细则
+    │       └── samples/       #   ★你的考题素材放这里
+    │           └── sNNN/
+    │               ├── target.png       # 产品实物参考图（对比锚）
+    │               ├── target.md        # 结构/材质/颜色说明+验收点
+    │               └── content_spec.json# 要生成什么（视角/背景/约束）
+    │
+    ├── runs/                  # 〔系统生成的产物，❌不入git，每次重生成〕
+    │   └── <run_id>/          #   = <model>__<bench>__<时间>
+    │       ├── trajectory.jsonl  # 完整训练轨迹（重放/分析的依据）
+    │       ├── out/             # 生成的图
+    │       ├── lessons/         # 归纳的经验MD
+    │       ├── human_scores/    # 人工评分（异步补）
+    │       └── ...
+    │
+    └── analyses/              # 〔离线分析产物，❌不入git，可重算〕
+        └── strategy_compare/    # 策略对比报告等
 ```
+
+**我（用户）要往哪放素材？**
+- 准备/修改考题 → `data/benchmarks/<bench>/samples/`（这是你唯一需要手动管理素材的地方）
+- 系统跑出来的东西 → 自动进 `data/runs/`，不用管
+- 没有全局素材库——每份考题自包含在自己的 `samples/` 里
+
+**首个 benchmark 已建**：`data/benchmarks/furniture_product_whitebg/`（家具跨境电商白底产品图），
+待往 `samples/` 放产品实物图即可。详见该目录下 `rubric.md`。
 
 ## License
 
