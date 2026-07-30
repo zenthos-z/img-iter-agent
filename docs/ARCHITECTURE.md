@@ -781,18 +781,24 @@ data/benchmarks/furniture_product_whitebg/
 
 **协议族 C — Qwen Responses（qwen-image-2.0）**
 - 端点：`POST /v1/responses`，JSON（与豆包**同端点但提示词结构完全不同**）
-- 提示词嵌套：`input.messages[].content[].text`（仅单轮、仅一个 text）
+- 提示词嵌套：`input.messages[].content[].text`（仅单轮、仅一个 text，传多个会报错）
+- **编辑图**：参考图放在同一个 `content[]` 数组里：`content[] = [{text:...}, {image:"<url或base64>"}]`，
+  支持 1~3 张（有序）
 - 参数：`input.parameters.{negative_prompt, size, n(1-6), prompt_extend, watermark, seed}`
-- size：`"宽*高"`（**用星号**，如 `2048*2048`，与 A/B 的 `x` 不同！）
+- size：`"宽*高"`（**用星号**，如 `2048*2048`，与 A/B 的 `x` 不同！**无分辨率档位**）
 - 返回：`output[].content[].text`（图片URL字符串）
 
 **协议族 D — Gemini 原生（gemini-3.1-flash-image）**
 - 端点：`POST /v1beta/models/gemini-3.1-flash-image:generateContent`，认证头 **`x-goog-api-key`**
 - 提示词+图：`contents[].parts[]`，文本用 `{text}`，图片用 `{inline_data:{mime_type,data}}`
+- **大小写差异（易错）**：请求用 snake_case（`inline_data`/`mime_type`），响应用 camelCase（`inlineData`/`mimeType`）
 - **多轮改图**：把历史 user/model 轮次按序放入 `contents`；model 轮必须同时带
   `inline_data`(图片base64) **和** `thoughtSignature`(签名)，二者缺一不可
 - 尺寸：`generationConfig.imageConfig.{aspectRatio:"16:9", imageSize:"2K"}`
-- 返回：`candidates[].content.parts[]`：`inlineData.{mimeType,data}`(base64) 或 `fileData.fileUri`(url)
+  （aspectRatio 取值 `"1:1"/"2:3"/"3:2"/"3:4"/"4:3"/"4:5"/"5:4"/"9:16"/"16:9"/"21:9"`；
+  Lite 模型 imageSize 硬限 1K）
+- 返回：`candidates[].content.parts[]` → `inlineData.{mimeType,data}`(base64)。
+  **注意：无 `fileData.fileUri` 路径**（官方文档只给 inlineData base64）
 
 #### 4.2.4 `ImageGenerator` 统一接口（抹平四族差异）
 
