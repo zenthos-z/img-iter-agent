@@ -65,13 +65,14 @@
 
   "weight_note": "二分版权重(初始先验,由校准闭环优化)。任务改为三视图后, 跨张一致性(0.25)成为最重维度(三视图核心质量); 结构(0.22)与材质(0.18)次之; 颜色(0.13)防退货; 瑕疵(0.12)保底; 商业(0.10)。原 scene_integration 场景融合维度在三视图白底任务中删除(不适用)。",
 
-  "comparative_dims": ["consistency", "product_structure", "material_texture", "color_accuracy"],
-  "comparative_dims_note": "三视图任务下, 多数维度需对照参考图作锚判(consistency 跨张对照、结构/材质/颜色对照 target)。仅 artifact_defect / commercial_focus 为绝对型(单看生成图)。",
+  "comparative_dims": ["consistency", "product_structure", "material_texture", "color_accuracy", "artifact_defect", "commercial_focus"],
+  "comparative_dims_note": "系统目标=还原度, 故所有维度都对照参考图(target)与生成图作对比评判(无绝对型维度)。Critic 对每个维度都同时喂 target + 生成图。",
 
   "task": {
-    "type": "three_view_whitebg",
+    "type": "three_view_whitebg_single_image",
+    "layout": "three_view_single_image",
     "views": ["front", "side", "perspective"],
-    "views_note": "工业标准三视图：正视图(正面平视)+侧视图(90°侧面平视)+立体图(45°斜侧)。三张须同一产品/同色/同比例。"
+    "views_note": "工业标准三视图排版于【一张图】内：正视图(正面平视)+侧视图(90°侧面平视)+立体图(45°斜侧)并排。三个视角同一产品/同色/同比例。一次生成一张完整的三视图排版图(非三张独立图)。"
   },
 
   "samples": [

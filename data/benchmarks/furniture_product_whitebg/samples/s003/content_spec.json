@@ -6,8 +6,9 @@
   "task": {
     "mode": "image_edit",
     "input_assets": ["target.jpg"],
-    "instruction": "以该图为参考产品,生成同一把躺椅的三个视角白底素材图:正视图、侧视图(90°)、立体图(45°)。三张必须是同一产品、同色、同比例,纯白背景。",
+    "instruction": "以该图为参考产品,生成【一张】白底素材图,图中并排排版同一把躺椅的三个视角:正视图、侧视图(90°)、立体图(45°)。三个视角必须是同一产品、同色、同比例,纯白背景。一次生成一张完整的三视图排版图。",
     "output": {
+      "layout": "three_view_single_image",
       "views": ["front", "side", "perspective"],
       "background": "white",
       "size": "2K"
@@ -17,21 +18,21 @@
   "constraints": {
     "must_keep": ["折叠框架结构(关节/斜撑)", "长条形整体形态", "深灰/蓝灰织物", "浅米色金属框"],
     "may_change": ["背景(纯白)", "光影"],
-    "must_avoid": ["折叠结构变形为普通床腿", "长条形态变短变方", "织物变光滑塑料", "三视图不一致"]
+    "must_avoid": ["折叠结构变形为普通床腿", "长条形态变短变方", "织物变光滑塑料", "三视角不一致"]
   },
 
   "checklist": {
     "consistency": [
-      {"id": "C1", "check": "三视图是同一把躺椅"},
-      {"id": "C2", "check": "三视图织物深灰色一致"},
-      {"id": "C3", "check": "侧视图长度=正视图长度(长条形态一致)"},
-      {"id": "C4", "check": "三视图高度/折叠角度比例一致"}
+      {"id": "C1", "check": "图中三个视角是同一把躺椅"},
+      {"id": "C2", "check": "三个视角织物深灰色一致"},
+      {"id": "C3", "check": "侧视长度=正视长度(长条形态一致)"},
+      {"id": "C4", "check": "三个视角高度/折叠角度比例一致"}
     ],
     "product_structure": [
-      {"id": "S1", "check": "折叠关节/斜撑结构保留", "anchor": "对照 target"},
+      {"id": "S1", "check": "折叠关节/斜撑结构保留(对照参考图)", "anchor": "对照 target"},
       {"id": "S2", "check": "无部件穿模/重叠"},
       {"id": "S3", "check": "无部件缺失"},
-      {"id": "S4", "check": "仍是长条折叠形态(非普通床)", "anchor": "对照 target"}
+      {"id": "S4", "check": "仍是长条折叠形态(非普通床,对照参考图)", "anchor": "对照 target"}
     ],
     "material_texture": {
       "_scoring": "continuous: LLM对这些点整体给0-1还原度分(有偏差,排序校准吸收权重)",
@@ -62,5 +63,5 @@
     ]
   },
 
-  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy"]
+  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy", "artifact_defect", "commercial_focus"]
 }

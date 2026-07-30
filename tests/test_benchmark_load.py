@@ -60,9 +60,11 @@ def test_each_sample_has_target_image_and_dual_checklist(bench_id: str):
             rubric = s.spec.checklist[dim]
             assert isinstance(rubric, ContinuousRubric)
             assert rubric.points, f"{sid}.{dim} 没有 rubric points"
-        # anchor_for 覆盖所有对比型维度
-        assert set(s.spec.anchor_for) == {"consistency", "product_structure",
-                                          "material_texture", "color_accuracy"}
+        # anchor_for 覆盖所有维度（系统目标=还原度，所有维度都对照 target 评）
+        assert set(s.spec.anchor_for) == {
+            "consistency", "product_structure", "material_texture",
+            "color_accuracy", "artifact_defect", "commercial_focus",
+        }
 
 
 def test_load_sample_convenience(bench_id: str):

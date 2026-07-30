@@ -6,8 +6,9 @@
   "task": {
     "mode": "image_edit",
     "input_assets": ["target.jpg"],
-    "instruction": "以该图为参考产品,生成同一张床的三个视角白底素材图:正视图、侧视图(90°)、立体图(45°)。三张必须是同一产品、同色、同比例,纯白背景。",
+    "instruction": "以该图为参考产品,生成【一张】白底素材图,图中并排排版同一张床的三个视角:正视图、侧视图(90°)、立体图(45°)。三个视角必须是同一产品、同色、同比例,纯白背景。一次生成一张完整的三视图排版图。",
     "output": {
+      "layout": "three_view_single_image",
       "views": ["front", "side", "perspective"],
       "background": "white",
       "size": "2K"
@@ -17,21 +18,21 @@
   "constraints": {
     "must_keep": ["弧形拼接床头板", "浅绿色仿皮颜色", "软包质感与缝线包边", "白色床垫及菱形绗缝"],
     "may_change": ["背景(纯白)", "配套床头柜/衣柜(移除,床为唯一主体)", "光影"],
-    "must_avoid": ["床头板变平直", "浅绿色变成灰/白", "软包变塑料", "三视图不一致"]
+    "must_avoid": ["床头板变平直", "浅绿色变成灰/白", "软包变塑料", "三视角不一致"]
   },
 
   "checklist": {
     "consistency": [
-      {"id": "C1", "check": "三视图是同一张床"},
-      {"id": "C2", "check": "三视图浅绿色一致"},
-      {"id": "C3", "check": "侧视图床宽=正视图床宽"},
-      {"id": "C4", "check": "三视图高度比例一致"}
+      {"id": "C1", "check": "图中三个视角是同一张床"},
+      {"id": "C2", "check": "三个视角浅绿色一致"},
+      {"id": "C3", "check": "侧视床宽=正视床宽"},
+      {"id": "C4", "check": "三个视角高度比例一致"}
     ],
     "product_structure": [
-      {"id": "S1", "check": "床头板+床框结构齐全", "anchor": "对照 target"},
+      {"id": "S1", "check": "床头板+床框结构齐全(对照参考图)", "anchor": "对照 target"},
       {"id": "S2", "check": "无部件穿模/重叠"},
       {"id": "S3", "check": "无部件缺失"},
-      {"id": "S4", "check": "床头板仍是弧形拼接(非平直)", "anchor": "对照 target"}
+      {"id": "S4", "check": "床头板仍是弧形拼接(非平直,对照参考图)", "anchor": "对照 target"}
     ],
     "material_texture": {
       "_scoring": "continuous: LLM对这些点整体给0-1还原度分(有偏差,排序校准吸收权重)",
@@ -62,5 +63,5 @@
     ]
   },
 
-  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy"]
+  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy", "artifact_defect", "commercial_focus"]
 }

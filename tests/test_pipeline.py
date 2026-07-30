@@ -85,17 +85,17 @@ def test_loop_runs_one_round_and_stops(setup):
         generator=gen, critic=critic, summarizer=summ,
         decisions=["stop"],
     )
-    # 跑了 1 轮（三视图 = 3 次出图）
+    # 跑了 1 轮（三视图 = 1 张图，单次生成）
     assert state["round"] == 1
     assert state["decision"] == "stop"
-    assert router.calls == 3
+    assert router.calls == 1
     # trajectory 写了 1 条
     traj = (store.run_dir / "trajectory.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(traj) == 1
     rec = json.loads(traj[0])
     assert rec["round"] == 1
     assert rec["verdict"] is not None
-    assert len(rec["output_image_refs"]) == 3  # 三视图
+    assert len(rec["output_image_refs"]) == 1  # 三视图=一张图
 
 
 def test_loop_two_rounds_then_stop(setup):
@@ -115,7 +115,7 @@ def test_loop_two_rounds_then_stop(setup):
         decisions=["continue", "stop"],
     )
     assert state["round"] == 2
-    assert router.calls == 6  # 两轮各 3 张
+    assert router.calls == 2  # 两轮各 1 张（三视图单图）
     # trajectory 2 条
     traj = (store.run_dir / "trajectory.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(traj) == 2
@@ -145,7 +145,7 @@ def test_loop_writes_lessons_and_index(setup):
     e = idx["attempts"][0]
     assert e["round"] == 1
     assert e["model"] == "fake-model"
-    assert len(e["output_image_refs"]) == 3
+    assert len(e["output_image_refs"]) == 1  # 三视图=一张图
     assert e["lesson_ref"].startswith("lessons/")
 
 

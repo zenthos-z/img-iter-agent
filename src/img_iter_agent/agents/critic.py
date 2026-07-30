@@ -188,18 +188,22 @@ class Critic:
         self.bench = bench
 
     def evaluate(self, inp: CriticInput) -> CriticVerdict:
-        """对一个 trace 打分，产出 CriticVerdict。"""
+        """对一个 trace 打分，产出 CriticVerdict。
+
+        系统目标=还原度，故**所有维度都对照参考图(target)与生成图对比评判**：
+        每个 prompt 都同时注入 target + 生成图（无绝对型维度）。
+        """
         spec = inp.sample.spec
         target = inp.sample.target_path
         generated = inp.generated_images
-        comparative = set(self.bench.comparative_dims)
 
         dimension_scores: list[DimensionScore] = []
         for dim_def in self.bench.score_dimensions:
             name = dim_def.dim
             checklist_val = spec.checklist.get(name)
 
-            is_comparative = name in comparative or name in spec.anchor_for
+            # 所有维度都是对比型（对照 target 评）
+            is_comparative = True
 
             if dim_def.scoring_type == "binary":
                 items = checklist_val if isinstance(checklist_val, list) else []

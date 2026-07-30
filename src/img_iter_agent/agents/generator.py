@@ -65,14 +65,13 @@ class Generator:
         size_spec: SizeSpec | None = None,
         model_hint: ModelFamily | None = None,
     ) -> GenOutcome:
-        """跑一轮：构造 prompt → 对每个视角出图 → 记录参数。
+        """跑一轮：构造 prompt → 单次生成【一张三视图排版图】→ 记录参数。
 
-        三视图任务：对 content_spec.task.output.views 里每个视角各生成一张。
-        （多数模型单次出 1 张，故按视角循环调用。）
+        三视图任务（一张图）：一次 API 调用生成一张图，内含正/侧/立体三个视角并排排版。
+        不再按视角循环（那样三张独立图必然不一致）。
         """
         spec = sample.spec
         task = spec.task
-        views = (task.output.get("views") if task and task.output else None) or ["main"]
         size_str = (task.output.get("size") if task and task.output else None) or "2K"
         size = size_spec or _size_from_str(size_str)
 
@@ -83,31 +82,27 @@ class Generator:
             reference_images = [sample.target_path]
             gen_mode = "image_edit"
 
-        prompt = self._build_prompt(sample, views)
+        prompt = self._build_prompt(sample)
         attempt_id = _new_attempt_id(round)
         attempt_out = out_dir / attempt_id
         attempt_out.mkdir(parents=True, exist_ok=True)
 
-        output_refs: list[str] = []
-        used_model = ""
-        used_family = ""
-        for view in views:
-            view_prompt = f"{prompt}\n[视角: {view}]"
-            req = GenRequest(
-                prompt=view_prompt,
-                size=size,
-                reference_images=reference_images,
-                model_hint=model_hint,
-            )
-            img: GeneratedImage = self.router.generate(req, out_dir=attempt_out)
-            # 重命名为 <view>.<ext>
-            ext = img.image_path.suffix or ".png"
-            dest = attempt_out / f"{view}{ext}"
-            if img.image_path != dest:
-                img.image_path.rename(dest)
-            output_refs.append(str(dest.relative_to(run_dir)))
-            used_model = img.model
-            used_family = img.meta.get("family", "?")
+        # 单次生成一张三视图排版图
+        req = GenRequest(
+            prompt=prompt,
+            size=size,
+            reference_images=reference_images,
+            model_hint=model_hint,
+        )
+        img: GeneratedImage = self.router.generate(req, out_dir=attempt_out)
+        # 重命名为 three_view.<ext>
+        ext = img.image_path.suffix or ".png"
+        dest = attempt_out / f"three_view{ext}"
+        if img.image_path != dest:
+            img.image_path.rename(dest)
+        output_refs = [str(dest.relative_to(run_dir))]
+        used_model = img.model
+        used_family = img.meta.get("family", "?")
 
         # 参考图（benchmark 的 target）不在 run 目录内，存绝对路径；产出图存相对 run 目录路径
         ref_refs = [str(p.resolve()) for p in reference_images]
@@ -125,7 +120,7 @@ class Generator:
             model_family=used_family,
         )
 
-    def _build_prompt(self, sample: Sample, views: list[str]) -> str:
+    def _build_prompt(self, sample: Sample) -> str:
         """构造生图指令。默认确定性；若注入了 LLM 则用它润色（带经验时更有效）。"""
         spec = sample.spec
         instr = (spec.task.instruction if spec.task else None) or "生成产品白底素材图"
