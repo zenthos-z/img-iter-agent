@@ -11,7 +11,8 @@ dependencies = [
     # 基础层 (Step 1, 无网络可测)
     "pydantic>=2",
     "pydantic-settings>=2",
-    # 后续步骤填入: langgraph / langchain-openai / httpx / tenacity / pillow / scikit-learn / pandas / matplotlib
+    # 后续步骤填入: langchain-openai(Critic/agent LLM, Step 2生产端) / httpx / tenacity / pillow
+    #              langgraph(编排, Step 4) / scikit-learn+pandas+matplotlib(校准/分析, Step 5)
 ]
 
 [project.optional-dependencies]
