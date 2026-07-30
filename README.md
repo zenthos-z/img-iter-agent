@@ -19,8 +19,8 @@
 
 完整分析见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
 
-一句话概览：Python · 多模态 LLM 评判 · 扩散模型生图（IP-Adapter/ControlNet/LoRA 做风格锚定）·
-LangGraph 编排闭环 · 向量库做长期记忆。
+一句话概览：Python · dmxapi 多模型生图（实测 4 协议族：OpenAI/豆包/Qwen/Gemini，按族分 dispatcher 抹平差异）·
+参考图风格迁移（seedream-5.0 + gpt-image-2）· 多模态 LLM 对抗评判 · LangGraph 编排闭环 · 最简 JSON 记忆 · 图片全程用文件路径。
 
 ## 快速开始（待实现）
 
@@ -33,7 +33,8 @@ python -m img_iter_agent  # 跑一个迭代
 
 ## 状态
 
-🚧 架构设计阶段。仓库结构已建好，代码骨架与实现待技术栈确认后推进。
+✅ 架构与技术栈已定稿（dmxapi 后端 / 全云端 / 参考图锚定风格）。见 `docs/ARCHITECTURE.md`。
+🚧 代码骨架与实现待推进。
 
 ## 目录
 
