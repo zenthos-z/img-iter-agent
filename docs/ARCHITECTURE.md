@@ -105,6 +105,42 @@ for round t in 1..T:
 - `content_diversity`：同批图的内容主题熵 / 聚类数，保证"内容可变"；
 - `quality_trend`：`content_score` 的移动平均，看是否还在涨。
 
+**LangGraph 落地映射（context7 官方 API 核实）**：上面 7 步映射到一个 StateGraph——
+
+```python
+# State：跨轮累积（reducer 自动合并）
+class RunState(TypedDict):
+    round: int
+    images: Annotated[list[str], operator.add]      # 生成图路径累积
+    scores: Annotated[list[dict], operator.add]      # 每轮分数累积
+    converged: bool
+
+# 节点 = 三个 agent
+builder = StateGraph(RunState)
+builder.add_node("generator", generator_node)   # 步 1~3
+builder.add_node("critic", critic_node)         # 步 4~5
+builder.add_node("summarizer", summarizer_node) # 步 6
+
+# 闭环：summarizer 后按收敛条件决定继续/停
+def route(state: RunState) -> Literal["generator", END]:
+    avg_style = mean(s["style_consistency"] for s in state["scores"][-1:][0]["items"])
+    return END if (avg_style >= THRESHOLD or state["round"] >= MAX_ROUNDS) else "generator"
+
+builder.add_edge(START, "generator")
+builder.add_edge("generator", "critic")
+builder.add_edge("critic", "summarizer")
+builder.add_conditional_edges("summarizer", route)
+
+graph = builder.compile(
+    checkpointer=SqliteSaver.from_conn_string("data/runs/<run>/checkpoints.sqlite"),
+)
+graph.invoke({"round": 0, ...}, config={"configurable": {"thread_id": run_id},
+                                        "recursion_limit": MAX_ROUNDS * 3 + 5})
+```
+
+- 观测：`graph.get_graph().draw_mermaid_png()` 导流程图；checkpoint 逐轮回看 `state`。
+- 恢复：`graph.invoke(None, config=config)` 用同 `thread_id` 从断点继续。
+
 ---
 
 ## 3. 三个核心难点与技术对应
@@ -501,15 +537,22 @@ src/img_iter_agent/
 - **后果**：+风格有图像级约束且路径多；−可控性仍 < 本地 IP-Adapter，靠 Critic 闭环 + 多图参考补救。
 
 ### ADR-003: Agent 编排用 LangGraph（闭环原生 + 可观测），弃用 pi sdk
-- **状态**：✅ 已采纳（用户 2026-07-30 确认；曾短暂选 PydanticAI，用户改回）
+- **状态**：✅ 已采纳（用户 2026-07-30 确认；曾短暂选 PydanticAI，用户改回；context7 官方文档核实 API）
 - **背景**：曾考虑 pi agent sdk，但实测 **pi 官方 SDK 仅 Node.js（npm `@earendil-works/pi-coding-agent`），
   无 Python 版**（社区 Issue #4174 仍在请求），跨语言（Py+Node 子进程 JSON-RPC）成本高，排除。
   本项目主体是 Python（dmxapi 生图、Pillow、CLIP 皆 Py 生态）。
-- **决策**：用 **LangGraph** 编排自迭代闭环——它是 cyclic graph 的一等公民，状态可视化 +
-  checkpoint 原生支持，**便于观测每一轮（生成→评判→总结→记忆）**，符合用户"方便观测"的诉求；
-  跨轮 State(TypedDict) 含 images/scores/round，每轮 checkpoint 落 run 目录支持中断恢复。
+- **决策**：用 **LangGraph** 编排自迭代闭环。经 context7 核实官方 API（/websites/langchain_oss_python_langgraph），
+  以下特性原生支持、正好覆盖本项目诉求：
+  - **闭环收敛**：`add_conditional_edges("summarizer", route)`，`route(state)->Literal["generator",END]`
+    按 `scores` 是否达标决定继续迭代还是停；
+  - **状态累积**：`Annotated[list, operator.add]` reducer 累积跨轮记忆/分数/图引用；
+  - **可观测**：`graph.get_graph().draw_mermaid_png()` 一行导出流程图；checkpoint 可逐轮回看状态；
+  - **持久化/恢复**：`compile(checkpointer=...)`（开发用 `InMemorySaver`，持久化用 `SqliteSaver`），
+    `thread_id=run_id`，`graph.invoke(None, config)` 从断点恢复；
+  - **多 agent 作节点**：generator/critic/summarizer 各为一个 node，`OverallState` 流转。
   LLM 接入经 LangChain 的 OpenAI 兼容 client 指向 dmxapi。
-- **后果**：+闭环/可观测/断点续跑开箱即用；−引入 langgraph 依赖（本项目可接受）。
+- **后果**：+闭环/可观测/断点续跑开箱即用、官方文档扎实；−引入 langgraph 依赖（本项目可接受）；
+  注意设 `recursion_limit` 防止收敛判定失效时无限循环。
 
 ### ADR-004: Memory = 双层载体：经验 MD + JSON 索引（不引向量库/SQLite）
 - **状态**：✅ 已采纳（用户 2026-07-30 确认并细化）
