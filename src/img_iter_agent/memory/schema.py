@@ -127,6 +127,7 @@ class ContentSpecTask(BaseModel):
     mode: str
     input_assets: list[str] = Field(default_factory=list)
     instruction: str | None = None
+    output: dict = Field(default_factory=dict)  # views/background/size 等（自由格式，按需读）
 
 
 class ContentSpec(BaseModel):
