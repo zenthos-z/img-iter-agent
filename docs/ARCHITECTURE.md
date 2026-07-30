@@ -5,6 +5,7 @@
 >
 > **关键决策（已定）**：生图后端 = **dmxapi 聚合 API**（实测分 4 个协议族：OpenAI Images / 豆包 Responses /
 > Qwen Responses / Gemini 原生）；风格锚定 = **纯参考图**（主力 seedream-5.0 + gpt-image-2）；
+> Agent 编排 = **PydanticAI**（纯 Python 轻量，弃用 pi sdk/LangGraph，§ADR-003）；
 > 记忆 = **双层载体：经验 MD + JSON 索引**（不引向量库，全用文件链接，§3.3）；
 > 图片 = **文件路径**（不存 base64，§3.4）。
 > 核心难点 = 屏蔽 dmxapi 四个协议族的接口差异（§4.2）。
@@ -285,7 +286,7 @@ MD 里用尝试 id 引用 `index.json` 作为证据，反向闭环；人也能�
 | **语言** | **Python ≥ 3.11** | 生图、agent、向量库生态全在 Py |
 | **生图后端** | **dmxapi 聚合 API（单一后端）** | 统一接入 gpt-image-2 / seedream-5.0 / qwen-image / gemini-image 等；不走本地 diffusers（无 GPU）。注意：dmxapi 按**协议族**分多套接口（§4.2），非单一端点 |
 | **多模态评判(Critic)** | **dmxapi 接 Gemini 多模态**（可选叠加 GPT 多 judge） | 评分+批评质量高、价格好；评判/生成尽量异模型降偏差 |
-| **Agent 编排** | **LangGraph** | 环路(闭环)是一等公民，状态/检查点/可视化原生支持 |
+| **Agent 编排** | **PydanticAI**（轻量，纯 Python） | 类型注解→工具 Schema 自动生成，自定义工具循环灵活；与已选 Pydantic v2 无缝；闭环用自管 async 循环 + agent 组合实现（详见 ADR-003）。弃用 pi sdk（仅 Node.js 无 Python 版）、弃用 LangGraph（偏重） |
 | **LLM 接口统一** | **dmxapi 已聚合**（文本对话走 chat completions） | 评判/总结用多模态文本模型 |
 | **结构化输出** | **Pydantic v2** | Critic 评分、生图记录需严格 schema |
 | **记忆存储** | **双层载体：MD(经验) + JSON(索引)（按用户要求）** | 不引向量库/SQLite；经验写 MD 给人读，JSON 只管参数/版本/索引并用文件链接串起图片与 MD（§3.3）；人类可读可手改 |
@@ -425,8 +426,9 @@ src/img_iter_agent/
 │   ├── critic.py         # Critic: 多模态打分 + 批评
 │   └── summarizer.py     # Summarizer: 跨轮经验归纳（写 lesson 字段）
 ├── pipeline/
-│   ├── graph.py          # LangGraph 闭环定义（节点=agents, 边=数据流）
-│   └── state.py          # 跨轮 State（TypedDict）：images/scores/round
+│   ├── loop.py           # 自迭代闭环：async 主循环（生成→评判→总结→记忆），按轮驱动
+│   ├── agents.py         # PydanticAI Agent 定义（generator/critic/summarizer 三个 agent）
+│   └── state.py          # 跨轮 RunState（Pydantic model）：images/scores/round
 ├── generation/
 │   ├── base.py           # ImageGenerator 抽象接口 + GenRequest/GeneratedImage
 │   ├── client.py         # dmxapi 底层 HTTP 客户端（统一认证/超时/重试）
@@ -499,11 +501,16 @@ src/img_iter_agent/
   各协议族参考图传法由 dispatcher 抹平。
 - **后果**：+风格有图像级约束且路径多；−可控性仍 < 本地 IP-Adapter，靠 Critic 闭环 + 多图参考补救。
 
-### ADR-003: 用 LangGraph 编排闭环，State 跨轮持久化
-- **状态**：提案（待实现时确认）
-- **决策**：闭环用 LangGraph 的 cyclic graph；State(TypedDict) 含 images/scores/round，
-  每轮 checkpoint，支持中断恢复。
-- **后果**：+原生支持环、可视化、断点续跑；−引入 langgraph 依赖。
+### ADR-003: Agent 编排用 PydanticAI（纯 Python 轻量），弃用 pi sdk / LangGraph
+- **状态**：✅ 已采纳（用户 2026-07-30 确认）
+- **背景**：曾考虑 pi agent sdk，但实测 **pi 官方 SDK 仅 Node.js（npm `@earendil-works/pi-coding-agent`），
+  无 Python 版**（社区 Issue #4174 仍在请求），跨语言（Py+Node 子进程 JSON-RPC）成本高；
+  LangGraph 偏重。本项目主体是 Python（dmxapi 生图、Pillow、CLIP 皆 Py 生态）。
+- **决策**：用 **PydanticAI** 做 agent 定义与工具调用（类型注解→工具 Schema、自定义工具循环灵活，
+  与已选 Pydantic v2 无缝）；自迭代闭环用 `pipeline/loop.py` 的自管 async 主循环驱动
+  （生成→评判→总结→记忆，按轮），跨轮状态用 Pydantic `RunState` 持久化到 run 目录支持中断恢复。
+- **后果**：+纯 Python 单语言、轻量、类型安全、无跨进程开销；−闭环/检查点需自管（不复杂，
+  本项目闭环固定，几个 async 步骤即可）。
 
 ### ADR-004: Memory = 双层载体：经验 MD + JSON 索引（不引向量库/SQLite）
 - **状态**：✅ 已采纳（用户 2026-07-30 确认并细化）

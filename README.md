@@ -20,7 +20,8 @@
 完整分析见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
 
 一句话概览：Python · dmxapi 多模型生图（实测 4 协议族：OpenAI/豆包/Qwen/Gemini，按族分 dispatcher 抹平差异）·
-参考图风格迁移（seedream-5.0 + gpt-image-2）· 多模态 LLM 对抗评判 · LangGraph 编排闭环 · 最简 JSON 记忆 · 图片全程用文件路径。
+参考图风格迁移（seedream-5.0 + gpt-image-2）· PydanticAI 编排自迭代闭环（纯 Python 轻量）·
+对抗评判 · 双层记忆（经验 MD + JSON 索引，文件链接）· 图片全程用文件路径。
 
 ## 快速开始（待实现）
 
