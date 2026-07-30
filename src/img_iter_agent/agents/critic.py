@@ -24,6 +24,7 @@ from pathlib import Path
 
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
+from ..generation.image_io import file_to_data_uri
 from ..llm import LlmClient
 from ..memory.schema import (
     Benchmark,
@@ -48,8 +49,26 @@ class CriticInput:
 # prompt 构造
 # ---------------------------------------------------------------------------
 
+def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str:
+    """构造 OpenAI 兼容的多模态 content：text + 图片(data-URI)。
+
+    无图时直接返回 text（保持纯文本模型兼容）。有图时返回 content 数组：
+    [{"type":"text",...}, {"type":"image_url","image_url":{"url":"data:..."}}, ...]
+    """
+    if not images:
+        return text
+    parts: list[dict] = [{"type": "text", "text": text}]
+    for p in images:
+        if Path(p).exists():
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": file_to_data_uri(Path(p))},
+            })
+    return parts
+
+
 def _images_block(comparative: bool, target: Path, generated: list[Path]) -> str:
-    """构造喂图说明（供 LLM 知道有哪些图）。实际多模态注入由 client 负责，这里给文字锚。"""
+    """文字版喂图说明（多模态 content 里也会带这段文字锚，便于 LLM 区分图序）。"""
     parts = ["[生成图]"] + [f"  - view {i+1}: {p.name}" for i, p in enumerate(generated)]
     if comparative:
         parts += ["[参考图(target 产品实物)]", f"  - {target.name}"]
@@ -58,37 +77,42 @@ def _images_block(comparative: bool, target: Path, generated: list[Path]) -> str
 
 def _binary_prompt(dim_name: str, dim_desc: str, items: list[CheckItem],
                    comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
-    """二分维度的 prompt：要求逐项 ✓/✗ + 理由，返回 JSON。"""
+    """二分维度的 prompt：要求逐项 ✓/✗ + 理由，返回 JSON。多模态（带图）。"""
     item_lines = "\n".join(f"  - {it.id}: {it.check}" for it in items)
     sys_msg = (
         "你是严格的产品图评判员。对下列 checklist 项逐项判定 通过/不通过，"
         "每项给一句简短理由。只输出 JSON，不要任何额外文字。\n"
         'JSON 格式: {"judgments":[{"id":"C1","passed":true,"reason":"..."}, ...]}'
     )
-    user_msg = (
+    text = (
         f"维度: {dim_name}\n描述: {dim_desc}\n\n"
         f"判定项:\n{item_lines}\n\n"
         f"{_images_block(comparative, target, generated)}\n\n"
         "请逐项判定。passed=true 表示通过，false 表示不通过。"
     )
-    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}]
+    # 喂的图：生成图（必给）；对比型再加 target
+    images = list(generated) + ([target] if comparative else [])
+    user_content = _build_multimodal_content(text, images)
+    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_content}]
 
 
 def _continuous_prompt(dim_name: str, dim_desc: str, rubric: ContinuousRubric,
                        comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
-    """连续维度的 prompt：按 rubric points 整体给 0-1 分，返回 JSON。"""
+    """连续维度的 prompt：按 rubric points 整体给 0-1 分，返回 JSON。多模态（带图）。"""
     points = "\n".join(f"  - {p}" for p in rubric.points) or "  - (按维度描述整体评分)"
     sys_msg = (
         "你是产品图材质/颜色评判员。对生成图的还原图整体给一个 0-1 分（0=完全没还原，1=完美还原），"
         "并给一句理由。只输出 JSON。\n"
         'JSON 格式: {"score":0.72,"reason":"..."}'
     )
-    user_msg = (
+    text = (
         f"维度: {dim_name}\n描述: {dim_desc}\n评分要点:\n{points}\n\n"
         f"{_images_block(comparative, target, generated)}\n\n"
         "请给 0-1 的 score 与一句 reason。"
     )
-    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}]
+    images = list(generated) + ([target] if comparative else [])
+    user_content = _build_multimodal_content(text, images)
+    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_content}]
 
 
 # ---------------------------------------------------------------------------

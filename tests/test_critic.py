@@ -148,8 +148,23 @@ def test_critic_evaluate_full_hybrid(loaded, three_view_images):
     assert verdict.features == pytest.approx(feats)
 
 
+def _flatten_text(content) -> str:
+    """把 content(str 或多模态 list) 折成纯文本，便于断言。"""
+    if isinstance(content, str):
+        return content
+    # 多模态 list：拼所有 text part
+    return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+
+
+def _has_image_part(content) -> bool:
+    """多模态 content 里是否含 image_url part。"""
+    if isinstance(content, str):
+        return False
+    return any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
+
+
 def test_critic_comparative_dims_get_target_in_prompt(loaded, three_view_images):
-    """对比型维度的 prompt 文字锚里应出现 target 文件名。"""
+    """对比型维度的 prompt 应含 target 文字锚 + target 图片；绝对型不含 target。"""
     bench = loaded.bench
     weights = init_weights(bench)
     client = FakeLlmClient(responses=_make_responses(loaded))
@@ -161,12 +176,35 @@ def test_critic_comparative_dims_get_target_in_prompt(loaded, three_view_images)
     comparative = set(bench.comparative_dims)  # consistency/product_structure/material/color
     # client.calls 顺序 = manifest 维度顺序
     for dim_def, call_msgs in zip(bench.score_dimensions, client.calls):
-        user_text = call_msgs[-1]["content"]
+        content = call_msgs[-1]["content"]
+        text = _flatten_text(content)
         if dim_def.dim in comparative:
-            assert target_name in user_text, f"{dim_def.dim} (对比型) 应含 target 锚"
+            assert target_name in text, f"{dim_def.dim} (对比型) 应含 target 锚"
+            # 对比型应注入图片（生成图 + target）
+            assert _has_image_part(content), f"{dim_def.dim} (对比型) 应注入图片"
         else:
-            # artifact_defect / commercial_focus 是绝对型，不应含 target 锚
-            assert target_name not in user_text, f"{dim_def.dim} (绝对型) 不应含 target 锚"
+            # artifact_defect / commercial_focus 是绝对型，不应含 target 锚（但仍注入生成图）
+            assert target_name not in text, f"{dim_def.dim} (绝对型) 不应含 target 锚"
+            assert _has_image_part(content), f"{dim_def.dim} (绝对型) 应注入生成图"
+
+
+def test_critic_text_only_when_no_images_at_all(loaded):
+    """无生成图时：绝对型维度(不注 target) content 为纯文本；对比型仍注 target。"""
+    bench = loaded.bench
+    client = FakeLlmClient(responses=_make_responses(loaded))
+    critic = Critic(client, bench=bench)
+    critic.evaluate(CriticInput(sample=loaded.sample("s001"),
+                                generated_images=[], weights=init_weights(bench)))
+    comparative = set(bench.comparative_dims)
+    for dim_def, call in zip(bench.score_dimensions, client.calls):
+        content = call[-1]["content"]
+        if dim_def.dim in comparative:
+            # 对比型仍注入 target → 多模态
+            assert not isinstance(content, str)
+            assert _has_image_part(content)
+        else:
+            # 绝对型无图可注 → 纯文本
+            assert isinstance(content, str), f"{dim_def.dim} 应为纯文本"
 
 
 def test_critic_robust_to_malformed_llm_output(loaded, three_view_images):
