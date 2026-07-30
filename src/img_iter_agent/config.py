@@ -46,7 +46,8 @@ class Settings(BaseSettings):
     data_root: Path = Field(default=_DEFAULT_DATA_ROOT, description="三层数据的根目录")
 
     # --- dmxapi 凭证 / 地址（Step 3 真正生图时才用到） ---
-    dmxapi_host: str = Field(default="https://api.dmxapi.cn", description="dmxapi 网关地址")
+    # 注意：网关域名是 www.dmxapi.cn（api.dmxapi.cn 的证书已失效/主机名不匹配，勿用）。
+    dmxapi_host: str = Field(default="https://www.dmxapi.cn", description="dmxapi 网关地址")
     dmxapi_key: str = Field(default="", description="dmxapi 密钥；为空表示未配置（基础层测试无需）")
 
     # --- 四个协议族的「生图」model_id（用户后填；不同模型价格不同，做成配置而非写死） ---
