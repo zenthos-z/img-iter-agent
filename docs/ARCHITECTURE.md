@@ -5,7 +5,8 @@
 >
 > **关键决策（已定）**：生图后端 = **dmxapi 聚合 API**（实测分 4 个协议族：OpenAI Images / 豆包 Responses /
 > Qwen Responses / Gemini 原生）；风格锚定 = **纯参考图**（主力 seedream-5.0 + gpt-image-2）；
-> Agent 编排 = **LangGraph**（闭环原生、状态可视化/检查点，便于观测自迭代过程，§ADR-003）；
+> Agent 编排 = **LangGraph**（纯 Python 轻量，弃用 pi sdk/LangGraph，§ADR-003）；
+> 测试调度 = **分开独立评测 + 控制变量法 + 逐轮人工审批**（§2.5, ADR-007）；
 > 记忆 = **双层载体：经验 MD + JSON 索引**（不引向量库，全用文件链接，§3.3）；
 > 图片 = **文件路径**（不存 base64，§3.4）。
 > 核心难点 = 屏蔽 dmxapi 四个协议族的接口差异（§4.2）。
@@ -111,35 +112,117 @@ for round t in 1..T:
 # State：跨轮累积（reducer 自动合并）
 class RunState(TypedDict):
     round: int
-    images: Annotated[list[str], operator.add]      # 生成图路径累积
-    scores: Annotated[list[dict], operator.add]      # 每轮分数累积
-    converged: bool
+    model: str                                   # 本闭环固定测这一个模型（分开独立评测）
+    images: Annotated[list[str], operator.add]   # 生成图路径累积
+    scores: Annotated[list[dict], operator.add]  # 每轮分数累积
+    decision: str                                # 人工审批结果: continue/stop/adjust
 
 # 节点 = 三个 agent
 builder = StateGraph(RunState)
 builder.add_node("generator", generator_node)   # 步 1~3
 builder.add_node("critic", critic_node)         # 步 4~5
-builder.add_node("summarizer", summarizer_node) # 步 6
+builder.add_node("summarizer", summarizer_node) # 步 6 + 写经验
+builder.add_node("human_review", human_review_node)  # 步 7：人工审批
 
-# 闭环：summarizer 后按收敛条件决定继续/停
+# 闭环：summarizer 后用 interrupt 暂停等人工审批
+def human_review_node(state: RunState):
+    from langgraph.types import interrupt
+    verdict = interrupt({                         # 把本轮结果摊给人看
+        "round": state["round"], "images": ...,
+        "scores": state["scores"][-1], "lesson": ...,
+        "prompt": "本轮测了 X，分数 Y。回复 continue / stop / 调整方向..."})
+    return {"decision": verdict}                  # Command(resume=...) 注入
+
 def route(state: RunState) -> Literal["generator", END]:
-    avg_style = mean(s["style_consistency"] for s in state["scores"][-1:][0]["items"])
-    return END if (avg_style >= THRESHOLD or state["round"] >= MAX_ROUNDS) else "generator"
+    return END if state["decision"] == "stop" else "generator"
 
 builder.add_edge(START, "generator")
 builder.add_edge("generator", "critic")
 builder.add_edge("critic", "summarizer")
-builder.add_conditional_edges("summarizer", route)
+builder.add_edge("summarizer", "human_review")
+builder.add_conditional_edges("human_review", route)
 
 graph = builder.compile(
     checkpointer=SqliteSaver.from_conn_string("data/runs/<run>/checkpoints.sqlite"),
 )
-graph.invoke({"round": 0, ...}, config={"configurable": {"thread_id": run_id},
-                                        "recursion_limit": MAX_ROUNDS * 3 + 5})
 ```
 
+- **停止交人工**：收敛不自动判定（CLIP 分数只是代理指标，自动停易误判）。每轮 `interrupt()` 暂停，
+  你看图+分数+经验后回复，`graph.invoke(Command(resume=...), config)` 恢复。
+- 仍设 `recursion_limit` 作硬上限兜底，防意外无限循环。
 - 观测：`graph.get_graph().draw_mermaid_png()` 导流程图；checkpoint 逐轮回看 `state`。
 - 恢复：`graph.invoke(None, config=config)` 用同 `thread_id` 从断点继续。
+
+---
+
+## 2.5 测试调度策略（Generator 作为"测试调度者"必须知道的事）
+
+> 用户指出：Generator 的系统提示词要先回答"**怎么测**"，否则闭环无从谈起。
+> 以下策略已定（用户 2026-07-30 确认），是 Generator 系统提示词的核心输入。
+
+### 2.5.1 评测范式：分开独立（每个模型一条闭环）
+
+- **决策**：每个生图模型**各跑一条独立自迭代闭环**，互不共享经验。
+  目的是**公平横向对比各模型的天花板**——这正是"测试调度"的本意。
+- **代价**：各模型从零学、成本×模型数。但换来经验干净、可归因、可对比。用户已接受此权衡。
+- **实现**：一条 LangGraph 闭环绑**一个固定 model**（`RunState.model` 不变）；
+  要测 N 个模型就跑 N 条独立闭环（N 个 `thread_id` / N 个 run 目录）。
+- **经验归属**：因为是分开独立，经验的 `applies_to` 恒等于当前模型，无需区分通用/特异——
+  经验天然只在本闭环内累积，简单干净。
+
+### 2.5.2 控制变量法：自回归怎么跑
+
+自回归的本质是**每轮只变一个维度、其余固定**，分数变化才能归因到那个变量。
+Generator 每轮必须在 `test_variable` 字段声明"本轮我在测什么"。
+
+五个可变维度：
+
+| 维度 | 例子 | 说明 |
+|---|---|---|
+| `prompt` | 提示词措辞/风格描述写法 | 风格描述怎么写才稳 |
+| `reference_images` | 参考图选择/数量/组合 | 哪张参考图、几张参考图最好 |
+| `size` | 尺寸/分辨率档 | 2K vs 3K 对风格的影响 |
+| `generation_mode` | 单图编辑 vs 多图融合 vs 多轮改图 | 哪种生图方式风格迁移最稳 |
+| `model_params` | seed / quality / n | 模型参数（注意：model 本身固定，不在此列） |
+
+**自回归驱动**：上一轮的 `scores` + 经验 → Generator 决定下一轮变哪个维度、变成什么，
+并在新尝试的 `test_variable` 记录，`baseline_ref` 指向对照组尝试 id。
+这样经验能说清"X 变化导致 style_score 从 7.2→8.5"。
+
+### 2.5.3 停止策略：逐轮人工审批（不自动收敛）
+
+- **决策**：收敛**不自动判定**。每轮 summarizer 后 `interrupt()` 暂停，把本轮
+  （图路径 + 分数 + 经验 + 本轮测了什么）摊给人看，人回复 `continue` / `stop` / `调整方向`。
+- **理由**：风格一致性 CLIP 分数只是代理指标，"分数达标但图难看"或"该停却没停"风险大，
+  人工判断更可靠（用户明确）。
+- **兜底**：设 `recursion_limit` / 最大轮数硬上限，防意外无限循环。
+
+### 2.5.4 Generator 系统提示词骨架（基于上述策略）
+
+```
+你是一个「生图测试调度者」。当前闭环只测模型：{model}。
+
+【你的目标】找到让 {model} 稳定复刻参考图风格、同时内容可变的最佳生图配置。
+
+【测试方法：控制变量法】
+每轮只改变一个维度（prompt / reference_images / size / generation_mode / model_params），
+其余保持与上一轮基线一致。你必须在 test_variable 字段声明本轮变化了什么。
+
+【可用经验】（仅来自当前闭环历史，见 index.json + lessons/）
+{检索到的本模型历史高分尝试 + 经验 MD}
+
+【你的产出】每轮输出一个 GenRequest：
+- 明确 test_variable（本轮变化维度）+ baseline_ref（对照组）
+- 参考风格锚定见 §4.2（reference_images 非空走风格迁移路径）
+
+【风格锚定】风格以参考图为准（见 §3.1），不要靠 prompt 硬描述。
+```
+
+### 2.5.5 MVP 首批模型（用户指定，model id 待用户给）
+
+纳入 4 个（每条独立闭环）：seedream-5.0-pro（B族）、gpt-image-2（A族）、
+gemini-3.1-flash-image（D族）、qwen-image-2.0（C族，能力待探测）。
+**具体 model id 由用户指定**（不同版本价格不同）——做成 config，不写死（见 §config）。
 
 ---
 
@@ -226,6 +309,13 @@ data/runs/<run_id>/
                                            //   image_edit / multi_ref_fusion /
                                            //   multi_turn_edit（Gemini 多轮）
   "endpoint": "/v1/responses",
+
+  // —— 测试调度专属（控制变量法，见 §2.5.2）——
+  "test_variable": "reference_images",     // 本轮变化的维度：prompt /
+                                           //   reference_images / size /
+                                           //   generation_mode / model_params
+  "baseline_ref": "try_00016",             // 对照组尝试 id（其余维度与之一致）
+  "delta_note": "参考图从 1 张→2 张",       // 本轮变化的人类可读说明
 
   // —— 生图参数（参数/版本的整理，JSON 的本职）——
   "params": {
@@ -507,12 +597,14 @@ src/img_iter_agent/
 
 ## 7. 开放问题（待用户进一步拍板）
 
-主要决策已定（dmxapi 后端 / 全云端 / 参考图锚定 / JSON 记忆 / 图片用路径）。剩余问题：
+主要决策已定（dmxapi 后端 / 全云端 / 参考图锚定 / 双层记忆 / 图片用路径 /
+**评测分开独立 / 控制变量法 / 逐轮人工审批**）。剩余问题：
 
-1. **风格迁移主力模型**：seedream-5.0-pro（JSON、多图融合强、性价比）还是 gpt-image-2（高质量）？
-   建议 seedream 为主、gpt 为高质量备选。Gemini 多轮改图作为"单模型内微迭代"补充。
-2. **预算/规模**：单次迭代大致预算上限？决定每轮 batch 与 judge 数量、主模型选择。
-3. **qwen-image 能力待实测**：写 dispatcher 时探测其是否支持 edits/多图。
+1. **各模型具体 dmxapi model id**：用户指定（不同版本价格不同）。当前候选：
+   seedream-5.0-pro / gpt-image-2 / gemini-3.1-flash-image / qwen-image-2.0。
+   做成 config，用户填 `model_id` 字段。
+2. **预算/规模**：单次迭代大致预算上限？决定每轮 batch 与 judge 数量。
+3. **qwen-image 能力待实测**：写 dispatcher 时探测其是否支持 edits/多图，再决定是否纳入。
 4. **评判 provider**：Critic 默认 Gemini（经 dmxapi）；是否叠加第二 judge？
 
 ---
@@ -575,6 +667,20 @@ src/img_iter_agent/
 - **决策**：Critic 默认 Gemini 多模态（经 dmxapi）；重要场景叠加第二 judge；
   Generator 生图用 gpt-image/seedream，天然异协议族降偏差。
 - **后果**：+评判更可信；−成本与延迟上升。
+
+### ADR-007: 测试调度策略——分开独立评测 + 控制变量法 + 逐轮人工审批
+- **状态**：✅ 已采纳（用户 2026-07-30 确认）
+- **背景**：Generator 作为"测试调度者"，其系统提示词需先回答"怎么测"。多模型如何评测、
+  经验如何区分、上下文如何组织、自回归怎么跑、何时停——都未定，写代码前必须厘清（§2.5）。
+- **决策**（三条）：
+  1. **分开独立评测**：每个模型各跑一条独立闭环，互不共享经验，公平横向对比各模型天花板。
+     经验归属天然 = 当前模型，无需区分通用/特异。
+  2. **控制变量法自回归**：每轮只变一个维度（prompt/reference_images/size/
+     generation_mode/model_params），`test_variable`+`baseline_ref` 记录，分数变化可归因。
+  3. **逐轮人工审批停止**：收敛不自动判定；每轮 `interrupt()` 暂停，人回复 continue/stop/调方向，
+     `recursion_limit` 作硬上限兜底。
+- **后果**：+经验干净可归因、停止可控、测试方法论清晰；−各模型从零学成本×N、人工每轮介入。
+  Generator 系统提示词骨架见 §2.5.4。
 
 ---
 
