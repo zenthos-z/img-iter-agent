@@ -1,0 +1,41 @@
+{
+  "sample_id": "s002",
+  "product": "弧形软包双人床（浅绿仿皮）",
+  "category": "bed",
+
+  "task": {
+    "mode": "image_edit",
+    "input_assets": ["target.jpg"],
+    "instruction": "保持床和床垫完全不变（弧形床头板、浅绿仿皮材质与颜色、软包质感、绗缝床垫），仅将背景（墙面、窗户、床头柜、衣柜）替换为纯白背景。产品不得有任何修改。",
+    "output": {
+      "view": "keep_original",
+      "background": "white",
+      "size": "2K"
+    }
+  },
+
+  "constraints": {
+    "must_keep": [
+      "弧形拼接床头板形状",
+      "浅绿色仿皮颜色（易被改色，重点）",
+      "软包仿皮质感与缝线包边",
+      "白色床垫及菱形绗缝",
+      "床的整体结构"
+    ],
+    "may_change": [
+      "背景（必须变纯白）",
+      "配套床头柜/衣柜（去白底时一并移除或保留，以床为唯一主体）",
+      "光影阴影（按白底图重打）"
+    ],
+    "must_avoid": [
+      "床头板变平直",
+      "浅绿色变成灰/白/其他色（色差）",
+      "软包变塑料/硬质",
+      "床垫绗缝消失",
+      "家具悬浮不接地",
+      "床结构缺失"
+    ]
+  },
+
+  "anchor_for": ["material_texture", "color_accuracy", "product_structure"]
+}

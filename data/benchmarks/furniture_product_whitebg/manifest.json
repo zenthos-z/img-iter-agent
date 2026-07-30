@@ -65,5 +65,27 @@
   "comparative_dims": ["material_texture", "color_accuracy"],
   "comparative_dims_note": "对比型维度必须用产品实物参考图作锚评；其余为绝对型维度，单看生成图即可评。",
 
-  "samples": []
+  "samples": [
+    {
+      "sample_id": "s001",
+      "product": "欧式白色雕花双人床",
+      "category": "bed",
+      "target": "samples/s001/target.jpg",
+      "difficulty_note": "高——雕花细节最易丢失，弧形结构易变平直"
+    },
+    {
+      "sample_id": "s002",
+      "product": "弧形软包双人床（浅绿仿皮）",
+      "category": "bed",
+      "target": "samples/s002/target.jpg",
+      "difficulty_note": "高——浅绿仿皮颜色易被改色，软包质感易变塑料"
+    },
+    {
+      "sample_id": "s003",
+      "product": "折叠便携躺椅（金属+织物）",
+      "category": "lounger",
+      "target": "samples/s003/target.jpg",
+      "difficulty_note": "中——折叠结构独特，验证非床品类多样性"
+    }
+  ]
 }

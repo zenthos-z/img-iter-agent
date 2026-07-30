@@ -1,0 +1,40 @@
+{
+  "sample_id": "s003",
+  "product": "折叠便携躺椅（金属+织物）",
+  "category": "lounger",
+
+  "task": {
+    "mode": "image_edit",
+    "input_assets": ["target.jpg"],
+    "instruction": "保持折叠躺椅完全不变（折叠框架结构、金属框颜色、深灰织物床面、织物纹理），仅将背景（墙面、窗帘、地板、插座）替换为纯白背景。产品不得有任何修改。",
+    "output": {
+      "view": "keep_original",
+      "background": "white",
+      "size": "2K"
+    }
+  },
+
+  "constraints": {
+    "must_keep": [
+      "折叠框架结构（关节/斜撑，最易变形，重点）",
+      "长条形整体形态",
+      "深灰/蓝灰织物颜色",
+      "织物编织纹理",
+      "浅米色金属框架颜色与质感"
+    ],
+    "may_change": [
+      "背景（必须变纯白）",
+      "光影阴影（按白底图重打）"
+    ],
+    "must_avoid": [
+      "折叠结构变形为普通床腿",
+      "长条形态变短/变方",
+      "织物颜色偏色",
+      "织物纹理变光滑塑料面",
+      "金属框质感丢失",
+      "悬浮不接地"
+    ]
+  },
+
+  "anchor_for": ["material_texture", "color_accuracy", "product_structure"]
+}

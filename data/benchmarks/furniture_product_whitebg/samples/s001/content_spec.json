@@ -1,0 +1,41 @@
+{
+  "sample_id": "s001",
+  "product": "欧式白色雕花双人床",
+  "category": "bed",
+
+  "task": {
+    "mode": "image_edit",
+    "input_assets": ["target.jpg"],
+    "instruction": "保持床和床垫完全不变（结构、材质、颜色、雕花细节），仅将背景（墙面、窗户、地板、床头柜、装饰画）替换为纯白背景。产品不得有任何修改。",
+    "output": {
+      "view": "keep_original",
+      "background": "white",
+      "size": "2K"
+    }
+  },
+
+  "constraints": {
+    "must_keep": [
+      "弧形床头板形状",
+      "床头板雕花装饰（最易丢失，重点）",
+      "纯白漆面颜色",
+      "四条床腿与床框结构",
+      "床垫浅米色与绗缝纹理"
+    ],
+    "may_change": [
+      "背景（必须变纯白）",
+      "光影（可按白底图重打光）",
+      "阴影（白底图标准柔和投影）"
+    ],
+    "must_avoid": [
+      "床头板变平直（失去弧形）",
+      "雕花变平滑/消失",
+      "白色发黄发灰（色差）",
+      "床腿穿模或缺失",
+      "家具悬浮不接地",
+      "材质变塑料感"
+    ]
+  },
+
+  "anchor_for": ["material_texture", "color_accuracy", "product_structure"]
+}
