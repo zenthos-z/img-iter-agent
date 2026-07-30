@@ -1,0 +1,69 @@
+{
+  "bench_id": "furniture_product_whitebg",
+  "version": "1.0.0",
+  "scene": "家具跨境电商 · 白底产品图（产品还原度导向）",
+  "description": "首个 benchmark：聚焦白底家具产品图的还原度。AI 出图最易在结构/比例/材质/颜色翻车，参考锚=用户提供的产品实物图。场景融合类指标(场景图适用)在本 benchmark 权重归零。",
+
+  "scene_type": "product_whitebg",
+  "target_platforms": ["亚马逊", "Wayfair", "Walmart", "独立站"],
+
+  "score_dimensions": [
+    {
+      "dim": "product_structure",
+      "desc": "产品结构准确性：部件数/位置/形态正确，无缺失/重复/穿模（如椅子腿数、抽屉把手、沙发靠背）",
+      "weight_init": 0.20,
+      "ref_needed": false,
+      "category": "absolute"
+    },
+    {
+      "dim": "proportion",
+      "desc": "比例准确性：各部件尺寸比例协调（桌腿粗细、椅背高度、沙发坐深），无失调",
+      "weight_init": 0.15,
+      "ref_needed": false,
+      "category": "absolute"
+    },
+    {
+      "dim": "material_texture",
+      "desc": "材质/纹理还原：木纹/金属/布艺/皮革/藤编等材质正确且真实，对比产品实物参考图",
+      "weight_init": 0.22,
+      "ref_needed": true,
+      "category": "comparative"
+    },
+    {
+      "dim": "color_accuracy",
+      "desc": "颜色一致性：与产品实物无色差（电商退货主因），对比产品实物参考图",
+      "weight_init": 0.15,
+      "ref_needed": true,
+      "category": "comparative"
+    },
+    {
+      "dim": "artifact_defect",
+      "desc": "无瑕疵：无变形/失真/模糊/伪影/拼接痕（越高越干净）",
+      "weight_init": 0.13,
+      "ref_needed": false,
+      "category": "absolute"
+    },
+    {
+      "dim": "scene_integration",
+      "desc": "场景融合：[白底图本项不适用] 家具与场景的透视/光影/接地阴影",
+      "weight_init": 0.00,
+      "ref_needed": false,
+      "category": "absolute",
+      "note": "白底产品图不评测；场景图 benchmark 启用"
+    },
+    {
+      "dim": "commercial_focus",
+      "desc": "商业可用：主体突出、白底干净、构图留白符合平台规范、整体审美",
+      "weight_init": 0.15,
+      "ref_needed": false,
+      "category": "absolute"
+    }
+  ],
+
+  "weight_note": "权重为初始先验，会被评分校准闭环(§2.6)持续优化。家具电商以材质(0.22)+结构(0.20)为核心，颜色(0.15)防退货，瑕疵(0.13)保底线；白底图场景融合归零，商业可用补齐。",
+
+  "comparative_dims": ["material_texture", "color_accuracy"],
+  "comparative_dims_note": "对比型维度必须用产品实物参考图作锚评；其余为绝对型维度，单看生成图即可评。",
+
+  "samples": []
+}

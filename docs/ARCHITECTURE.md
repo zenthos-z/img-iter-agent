@@ -625,6 +625,59 @@ data/
 - **闭环B**（离线/异步）：用人工评分校准 Critic 的维度权重，提升 agent 判断准确率。
 - **三层分离**保证：原始轨迹不可变 → 任何分析都能 100% 复现；benchmark 独立 → 方便定制接入。
 
+### 3.6 首个 benchmark：家具跨境电商白底产品图（用户指定，已落地）
+
+> 用户要求把"这个场景下需要的图片指标"作为第一个迭代目标。场景源自真实 AIGC 视觉工程师 JD
+> （家具/跨境电商），其任职要求第4条"关注产品结构、比例、材质、纹理，对变形/失真/材质不准提出优化"
+> 已直接点明核心指标。**已落地为 `data/benchmarks/furniture_product_whitebg/`**。
+
+#### 3.6.1 场景为什么适合做第一个 benchmark
+
+- **产品即主角**：家具白底图是强结构、强材质、严比例的品类，AI 翻车点最典型、最易归因；
+- **参考图易得**：用户提供产品实物图即可作材质/颜色的对比锚；
+- **指标收敛**：白底图去掉场景融合维度，Critic 评得更准、闭环验证更干净；
+- **商业价值高**：直接对应家具电商详情页主图/SKU 图的还原度痛点（色差=退货）。
+
+#### 3.6.2 指标体系（7 维度，已写入 manifest.json）
+
+| 维度 | 权重 | 类型 | 评什么 | 家具场景的典型扣分 |
+|------|------|------|--------|---------------------|
+| `material_texture` 材质纹理 | **0.22** | 对比型 | 材质正确真实，对比实物图 | 金属画成塑料、木纹糊/重复 |
+| `product_structure` 产品结构 | **0.20** | 绝对型 | 部件数/位置/形态正确 | 椅子少腿、把手位置错、穿模 |
+| `proportion` 比例 | 0.15 | 绝对型 | 各部件比例协调 | 桌腿过粗、椅背过高、坐深失调 |
+| `color_accuracy` 颜色一致性 | 0.15 | 对比型 | 与实物无色差（退货主因） | 偏色、饱和异常、色块不均 |
+| `artifact_defect` 无瑕疵 | 0.13 | 绝对型 | 无变形/失真/伪影 | 直线变弯、不对称、悬浮 |
+| `commercial_focus` 商业可用 | 0.15 | 绝对型 | 主体突出、白底干净、构图合规 | 主体偏移、留白不当 |
+| `scene_integration` 场景融合 | 0.00 | — | 白底图不评测 | 场景图 benchmark 启用 |
+
+**两类指标的关键区分**（影响 Critic 怎么评、benchmark 怎么建）：
+- **对比型**（`material_texture`/`color_accuracy`）：必须有产品实物参考图作锚，Critic **对照参考图**打分；
+- **绝对型**（其余）：单看生成图即可评。
+
+> 权重是**初始先验**（材质+结构是家具命根子故权重最高），会被 §2.6 校准闭环持续优化。
+
+#### 3.6.3 benchmark 落地结构（已建）
+
+```
+data/benchmarks/furniture_product_whitebg/
+├── manifest.json              # 7 维度 + 权重先验 + 对比型标记
+├── rubric.md                  # 评分细则（给人读，含扣分点 + samples 约定）
+└── samples/
+    └── _TEMPLATE/             # 样例模板：复制为 s001/s002/...
+        └── content_spec.json  # 含 must_keep/may_change/must_avoid 约束
+```
+
+**待用户准备**（不阻塞代码骨架）：产品实物图 `samples/sNNN/target.png` +
+对应 `target.md`（结构/材质/颜色说明）+ `content_spec.json`（要生成什么）。
+
+#### 3.6.4 对系统设计的影响
+
+- Critic 评分逻辑须区分**对比型/绝对型**：对比型维度需同时喂"生成图+参考图"给多模态 LLM；
+- `GenRequest` 已有 `reference_images`，正好承载产品实物图（对比锚）——风格锚定与还原度评判
+  **复用同一张参考图**，设计自洽；
+- 控制变量法（§2.5.2）的 `test_variable` 现在有明确候选：prompt 措辞、视角、参考图选择、
+  size、generation_mode（单图编辑/多图融合）——首轮可固定"用产品图做 image_edit 还原"。
+
 ---
 
 ## 4. 技术栈选型（已按用户决策收敛）
@@ -839,8 +892,9 @@ src/img_iter_agent/
 1. **各模型具体 dmxapi model id**：用户指定（不同版本价格不同）。当前候选：
    seedream-5.0-pro / gpt-image-2 / gemini-3.1-flash-image / qwen-image-2.0。
    做成 config，用户填 `model_id` 字段。
-2. **benchmark 评分维度 + 初始权重**：用户准备/定制（§3.5.2）。需确定：评哪些维度
-   （色彩/笔触/构图/内容/瑕疵…）、各维度先验权重、验收 checklist、目标参考图。
+2. **首个 benchmark 待用户填料**（§3.6，框架已建）：往 `data/benchmarks/furniture_product_whitebg/samples/`
+   放产品实物图 `target.png` + 写 `target.md`（结构/材质/颜色说明）+ `content_spec.json`。
+   7 维度 + 权重已定，可后续被校准。
 3. **预算/规模**：单次迭代大致预算上限？决定每轮 batch 与 judge 数量。
 4. **qwen-image 能力待实测**：写 dispatcher 时探测其是否支持 edits/多图，再决定是否纳入。
 5. **评判 provider**：Critic 默认 Gemini（经 dmxapi）；是否叠加第二 judge？
