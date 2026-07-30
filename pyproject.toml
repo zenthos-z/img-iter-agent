@@ -8,12 +8,10 @@ license = { text = "MIT" }
 authors = [{ name = "zenthos-z" }]
 
 dependencies = [
-    # --- 实际依赖在技术栈定稿后填入 (见 docs/ARCHITECTURE.md) ---
-    # 候选: openai / anthropic / google-genai (LLM + 多模态评判)
-    # 候选: diffusers, transformers, torch, accelerate (本地生图)
-    # 候选: langgraph (agent 编排)
-    # 候选: chromadb / qdrant-client (记忆向量库)
-    # 候选: pillow, pydantic, pydantic-settings, httpx, tenacity
+    # 基础层 (Step 1, 无网络可测)
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    # 后续步骤填入: langgraph / langchain-openai / httpx / tenacity / pillow / scikit-learn / pandas / matplotlib
 ]
 
 [project.optional-dependencies]
