@@ -7,63 +7,72 @@
   "scene_type": "product_whitebg",
   "target_platforms": ["亚马逊", "Wayfair", "Walmart", "独立站"],
 
+  "scoring_method": "hybrid_with_rank_calibration",
+  "scoring_note": "混合评分(二分+连续) + 排序校准。客观维度(一致性/结构/瑕疵/商业)用二分✓/✗→通过率; 渐变维度(材质/颜色)用LLM连续分(承认偏差)。每维度产出∈[0,1], 还原度=w·features。权重w不靠人工逐项打分, 而靠人工对trace排序(人擅长)→learning-to-rank拟合, 天然修正LLM连续分偏差。详见 docs/EVALUATION.md。",
+
   "score_dimensions": [
     {
-      "dim": "product_structure",
-      "desc": "产品结构准确性：部件数/位置/形态正确，无缺失/重复/穿模（如椅子腿数、抽屉把手、沙发靠背）",
-      "weight_init": 0.20,
-      "ref_needed": false,
-      "category": "absolute"
+      "dim": "consistency",
+      "desc": "三视图跨张一致性(三视图任务特有,重点)：三张是同一产品/同色/几何比例一致",
+      "weight_init": 0.25,
+      "ref_needed": true,
+      "scoring_type": "binary",
+      "check_items": ["C1 三视图是同一产品", "C2 三视图颜色一致", "C3 侧视宽=正视宽(几何一致)", "C4 各视图高度比例一致"]
     },
     {
-      "dim": "proportion",
-      "desc": "比例准确性：各部件尺寸比例协调（桌腿粗细、椅背高度、沙发坐深），无失调",
-      "weight_init": 0.15,
-      "ref_needed": false,
-      "category": "absolute"
+      "dim": "product_structure",
+      "desc": "产品结构(每张视图各自评)：部件数/位置/形态正确,无缺失/重复/穿模",
+      "weight_init": 0.22,
+      "ref_needed": true,
+      "scoring_type": "binary",
+      "check_items": ["S1 部件数量与参考一致", "S2 无部件穿模/重叠", "S3 无部件缺失", "S4 关键形态正确(如弧形/折叠结构)"]
     },
     {
       "dim": "material_texture",
-      "desc": "材质/纹理还原：木纹/金属/布艺/皮革/藤编等材质正确且真实，对比产品实物参考图",
-      "weight_init": 0.22,
+      "desc": "材质还原度(对照参考)：材质类型正确且还原程度高。渐变量,用LLM连续分(有偏差,由排序校准吸收)",
+      "weight_init": 0.18,
       "ref_needed": true,
-      "category": "comparative"
+      "scoring_type": "continuous",
+      "rubric_ref": "rubric.md#材质纹理",
+      "note": "连续型: LLM给0-1分(材质类型对否+纹理还原程度), 偏差由排序校准的权重吸收"
     },
     {
       "dim": "color_accuracy",
-      "desc": "颜色一致性：与产品实物无色差（电商退货主因），对比产品实物参考图",
-      "weight_init": 0.15,
+      "desc": "颜色准确度(对照参考)：与产品实物的色差程度。渐变量,用LLM连续分(有偏差,由排序校准吸收)",
+      "weight_init": 0.13,
       "ref_needed": true,
-      "category": "comparative"
+      "scoring_type": "continuous",
+      "rubric_ref": "rubric.md#颜色一致",
+      "note": "连续型: LLM给0-1分(色差大小), 偏差由排序校准的权重吸收"
     },
     {
       "dim": "artifact_defect",
-      "desc": "无瑕疵：无变形/失真/模糊/伪影/拼接痕（越高越干净）",
-      "weight_init": 0.13,
+      "desc": "无瑕疵(每张各自评)：无变形/失真/模糊/伪影/悬浮",
+      "weight_init": 0.12,
       "ref_needed": false,
-      "category": "absolute"
-    },
-    {
-      "dim": "scene_integration",
-      "desc": "场景融合：[白底图本项不适用] 家具与场景的透视/光影/接地阴影",
-      "weight_init": 0.00,
-      "ref_needed": false,
-      "category": "absolute",
-      "note": "白底产品图不评测；场景图 benchmark 启用"
+      "scoring_type": "binary",
+      "check_items": ["A1 直线无弯曲", "A2 对称结构对称", "A3 无模糊/拼接痕", "A4 家具接地有阴影(不悬浮)"]
     },
     {
       "dim": "commercial_focus",
-      "desc": "商业可用：主体突出、白底干净、构图留白符合平台规范、整体审美",
-      "weight_init": 0.15,
+      "desc": "商业可用(每张各自评)：主体突出/白底干净/构图合规",
+      "weight_init": 0.10,
       "ref_needed": false,
-      "category": "absolute"
+      "scoring_type": "binary",
+      "check_items": ["B1 主体居中突出", "B2 背景纯白干净", "B3 留白构图符合平台规范"]
     }
   ],
 
-  "weight_note": "权重为初始先验，会被评分校准闭环(§2.6)持续优化。家具电商以材质(0.22)+结构(0.20)为核心，颜色(0.15)防退货，瑕疵(0.13)保底线；白底图场景融合归零，商业可用补齐。",
+  "weight_note": "二分版权重(初始先验,由校准闭环优化)。任务改为三视图后, 跨张一致性(0.25)成为最重维度(三视图核心质量); 结构(0.22)与材质(0.18)次之; 颜色(0.13)防退货; 瑕疵(0.12)保底; 商业(0.10)。原 scene_integration 场景融合维度在三视图白底任务中删除(不适用)。",
 
-  "comparative_dims": ["material_texture", "color_accuracy"],
-  "comparative_dims_note": "对比型维度必须用产品实物参考图作锚评；其余为绝对型维度，单看生成图即可评。",
+  "comparative_dims": ["consistency", "product_structure", "material_texture", "color_accuracy"],
+  "comparative_dims_note": "三视图任务下, 多数维度需对照参考图作锚判(consistency 跨张对照、结构/材质/颜色对照 target)。仅 artifact_defect / commercial_focus 为绝对型(单看生成图)。",
+
+  "task": {
+    "type": "three_view_whitebg",
+    "views": ["front", "side", "perspective"],
+    "views_note": "工业标准三视图：正视图(正面平视)+侧视图(90°侧面平视)+立体图(45°斜侧)。三张须同一产品/同色/同比例。"
+  },
 
   "samples": [
     {
@@ -71,21 +80,21 @@
       "product": "欧式白色雕花双人床",
       "category": "bed",
       "target": "samples/s001/target.jpg",
-      "difficulty_note": "高——雕花细节最易丢失，弧形结构易变平直"
+      "difficulty_note": "高——雕花细节最易在三视图中丢失/不一致, 弧形结构侧视图难还原"
     },
     {
       "sample_id": "s002",
       "product": "弧形软包双人床（浅绿仿皮）",
       "category": "bed",
       "target": "samples/s002/target.jpg",
-      "difficulty_note": "高——浅绿仿皮颜色易被改色，软包质感易变塑料"
+      "difficulty_note": "高——浅绿仿皮三视图易色差/不一致, 软包侧视图易变塑料"
     },
     {
       "sample_id": "s003",
       "product": "折叠便携躺椅（金属+织物）",
       "category": "lounger",
       "target": "samples/s003/target.jpg",
-      "difficulty_note": "中——折叠结构独特，验证非床品类多样性"
+      "difficulty_note": "中——折叠结构三视图几何一致性是难点, 验证非床品类"
     }
   ]
 }

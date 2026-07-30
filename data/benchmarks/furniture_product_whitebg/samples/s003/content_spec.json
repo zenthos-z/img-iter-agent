@@ -6,35 +6,61 @@
   "task": {
     "mode": "image_edit",
     "input_assets": ["target.jpg"],
-    "instruction": "保持折叠躺椅完全不变（折叠框架结构、金属框颜色、深灰织物床面、织物纹理），仅将背景（墙面、窗帘、地板、插座）替换为纯白背景。产品不得有任何修改。",
+    "instruction": "以该图为参考产品,生成同一把躺椅的三个视角白底素材图:正视图、侧视图(90°)、立体图(45°)。三张必须是同一产品、同色、同比例,纯白背景。",
     "output": {
-      "view": "keep_original",
+      "views": ["front", "side", "perspective"],
       "background": "white",
       "size": "2K"
     }
   },
 
   "constraints": {
-    "must_keep": [
-      "折叠框架结构（关节/斜撑，最易变形，重点）",
-      "长条形整体形态",
-      "深灰/蓝灰织物颜色",
-      "织物编织纹理",
-      "浅米色金属框架颜色与质感"
+    "must_keep": ["折叠框架结构(关节/斜撑)", "长条形整体形态", "深灰/蓝灰织物", "浅米色金属框"],
+    "may_change": ["背景(纯白)", "光影"],
+    "must_avoid": ["折叠结构变形为普通床腿", "长条形态变短变方", "织物变光滑塑料", "三视图不一致"]
+  },
+
+  "checklist": {
+    "consistency": [
+      {"id": "C1", "check": "三视图是同一把躺椅"},
+      {"id": "C2", "check": "三视图织物深灰色一致"},
+      {"id": "C3", "check": "侧视图长度=正视图长度(长条形态一致)"},
+      {"id": "C4", "check": "三视图高度/折叠角度比例一致"}
     ],
-    "may_change": [
-      "背景（必须变纯白）",
-      "光影阴影（按白底图重打）"
+    "product_structure": [
+      {"id": "S1", "check": "折叠关节/斜撑结构保留", "anchor": "对照 target"},
+      {"id": "S2", "check": "无部件穿模/重叠"},
+      {"id": "S3", "check": "无部件缺失"},
+      {"id": "S4", "check": "仍是长条折叠形态(非普通床)", "anchor": "对照 target"}
     ],
-    "must_avoid": [
-      "折叠结构变形为普通床腿",
-      "长条形态变短/变方",
-      "织物颜色偏色",
-      "织物纹理变光滑塑料面",
-      "金属框质感丢失",
-      "悬浮不接地"
+    "material_texture": {
+      "_scoring": "continuous: LLM对这些点整体给0-1还原度分(有偏差,排序校准吸收权重)",
+      "points": [
+        "金属框架质感(非塑料)",
+        "织物有编织纹理(非光滑面)",
+        "织物绷紧无褶皱失真"
+      ]
+    },
+    "color_accuracy": {
+      "_scoring": "continuous: LLM对这些点整体给0-1准确度分(有偏差,排序校准吸收权重)",
+      "points": [
+        "框架浅米色(与参考一致)",
+        "织物深灰/蓝灰未偏色",
+        "三张色块均匀一致"
+      ]
+    },
+    "artifact_defect": [
+      {"id": "A1", "check": "框架金属件无变形"},
+      {"id": "A2", "check": "折叠结构左右对称(应对称处)"},
+      {"id": "A3", "check": "无模糊/拼接痕"},
+      {"id": "A4", "check": "家具接地有阴影(不悬浮)"}
+    ],
+    "commercial_focus": [
+      {"id": "B1", "check": "主体居中突出"},
+      {"id": "B2", "check": "背景纯白干净"},
+      {"id": "B3", "check": "留白构图符合电商规范"}
     ]
   },
 
-  "anchor_for": ["material_texture", "color_accuracy", "product_structure"]
+  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy"]
 }

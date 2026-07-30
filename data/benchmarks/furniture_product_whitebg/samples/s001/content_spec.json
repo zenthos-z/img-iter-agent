@@ -6,36 +6,61 @@
   "task": {
     "mode": "image_edit",
     "input_assets": ["target.jpg"],
-    "instruction": "保持床和床垫完全不变（结构、材质、颜色、雕花细节），仅将背景（墙面、窗户、地板、床头柜、装饰画）替换为纯白背景。产品不得有任何修改。",
+    "instruction": "以该图为参考产品,生成同一张床的三个视角白底素材图:正视图(正面平视)、侧视图(90°侧面平视)、立体图(45°斜侧)。三张必须是同一产品、同色、同比例,纯白背景。",
     "output": {
-      "view": "keep_original",
+      "views": ["front", "side", "perspective"],
       "background": "white",
       "size": "2K"
     }
   },
 
   "constraints": {
-    "must_keep": [
-      "弧形床头板形状",
-      "床头板雕花装饰（最易丢失，重点）",
-      "纯白漆面颜色",
-      "四条床腿与床框结构",
-      "床垫浅米色与绗缝纹理"
+    "must_keep": ["弧形床头板形状", "床头板雕花装饰", "纯白漆面", "四条床腿与床框结构", "床垫浅米色与绗缝"],
+    "may_change": ["背景(纯白)", "光影(白底标准打光)"],
+    "must_avoid": ["床头板变平直", "雕花消失或糊化", "白色发黄发灰", "床腿穿模缺失", "三视图不一致"]
+  },
+
+  "checklist": {
+    "consistency": [
+      {"id": "C1", "check": "三视图是同一张床"},
+      {"id": "C2", "check": "三视图白色一致"},
+      {"id": "C3", "check": "侧视图床宽=正视图床宽"},
+      {"id": "C4", "check": "三视图高度比例一致"}
     ],
-    "may_change": [
-      "背景（必须变纯白）",
-      "光影（可按白底图重打光）",
-      "阴影（白底图标准柔和投影）"
+    "product_structure": [
+      {"id": "S1", "check": "床头板+床框+四腿结构齐全", "anchor": "对照 target"},
+      {"id": "S2", "check": "无部件穿模/重叠"},
+      {"id": "S3", "check": "无部件缺失"},
+      {"id": "S4", "check": "床头板仍是弧形(非平直)", "anchor": "对照 target"}
     ],
-    "must_avoid": [
-      "床头板变平直（失去弧形）",
-      "雕花变平滑/消失",
-      "白色发黄发灰（色差）",
-      "床腿穿模或缺失",
-      "家具悬浮不接地",
-      "材质变塑料感"
+    "material_texture": {
+      "_scoring": "continuous: LLM对这些点整体给0-1还原度分(有偏差,排序校准吸收权重)",
+      "points": [
+        "白色实木漆面质感(非塑料光泽)",
+        "雕花纹样有细节(非平滑)",
+        "床垫有绗缝纹理"
+      ]
+    },
+    "color_accuracy": {
+      "_scoring": "continuous: LLM对这些点整体给0-1准确度分(有偏差,排序校准吸收权重)",
+      "points": [
+        "床架纯白(与参考一致)",
+        "无偏黄/偏灰",
+        "床垫浅米色一致"
+      ]
+    },
+    "artifact_defect": [
+      {"id": "A1", "check": "床框直线无弯曲"},
+      {"id": "A2", "check": "左右对称结构对称"},
+      {"id": "A3", "check": "无模糊/拼接痕"},
+      {"id": "A4", "check": "家具接地有阴影(不悬浮)"}
+    ],
+    "commercial_focus": [
+      {"id": "B1", "check": "主体居中突出"},
+      {"id": "B2", "check": "背景纯白干净"},
+      {"id": "B3", "check": "留白构图符合电商规范"}
     ]
   },
 
-  "anchor_for": ["material_texture", "color_accuracy", "product_structure"]
+  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy"]
 }
