@@ -29,6 +29,8 @@ data/outputs/*
 !data/outputs/.gitkeep
 data/runs/*
 !data/runs/.gitkeep
+data/lessons/*
+!data/lessons/.gitkeep
 
 # Large models / checkpoints (never commit)
 *.safetensors

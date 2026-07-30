@@ -5,7 +5,8 @@
 >
 > **关键决策（已定）**：生图后端 = **dmxapi 聚合 API**（实测分 4 个协议族：OpenAI Images / 豆包 Responses /
 > Qwen Responses / Gemini 原生）；风格锚定 = **纯参考图**（主力 seedream-5.0 + gpt-image-2）；
-> 记忆 = **最简 JSON 文件**（按 §3.3 字段）；图片 = **文件路径**（不存 base64，§3.4）。
+> 记忆 = **双层载体：经验 MD + JSON 索引**（不引向量库，全用文件链接，§3.3）；
+> 图片 = **文件路径**（不存 base64，§3.4）。
 > 核心难点 = 屏蔽 dmxapi 四个协议族的接口差异（§4.2）。
 
 ---
@@ -35,12 +36,12 @@
 ## 1. 核心机制：把 GAN 思想搬到 Agent 层
 
 用户说"生成对抗总结自我迭代"，这其实是一个非常具体的范式——
-**不要训练两个神经网络，而是用两个 LLM agent 在「经验库」上博弈**：
+**不要训练两个神经网络，而是用两个 LLM agent 在「经验」上博弈**：
 
 ```
                   ┌─────────────────────────────────────────────────┐
                   │            风格条件（锚定 G1，见 §4.2）            │
-                  │  参考图 → IP-Adapter/LoRA/ControlNet 风格嵌入      │
+                  │  参考图 → 各协议族风格迁移（seedream/gpt/gemini）    │
                   └───────────────────────┬─────────────────────────┘
                                           │ 稳定不变
                                           ▼
@@ -50,30 +51,36 @@
    │（改prompt│ ◀────────── │（本轮产物）│ ◀─── 取最好/最差 ───┤（多模态 │
    │+内容采样)│   经验反馈   └──────────┘                  │ 打分)    │
    └────┬─────┘             └─────▲────┘                  └────┬─────┘
-        │                         │                            │
-        │   prompt 修改建议         │                            │ 打分维度+理由
-        ▼                         │ 写入                        ▼
-   ┌──────────┐                   │                   ┌──────────────┐
-   │ Summarizer│                  │                   │ Memory Store │
-   │  Agent    │──── 经验条目 ────▶│                   │（向量库+结构化）│
-   │（归纳跨轮 │                   └───────────────────│ 跨轮累积      │
-   │ 规律）    │                                       └──────────────┘
-   └──────────┘                                             ▲
-        │                                                   │ 检索相关经验
-        └───────────────────────────────────────────────────┘
+        │                         │                            │ 打分维度+理由
+        │   prompt 修改建议         │                           │
+        ▼                         │                            ▼
+   ┌──────────┐                   │            ┌───────────────────────────────┐
+   │ Summarizer│                  │            │  Memory（双层载体，全用文件链接）│
+   │  Agent    │──── 写经验 ──────┼───────────▶│  • 经验 = Markdown（给人读）   │
+   │（归纳跨轮 │                  │            │  • 索引 = JSON（参数/版本整理） │
+   │ 规律）    │                  │            │  • 素材(图/MD) 都用路径互链     │
+   └──────────┘                  │            └───────────────┬───────────────┘
+        │                        │                            │ 读经验MD + JSON筛选
+        └────────────────────────┴────────────────────────────┘
                        每轮开始时注入 Generator/Critic
 ```
 
+> **记忆设计原则（用户明确）：不引向量库。** 用**双层载体**：
+> - **经验写 Markdown**——可丰富、给人读、Summarizer 自然语言归纳；
+> - **JSON 只做参数/版本的整理索引**——记录每次尝试的 model/mode/params/scores，并指向素材文件；
+> - **JSON 条目和经验 MD 互相用文件链接引用**，不复制内容（图片更是只存路径，见 §3.4）。
+
 三个 agent 的职责切分（对应"生成对抗总结"四个字）：
 
-- **Generator（生成方）**：负责 **G2 内容可变**。从内容空间采样新主题，结合 Memory 检索到的
-  经验，产出 prompt 并调用生图模型。
+- **Generator（生成方）**：负责 **G2 内容可变**。从内容空间采样新主题，读相关经验 MD +
+  JSON 筛选出的高分先例，产出 prompt 并调用生图模型。
 - **Critic（对抗评判方）**：多模态 LLM 看图打分。**关键设计：评判时同时给"风格一致性"和
   "内容质量"两个分**——前者强约束 G1，后者驱动 G2/G3。这一"对抗"压力倒逼 Generator 改进。
-- **Summarizer（总结方）**：跨轮归纳。把零散的"Critic 评分理由"抽象成可复用的经验条目
-  （"用 XX 笔触描述时风格漂移，应改用 YY"），写回 Memory，让系统真正"越跑越好"。
+- **Summarizer（总结方）**：跨轮归纳。把零散的"Critic 评分理由"抽象成可复用的经验
+  **写进 Markdown**（"用 XX 笔触描述时风格漂移，应改用 YY"），并在 JSON 索引里登记指向该 MD，
+  让系统真正"越跑越好"。
 
-> 这就是"自我对抗总结自我迭代"：对抗(Critic) → 总结(Summarizer) → 自我迭代(下一轮 Generator 读 Memory)。
+> 这就是"自我对抗总结自我迭代"：对抗(Critic) → 总结(Summarizer 写 MD) → 自我迭代(下一轮 Generator 读 MD+JSON)。
 
 ---
 
@@ -82,12 +89,12 @@
 ```
 for round t in 1..T:
     1. [内容采样]   Generator 从主题空间采一批新内容（保证"内容可变"）
-    2. [经验检索]   从 Memory 检索与当前内容/历史失败相关的经验条目
-    3. [生成]       prompt = f(内容, 经验, 固定风格描述)
-                    images  = 生图模型(prompt, 风格条件嵌入)   # 风格锚定见 §4.2
+    2. [经验召回]   按 model/mode/scores 用 JSON 筛出相关先例 → 读其指向的经验 MD
+    3. [生成]       prompt = f(内容, 经验MD, 固定风格描述)
+                    images  = 生图模型(prompt, 参考图)   # 风格锚定见 §4.2
     4. [评判]       Critic 对每张图打 style_score / content_score / 总分，给批评
-    5. [筛选]       选 top-k 进 Memory 的"标杆池"；选 worst-k 做"反面教材"
-    6. [总结]       Summarizer 看本轮 + 历史，提炼新经验条目入 Memory
+    5. [筛选]       选 top-k 进"标杆"；选 worst-k 做"反面教材"
+    6. [总结]       Summarizer 看本轮 + 历史，提炼新经验写进 MD；JSON 登记索引
     7. [收敛判定]   若平均 style_score ≥ 阈值 且 内容多样性达标 → 停；否则下一轮
 ```
 
@@ -143,95 +150,129 @@ for round t in 1..T:
 
 ### 3.3 难点 C：Memory 记录（最简 JSON，按用户要求设计字段）
 
-自我迭代靠 Memory 积累经验。**按用户要求：现阶段只用最基本的 JSON 文件记录**（不引向量库/
-SQLite），核心是设计好字段结构，让记录既给人看、又能喂回 agent。
+自我迭代靠 Memory 积累经验。**按用户要求：不引向量库/SQLite，用双层载体**——
 
-#### 3.3.1 存储形式
+- **经验写 Markdown**（`.md`）：给人读、可写丰富、Summarizer 自然语言归纳的产物；
+- **JSON 只做参数/版本的整理索引**：记录每次尝试的 model/mode/params/scores，**用文件链接**
+  指向素材（图片、经验 MD），不复制内容；
+- **图片、经验 MD 都用文件链接**串起来，绝不在 JSON 里塞 base64 或长正文。
 
-- 单一 JSON 文件（或按迭代分文件 `data/runs/<run_id>/memory.json`），人类可读、可手改。
-- 每个**生图尝试**是一条记录（这是最小、最关键的记录单元），迭代中累积成数组。
+#### 3.3.1 目录结构（一次 run 的记忆布局）
 
-#### 3.3.2 生图尝试记录字段（核心 schema）
+```
+data/runs/<run_id>/
+├── index.json            # ← 索引：每次生图尝试一条记录（参数/版本/打分/链接）
+├── lessons/              # ← 经验库：每个经验一篇 Markdown
+│   ├── 001-style-drift-on-multi-ref.md
+│   └── 002-seedream-vs-gpt-color-matching.md
+├── out/                  # ← 生成图（文件，路径被 index.json 引用）
+│   ├── try_00017_1.png
+│   └── ...
+└── ref/                  # ← 本次用到的参考图副本（或软链到 data/reference）
+```
+
+**核心关系**：`index.json` 是枢纽——每条尝试记录都带「图路径 + 经验 MD 路径」的链接；
+经验 MD 也可反向引用 `index.json` 里的尝试 id 作为证据。文件之间互相链接，内容零复制。
+
+#### 3.3.2 index.json：尝试记录字段（只管参数/版本/索引，不存正文）
 
 ```jsonc
 {
   "id": "try_00017",                       // 唯一 id（自增）
   "timestamp": "2026-07-30T15:20:33+08:00",// 尝试时间（ISO 8601）
 
-  // —— 模型与生图方式（你强调要区分的维度）——
+  // —— 模型与生图方式（区分维度，索引/筛选用）——
   "model": "seedream-5.0-pro",             // 模型名（含 ssvip 等后缀）
   "protocol_family": "B",                  // 协议族 A/B/C/D（见 §4.2.1）
-  "generation_mode": "multi_ref_fusion",   // 生图方式：text_to_image / image_edit
-                                           //   / single_ref / multi_ref_fusion
-                                           //   / multi_turn_edit（Gemini 多轮）
-  "endpoint": "/v1/responses",             // 实际端点
+  "generation_mode": "multi_ref_fusion",   // 生图方式枚举：
+                                           //   text_to_image / single_ref /
+                                           //   image_edit / multi_ref_fusion /
+                                           //   multi_turn_edit（Gemini 多轮）
+  "endpoint": "/v1/responses",
 
-  // —— 具体生图输入内容（完整复现所需）——
-  "inputs": {
-    "prompt": "保持水彩风格，把主体换成...",// 提示词/编辑指令（完整原文）
-    "reference_images": [                  // 参考图（文件路径，不用 base64）
-      "data/reference/style_watercolor_01.png",
-      "data/reference/subject_cat.png"
-    ],
-    "conversation_history": [],            // Gemini 多轮改图时的历史图路径
+  // —— 生图参数（参数/版本的整理，JSON 的本职）——
+  "params": {
+    "prompt": "保持水彩风格，把主体换成猫",  // 提示词/编辑指令（短的可直存）
+    "prompt_ref": "prompts/try_00017.md", // 长提示词则单独存 MD，这里只放链接
     "size": "2K",                          // 尺寸（各族格式原样记，便于归因）
-    "params": {                            // 该次调用的全部 API 参数（快照）
-      "quality": "high", "n": 1, "watermark": false,
-      "seed": 12345                        // 能复现的都记
-    },
-    "raw_request": { /* 实际发给 dmxapi 的请求体，去掉密钥 */ }
+    "quality": "high", "n": 1, "seed": 12345, "watermark": false,
+    "raw_request_ref": "requests/try_00017.json" // 原始请求体快照(去密钥)的链接
   },
 
-  // —— 输出（文件路径）——
-  "outputs": [
-    "data/runs/run_001/try_00017_out_1.png"
+  // —— 素材链接（全是文件路径，不存 base64/正文）——
+  "reference_images": [                    // 参考图路径
+    "ref/style_watercolor_01.png",
+    "ref/subject_cat.png"
   ],
+  "outputs": ["out/try_00017_1.png"],      // 生成图路径
 
-  // —— 评判结果（Critic 填，驱动迭代）——
+  // —— 评判（Critic 填，驱动迭代）——
   "scores": {
     "style_consistency": 8.5,              // G1 风格一致性
     "content_quality": 7.0,                // G2 内容质量
     "overall": 7.7
   },
-  "critique": "色彩符合参考，但笔触偏粗...",// Critic 自然语言批评
-  "verdict": "keep",                       // keep / discard / best / worst
+  "verdict": "keep",                       // best / keep / discard / worst
+  "critique_ref": "critiques/try_00017.md",// Critic 批评（较长）存 MD，这里放链接
 
-  // —— 归因与经验（Summarizer 提炼）——
-  "lesson": "seedream 多图融合时，参考图>3张会导致风格平均化，建议≤2张",
-  "source_round": 3,                       // 来自第几轮迭代
-  "confidence": 0.6                        // 置信度，被后续验证则上调
+  // —— 经验链接（指向 lessons/ 下的 MD，可多条）——
+  "lesson_refs": ["lessons/001-style-drift-on-multi-ref.md"],
+  "source_round": 3,
+  "tags": ["multi_ref", "seedream", "style_drift"]   // 便于 JSON 筛选召回
 }
 ```
 
-#### 3.3.3 字段设计要点（呼应你的要求）
+> 设计要点：**JSON 里只有「字段值」或「文件链接」，没有任何大段正文/base64**。长 prompt、
+> Critic 批评、归纳出的经验，都各自落成 MD 文件，JSON 只记路径。
 
-- **区分模型** → `model` + `protocol_family`；
-- **区分生图方式** → `generation_mode` 枚举（直接提示词 / 参考图 / 图片编辑 / 多图融合 / 多轮）；
-- **尝试时间** → `timestamp`；
-- **具体生图输入内容** → `inputs` 全记：API 参数、图片属性参数（size/quality/n/seed）、
-  提示词、参考图（路径）、原始请求体；
-- **图片用文件路径** → `outputs` / `reference_images` 全是路径（见 §3.4），**绝不存 base64**。
+#### 3.3.3 经验 Markdown（lessons/*.md，给人读，可丰富）
 
-#### 3.3.4 迭代时怎么用这份 JSON
+经验是 Summarizer 归纳的可复用知识，写成结构化 MD：
 
-- Generator 每轮开工：读 JSON，筛 `verdict=best/keep` 的高分记录，把 `prompt`/`lesson` 作为
-  few-shot 示例注入新 prompt（"上次这样描述风格得分高，照这个方向"）；
-- Critic 评分后：追加新记录；
-- Summarizer 跨轮：扫 `critique` 字段归纳共性 → 写进相关记录的 `lesson` 字段并上调 `confidence`。
-- 不做向量检索（现阶段）；按 `generation_mode`/`model`/`scores` 做简单 JSON 过滤即可。
+```markdown
+# 001 · seedream 多图融合的风格平均化现象
 
-### 3.4 难点 D：图片一律用文件路径，不存 base64（按用户要求）
+## 现象
+当参考图 >3 张做 multi_ref_fusion 时，输出风格倾向"平均"，
+失去单张参考的鲜明特征。
 
-**约定（贯穿全系统）：任何地方记录/传递图片，都用文件路径，绝不存 base64 字符串。**
+## 证据（指向 index.json 的尝试记录）
+- try_00012（2张参考）：style_consistency 8.7  ← keep
+- try_00015（5张参考）：style_consistency 6.1  ← worst
+- try_00017（2张参考）：style_consistency 8.5  ← keep
 
-- **存盘**：生图后立即把返回的 `b64_json`/`url` 解码下载，存到 `data/runs/<run_id>/`，
-  Memory 里只记路径（如 `outputs` 字段）。这样人可以直接打开图片查看。
+## 结论 / 建议
+风格迁移用 multi_ref_fusion 时，参考图建议 ≤2 张；
+需要更多内容素材时改用 image_edit 逐张改。
+
+## 适用范围
+model: seedream-5.0-* ; mode: multi_ref_fusion
+```
+
+MD 里用尝试 id 引用 `index.json` 作为证据，反向闭环；人也能直接打开图片核对。
+
+#### 3.3.4 迭代时怎么用这套双层记忆
+
+- **召回（筛）**：按 `model`/`generation_mode`/`scores`/`tags` 在 `index.json` 里过滤出相关先例；
+- **注入（读）**：顺链接读对应 `lessons/*.md` 的经验正文 + 高分尝试的 prompt，作为 few-shot/指导注入；
+- **写入**：Critic 评分 → 追加一条 index 记录（含图路径、critique MD 链接）；
+  Summarizer 跨轮归纳 → 新写一篇 `lessons/*.md`，并在相关 index 记录的 `lesson_refs` 登记链接。
+- **不做向量检索**：召回靠 JSON 字段过滤 + MD 链接跳转；记录量增大后再考虑升级。
+
+### 3.4 难点 D：素材一律用文件路径，不存 base64 / 不内联正文（按用户要求）
+
+**约定（贯穿全系统，含 JSON 和 MD 两类载体）：**
+
+- **图片**：任何地方记录/传递图片都用**文件路径**，绝不存 base64 字符串（无论 JSON 还是 MD）。
+- **长文本**：长 prompt、Critic 批评等不塞进 JSON 字段，单独存 MD，JSON 只放链接。
+- **存盘**：生图后立即把返回的 `b64_json`/`url` 解码下载，存到 `data/runs/<run_id>/out/`，
+  `index.json` 里只记路径（如 `outputs` 字段）。这样人能直接打开图片查看。
 - **入参转换**：调用 dmxapi 时，适配层**按文档说明自动把文件路径转成各家要求的格式**：
   - 协议族 A（gpt-image-2 edits）：路径 → 读文件 → multipart 二进制上传；
   - 协议族 B/C（seedream/qwen responses）：路径 → 读文件 → `data:image/<fmt>;base64,...` 字符串；
   - 协议族 D（Gemini）：路径 → 读文件 → `inline_data.data`(base64)。
-- **好处**：人类可读可查；避免 JSON 膨胀（一张图 base64 可达数 MB）；便于复现与对比。
-- **注意**：base64 转换是「调用前临时生成、用完即弃」，不持久化进任何 JSON。
+- **好处**：人类可读可查；JSON/MD 不膨胀；便于复现与对比；文件间用链接互引、内容零复制。
+- **注意**：base64 转换是「调用前临时生成、用完即弃」，绝不持久化进任何 JSON/MD。
 
 ---
 
@@ -247,14 +288,14 @@ SQLite），核心是设计好字段结构，让记录既给人看、又能喂�
 | **Agent 编排** | **LangGraph** | 环路(闭环)是一等公民，状态/检查点/可视化原生支持 |
 | **LLM 接口统一** | **dmxapi 已聚合**（文本对话走 chat completions） | 评判/总结用多模态文本模型 |
 | **结构化输出** | **Pydantic v2** | Critic 评分、生图记录需严格 schema |
-| **记忆存储** | **JSON 文件（最简，按用户要求）** | 现阶段不引向量库/SQLite；按 §3.3 字段记录生图尝试；人类可读可手改 |
+| **记忆存储** | **双层载体：MD(经验) + JSON(索引)（按用户要求）** | 不引向量库/SQLite；经验写 MD 给人读，JSON 只管参数/版本/索引并用文件链接串起图片与 MD（§3.3）；人类可读可手改 |
 | **图像存储** | **文件路径（不用 base64）** | §3.4：生图落盘，JSON 只记路径；调用时适配层按文档自动转格式 |
 | **图像/特征** | **Pillow + OpenCLIP** | 算 style_consistency / content_diversity 指标用 CLIP 特征 |
 | **配置/密钥** | **pydantic-settings + .env** | 类型安全、12-factor；DMXAPI key 走环境变量 |
 | **异步/并发** | **asyncio + httpx** | 批量生图、批量评判是 IO 密集；httpx 异步上传 multipart |
 | **重试/限流** | **tenacity** | API 调用必须容错（生图偶发超时/失败） |
 | **可观测** | **logging + run 目录** | 先做最小可观测，不引入外部依赖 |
-| **实验追踪(可选)** | **run 目录 + memory.json 起步** | 自迭代本身就有完整 run 记录 |
+| **实验追踪(可选)** | **run 目录 + index.json 起步** | 自迭代本身就有完整 run 记录（§3.3.1 布局） |
 
 ### 4.2 dmxapi 适配层（核心难点：屏蔽多协议族差异）—— 关键设计
 
@@ -399,8 +440,9 @@ src/img_iter_agent/
 │   ├── anchor.py         # 参考图封装（风格锚定的唯一来源）
 │   └── metrics.py        # CLIP 风格一致性 / 内容多样性指标
 ├── memory/
-│   ├── store.py          # JSON 文件读写：追加生图尝试记录、过滤、更新 lesson/confidence
-│   ├── schema.py         # 生图尝试记录 Pydantic model（§3.3.2 字段）
+│   ├── index.py          # index.json 读写：追加尝试记录、按 model/mode/scores/tags 过滤召回
+│   ├── schema.py         # 尝试记录 Pydantic model（§3.3.2 字段，含各种 _ref 链接）
+│   ├── lessons.py        # 经验 MD 读写：Summarizer 写入、按链接读取注入
 │   └── image_io.py       # §3.4：图片落盘 + 调用时按协议族要求把路径转 base64/multipart
 ├── config.py             # pydantic-settings（含 DMXAPI key/host）
 └── cli.py                # 入口
@@ -463,12 +505,15 @@ src/img_iter_agent/
   每轮 checkpoint，支持中断恢复。
 - **后果**：+原生支持环、可视化、断点续跑；−引入 langgraph 依赖。
 
-### ADR-004: Memory = 最简 JSON 文件（不引向量库/SQLite）
-- **状态**：✅ 已采纳（用户 2026-07-30 确认）
-- **决策**：现阶段只用 JSON 文件记录生图尝试；按 §3.3.2 设计字段（model /
-  protocol_family / generation_mode / timestamp / inputs / outputs / scores / lesson 等）；
-  图片用文件路径不存 base64（§3.4）。迭代时按 model/mode/scores 做简单过滤注入。
-- **后果**：+极简、人类可读可手改、无依赖；−记录量大后检索弱，届时再升级存储。
+### ADR-004: Memory = 双层载体：经验 MD + JSON 索引（不引向量库/SQLite）
+- **状态**：✅ 已采纳（用户 2026-07-30 确认并细化）
+- **决策**：记忆用双层，全部基于文件、互相用链接引用、内容零复制：
+  - **经验写 Markdown**（`lessons/*.md`）——给人读、可丰富、Summarizer 归纳的产物；
+  - **JSON（`index.json`）只做参数/版本/索引整理**——记录每次尝试的 model/mode/params/scores，
+    并用文件链接（`*_ref`、`outputs`、`reference_images`、`lesson_refs`）指向图片与 MD；
+  - **图片、MD、长 prompt/critique 都用文件链接**串起来，JSON/MD 内不存 base64 或长正文。
+- **后果**：+人类可读可手改、无外部依赖、内容不重复；−检索靠 JSON 字段过滤（无语义检索），
+  记录量大后再升级存储。
 
 ### ADR-005: 图片全程用文件路径，base64 仅调用时临时转换
 - **状态**：✅ 已采纳（用户 2026-07-30 确认）
