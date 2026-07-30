@@ -24,13 +24,12 @@ build/
 secrets.*
 config/local.*
 
-# Generated artifacts (keep dirs via .gitkeep, ignore content)
-data/outputs/*
-!data/outputs/.gitkeep
+# Data layer (§3.5): three tiers. Keep dir skeleton via .gitkeep, ignore content.
+# benchmarks/ content IS committed (user-prepared baselines), so do NOT ignore it wholesale.
 data/runs/*
 !data/runs/.gitkeep
-data/lessons/*
-!data/lessons/.gitkeep
+data/analyses/*
+!data/analyses/.gitkeep
 
 # Large models / checkpoints (never commit)
 *.safetensors
