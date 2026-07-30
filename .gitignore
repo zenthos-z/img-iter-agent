@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Secrets / config
+.env
+.env.*
+!.env.example
+secrets.*
+config/local.*
+
+# Generated artifacts (keep dirs via .gitkeep, ignore content)
+data/outputs/*
+!data/outputs/.gitkeep
+data/runs/*
+!data/runs/.gitkeep
+
+# Large models / checkpoints (never commit)
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+models/
+
+# OS
+.DS_Store
+Thumbs.db

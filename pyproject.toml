@@ -1,0 +1,38 @@
+[project]
+name = "img-iter-agent"
+version = "0.0.1"
+description = "Self-iterating AI image agent: generates new content while preserving a stable style via an adversarial summarization loop."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "zenthos-z" }]
+
+dependencies = [
+    # --- 实际依赖在技术栈定稿后填入 (见 docs/ARCHITECTURE.md) ---
+    # 候选: openai / anthropic / google-genai (LLM + 多模态评判)
+    # 候选: diffusers, transformers, torch, accelerate (本地生图)
+    # 候选: langgraph (agent 编排)
+    # 候选: chromadb / qdrant-client (记忆向量库)
+    # 候选: pillow, pydantic, pydantic-settings, httpx, tenacity
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/img_iter_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
