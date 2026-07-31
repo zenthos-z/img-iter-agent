@@ -27,7 +27,7 @@ from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
 from ..data.trajectory import TrajectoryWriter
 from ..data.weights import load_weights
-from ..memory.schema import AttemptRecord, CriticVerdict, TestVariable
+from ..memory.schema import AttemptRecord, CriticVerdict
 from .state import CompiledGraph, RunState
 
 
@@ -49,19 +49,30 @@ def build_graph(
     def generator_node(state: RunState) -> dict:
         round_n = state.get("round", 0) + 1
         baseline_ref = None
-        # 若有历史 attempt，取还原度最高的作对照（控制变量法）。
-        # 同一 run 内模型固定（ADR-007），故无需按 model 过滤。
-        from ..memory.index import recall
-        prior = recall(run_dir, limit=1)
-        if prior:
-            baseline_ref = prior[0].get("attempt_id")
+        prior_feedback = None
+        # 若有上轮 verdict，提取失败项作为反馈，供 Generator 改进 prompt
+        prev_verdict = state.get("_verdict")
+        if round_n > 1 and prev_verdict is not None:
+            from ..agents.generator import PriorFeedback
+            failed = []
+            cont_notes = []
+            for d in prev_verdict.dimensions:
+                if d.scoring_type == "binary":
+                    failed += [it for it in (d.items or []) if not it.passed]
+                elif d.value < 0.7 and d.raw:  # 连续维度低分(<0.7)且带理由
+                    cont_notes.append(f"{d.dim}: {d.raw}")
+            prior_feedback = PriorFeedback(failed_items=failed, continuous_notes=cont_notes)
+            # baseline 指向上轮 attempt（index 里还原度最高的）
+            from ..memory.index import recall
+            prior = recall(run_dir, limit=1)
+            if prior:
+                baseline_ref = prior[0].get("attempt_id")
 
         outcome = generator.generate_round(
             sample=sample, out_dir=run_dir / "out", run_dir=run_dir,
             round=round_n, baseline_ref=baseline_ref,
-            test_variable=_pick_variable(state),
+            prior_feedback=prior_feedback,
         )
-        # 透传本轮非 state 字段（用 dict 暂存到 state 的临时键，靠 total=False 容纳）
         return {
             "round": round_n,
             "_outcome": outcome,  # 临时，供 critic/summarizer 节点取用（不走 reducer）
@@ -135,15 +146,6 @@ def build_graph(
     builder.add_conditional_edges("human_review", route, {"generator": "generator", END: END})
 
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
-
-
-def _pick_variable(state: RunState) -> TestVariable | None:
-    """决定本轮变哪个维度。首轮 None；之后在 prompt/size 间轮换（简化策略）。"""
-    round_n = state.get("round", 0)
-    if round_n == 0:
-        return None
-    # 简化：偶数轮调 prompt，奇数轮调 size（真实策略可由 Generator LLM 决策）
-    return "prompt" if round_n % 2 == 0 else "size"
 
 
 def run_loop(

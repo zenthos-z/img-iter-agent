@@ -166,3 +166,30 @@ def test_control_variable_baseline_ref_set_on_round2(setup):
     # 第 2 轮的 baseline_ref 指向第 1 轮 attempt_id
     assert traj[1]["baseline_ref"] == traj[0]["attempt_id"]
     assert traj[1]["round"] == 2
+
+
+def test_round2_prompt_improved_from_round1_feedback(setup):
+    """第 2 轮 prompt 应基于第 1 轮 Critic 失败项改进（确定性补强，无 LLM）。"""
+    lb, store = setup
+    bench = lb.bench
+    # 无 LLM 的 Generator：_improve_prompt 走确定性补强（追加失败项理由）
+    gen = Generator(_FakeRouter())
+    # 构造一些失败项：让二分维度有失败（前 N-1 通过 → 最后 1 项失败）
+    critic = Critic(FakeLlmClient(responses=_critic_responses(bench) * 2), bench=bench)
+    summ = Summarizer()
+
+    run_loop(bench=lb, run_store=store, sample_id="s001",
+             generator=gen, critic=critic, summarizer=summ,
+             decisions=["continue", "stop"])
+
+    traj = [json.loads(l) for l in
+            (store.run_dir / "trajectory.jsonl").read_text(encoding="utf-8").strip().splitlines()]
+    p1, p2 = traj[0]["prompt"], traj[1]["prompt"]
+    # 第 2 轮 prompt 应不同于第 1 轮（基于失败项补强）
+    assert p2 != p1
+    # 第 2 轮应含补强标记（确定性补强会加 "改进点"）
+    assert "改进点" in p2 or "确保" in p2
+    # test_variable 始终是 prompt（不再是 size 轮换）
+    assert traj[1]["test_variable"] == "prompt"
+    # size 两轮一致（固定不动）
+    assert traj[0]["size"] == traj[1]["size"]
