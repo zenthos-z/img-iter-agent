@@ -17,7 +17,10 @@ dependencies = [
     # agent 编排 (Step 4)
     "langgraph",
     "langgraph-checkpoint-sqlite",
-    # 后续步骤填入: pillow / scikit-learn+pandas+matplotlib(校准/分析, Step 5)
+    # 校准/分析 (Step 5, 离线)
+    "scipy",
+    "pandas",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
