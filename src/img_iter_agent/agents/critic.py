@@ -34,6 +34,19 @@ from ..memory.schema import (
     CriticVerdict,
     DimensionScore,
 )
+from .agent_config_loader import load_system_prompt
+
+# 代码默认提示词（agents_config/critic.md / critic_continuous.md 缺失时回退）
+_DEFAULT_BINARY_PROMPT = (
+    "你是严格的产品图评判员。对下列 checklist 项逐项判定 通过/不通过，"
+    "每项给一句简短理由。只输出 JSON，不要任何额外文字。\n"
+    'JSON 格式: {"judgments":[{"id":"C1","passed":true,"reason":"..."}, ...]}'
+)
+_DEFAULT_CONTINUOUS_PROMPT = (
+    "你是产品图材质/颜色评判员。对生成图的还原图整体给一个 0-1 分"
+    "（0=完全没还原，1=完美还原），并给一句理由。只输出 JSON。\n"
+    'JSON 格式: {"score":0.72,"reason":"..."}'
+)
 
 
 @dataclass
@@ -79,11 +92,7 @@ def _binary_prompt(dim_name: str, dim_desc: str, items: list[CheckItem],
                    comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
     """二分维度的 prompt：要求逐项 ✓/✗ + 理由，返回 JSON。多模态（带图）。"""
     item_lines = "\n".join(f"  - {it.id}: {it.check}" for it in items)
-    sys_msg = (
-        "你是严格的产品图评判员。对下列 checklist 项逐项判定 通过/不通过，"
-        "每项给一句简短理由。只输出 JSON，不要任何额外文字。\n"
-        'JSON 格式: {"judgments":[{"id":"C1","passed":true,"reason":"..."}, ...]}'
-    )
+    sys_msg = load_system_prompt("critic", _DEFAULT_BINARY_PROMPT)
     text = (
         f"维度: {dim_name}\n描述: {dim_desc}\n\n"
         f"判定项:\n{item_lines}\n\n"
@@ -100,11 +109,7 @@ def _continuous_prompt(dim_name: str, dim_desc: str, rubric: ContinuousRubric,
                        comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
     """连续维度的 prompt：按 rubric points 整体给 0-1 分，返回 JSON。多模态（带图）。"""
     points = "\n".join(f"  - {p}" for p in rubric.points) or "  - (按维度描述整体评分)"
-    sys_msg = (
-        "你是产品图材质/颜色评判员。对生成图的还原图整体给一个 0-1 分（0=完全没还原，1=完美还原），"
-        "并给一句理由。只输出 JSON。\n"
-        'JSON 格式: {"score":0.72,"reason":"..."}'
-    )
+    sys_msg = load_system_prompt("critic_continuous", _DEFAULT_CONTINUOUS_PROMPT)
     text = (
         f"维度: {dim_name}\n描述: {dim_desc}\n评分要点:\n{points}\n\n"
         f"{_images_block(comparative, target, generated)}\n\n"

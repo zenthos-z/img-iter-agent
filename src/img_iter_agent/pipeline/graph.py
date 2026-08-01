@@ -1,9 +1,10 @@
 """LangGraph 闭环 A：generator → critic → summarizer → human_review(interrupt) → 条件边。
 
-节点职责（ARCH §2）：
-  - generator_node：控制变量法构造 GenRequest → 三视图出图
-  - critic_node：对三视图打混合评分
-  - summarizer_node：写经验 MD + index；记 AttemptRecord
+节点职责（ARCH §2，经验闭环演进）：
+  - generator_node：控制变量法构造 GenRequest → 三视图出图；读经验知识库注入上下文
+  - critic_node：对三视图打混合评分（Critic 是改动有效性的客观裁判）
+  - summarizer_node：Critic 驱动的经验闭环验证（上轮改动→前后 verdict 对比→有效/无效）；
+    更新 conclusions.json；记 AttemptRecord（含 delta_note）
   - human_review_node：interrupt() 等人工裁决（continue/stop/调方向），不自动收敛（ADR-007）
 
 条件边 route：decision==stop → END，否则回到 generator。
@@ -14,6 +15,7 @@ checkpointer 用 SqliteSaver（持久化，可断点续跑）；测试可用 InM
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -25,10 +27,19 @@ from ..agents.generator import Generator, GenOutcome
 from ..agents.summarizer import Summarizer
 from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
-from ..data.trajectory import TrajectoryWriter
+from ..data.trajectory import TrajectoryReader, TrajectoryWriter
 from ..data.weights import load_weights
 from ..memory.schema import AttemptRecord, CriticVerdict
 from .state import CompiledGraph, RunState
+
+
+def _prev_delta_note(run_dir: Path) -> str | None:
+    """从 trajectory 最后一条 AttemptRecord 取上轮的 delta_note（验证对象）。"""
+    try:
+        recs = TrajectoryReader(run_dir / "trajectory.jsonl").read_all()
+        return recs[-1].delta_note if recs else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def build_graph(
@@ -81,7 +92,7 @@ def build_graph(
 
     def critic_node(state: RunState) -> dict:
         outcome: GenOutcome = state["_outcome"]  # type: ignore[typeddict-item]
-        weights = load_weights(bench.bench, run_dir=run_dir)
+        weights = load_weights(bench.bench, run_dir=run_dir, sample_id=sample_id)
         # 生成的图绝对路径
         gen_imgs = [run_dir / r for r in outcome.output_image_refs]
         verdict = critic.evaluate(CriticInput(
@@ -92,9 +103,15 @@ def build_graph(
     def summarizer_node(state: RunState) -> dict:
         outcome: GenOutcome = state["_outcome"]  # type: ignore[typeddict-item]
         verdict: CriticVerdict = state["_verdict"]  # type: ignore[typeddict-item]
+        # Critic 驱动的经验闭环：取上轮 verdict + 上轮改动说明，做跨轮验证
+        all_verdicts: list[CriticVerdict] = state.get("verdicts", [])
+        prev_verdict = all_verdicts[-2] if len(all_verdicts) >= 2 else None
+        # 上轮 delta_note 从 trajectory 最后一条 AttemptRecord 取
+        prev_delta_note = _prev_delta_note(run_dir)
         lesson_ref = summarizer.summarize(
             run_dir=run_dir, round=state["round"], outcome=outcome,
             verdict=verdict, sample_id=sample_id,
+            prev_verdict=prev_verdict, prev_delta_note=prev_delta_note,
         )
         # 写 trajectory
         rec = AttemptRecord(
@@ -104,7 +121,7 @@ def build_graph(
             baseline_ref=outcome.baseline_ref, gen_mode=outcome.gen_mode,
             prompt=outcome.prompt, reference_image_refs=list(outcome.reference_image_refs),
             size=outcome.size, output_image_refs=list(outcome.output_image_refs),
-            verdict=verdict, lesson_ref=lesson_ref,
+            verdict=verdict, lesson_ref=lesson_ref, delta_note=outcome.delta_note,
         )
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)
         return {"attempts": [rec]}

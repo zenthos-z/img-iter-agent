@@ -1,83 +1,151 @@
 # img-iter-agent
 
-> 一个自我迭代的 AI 生图 Agent：通过「生成 → 对抗评判 → 总结 → 优化」的闭环，
-> 自动产出**风格元素一致、内容可变**的图像集合。
+> 一个自我迭代的 AI 生图 Agent：通过「**生成 → Critic 对抗评判 → 经验闭环验证 → 优化提示词**」的闭环，
+> 在一道考题上持续迭代，自动收敛到还原度最高的生图配置。
+
+核心思想是把 GAN 的「生成—对抗」搬到 **Agent 层面**：不训练两个神经网络，而是让 LLM agent
+（生成方 vs 评判方）在「**Critic 驱动验证的经验知识库**」上博弈与自我改进——每轮改动都由 Critic 客观
+判定有效/无效，沉淀为可复用经验，指导下一轮生成。
 
 ## 它解决什么问题
 
-给定一种目标风格（几张参考图 / 一段风格描述），系统自动生成一组新图：
+给定一道考题（一张产品实物图 + 验收标准），系统自动迭代生成图：
 
-- **风格元素保持相同**——配色、笔触、构图语言、材质、氛围稳定可复现；
-- **内容可以不一样**——主体、场景、主题在风格约束下自由变化；
-- **过程自我进化**——每一轮由「评判器」打分、「总结器」归纳经验、「提示词工程师」据此改进下一轮，
-  生成质量随迭代单调上升（理想情况下）。
+- **还原度持续提升**——材质、结构、颜色、比例逐轮逼近目标参考图；
+- **经验闭环验证**——不是记录事实，而是「上轮改了 X → Critic 前后评分对比 → 判定有效/无效 → 沉淀」；
+- **人工排序校准**——人只做擅长的排序，自动拟合维度权重，让 AI 评判越来越贴合人的判断。
 
-核心思想是把 GAN 的「生成—对抗」搬到了 **Agent 层面**：不是训练两个神经网络，
-而是让两个 LLM agent（生成方 vs 评判方）在「总结出的经验库」上博弈与自我改进。
+首个落地场景：**家具跨境电商白底产品图**（结构/材质/颜色易翻车、退货主因）。
 
-## 架构与技术栈
+## 快速开始
 
-完整分析见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
+### 前置要求
 
-一句话概览：Python · dmxapi 多模型生图（实测 4 协议族，按族分 dispatcher）· 目标=还原度（多维评分）·
-LangGraph 自迭代闭环（控制变量法+逐轮人工审批）· 评分校准闭环（人工复评→回归最优权重→校准 agent）·
-数据三层管理（benchmarks/runs/analyses + trajectory.jsonl，产出可复用）· 双层记忆（经验 MD+JSON 索引）· 图片全程用文件路径。
+- Python ≥ 3.11
+- [uv](https://docs.astral.sh/uv/)（推荐）或 pip + venv
+- dmxapi 密钥（生图与评判的统一后端）
 
-## 快速开始（待实现）
+### 安装
 
 ```bash
-# 待技术栈定稿、代码落地后补全
-uv sync            # 或 pip install -e .
-cp .env.example .env  # 填入 API key
-python -m img_iter_agent  # 跑一个迭代
+git clone <repo> && cd img-iter-agent
+uv sync            # 或: python -m venv .venv && .venv/bin/pip install -e .
+cp .env.example .env   # 填入 IMG_ITER_DMXAPI_KEY 与各 model_id
 ```
+
+### 跑一个迭代闭环（CLI）
+
+```bash
+# 对 s001（双人床）跑闭环 A：生成→评分→经验验证→人工审批，逐轮 continue/stop
+python -m img_iter_agent.cli run --bench furniture_product_whitebg --sample s001
+```
+
+一题一 loop：同一道题只有一条 loop，再次 `run` 会**在原有 loop 上续跑**（轮数叠加），不会新建。
+
+### 启动可视化打分台（Web）
+
+```bash
+img-iter-web       # 或: python -m uvicorn img_iter_agent.web.app:app --port 8765
+# 浏览器打开 http://localhost:8765
+```
+
+打分台提供 5 屏：总览（每个 sample 的 loop 状态）、loop 详情（迭代轨迹+经验沉淀）、trace 详情
+（大图对照 target+Critic 明细）、人工排序（拖拽打分→自动校准权重）、Agent 设置（改系统提示词+模型 id）。
+
+## 核心机制
+
+### Critic 驱动的经验闭环
+
+```
+轮次 N:   Generator 改 prompt（产出 delta_note）→ 出图
+轮次 N:   Critic 看图 → verdict（分 + 失败项 + 理由）    ← 改动有效性的客观裁判
+                ↓
+轮次 N+1: Summarizer 综合【上轮 delta_note + 前后 verdict】:
+            对比 → 判定 status(verified_effective / ineffective) → 沉淀进 conclusions.json
+          Generator 读 conclusions：有效的保留约束、无效的换思路
+```
+
+经验不再散落为单轮事实快照，而是沉淀为**结构化知识库**
+（`runs/<loop>/lessons/conclusions.json`），每条结论带 Critic 验证证据（前后分数+理由）。
+
+### 两个闭环
+
+| | 闭环 A：生成迭代 | 闭环 B：评分校准 |
+|---|---|---|
+| **目的** | 提升生成还原度 | 让 Critic 评判贴合人的判断 |
+| **驱动** | Critic 多维分 + 人工审批 | 人工排序 vs Critic 初评 |
+| **产出** | 更好的图 + 验证过的经验 | 校准后的维度权重 |
+
+闭环 B：人工只做排序（listwise，人擅长的）→ learning-to-rank 拟合权重 → 回灌 Critic，
+天然修正 LLM 连续打分的系统性偏差。
+
+## 架构
+
+> 完整架构与决策记录见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**（含 10 条 ADR）。
+
+```
+src/img_iter_agent/
+├── agents/
+│   ├── generator.py     # 生成方：改 prompt（产出 delta_note）+ 读经验注入
+│   ├── critic.py        # 评判方：多模态打分（混合评分：二分✓/✗ + 连续0-1）
+│   └── summarizer.py    # 总结方：Critic 前后 verdict 对比→判有效/无效→沉淀
+├── pipeline/
+│   ├── graph.py         # LangGraph 闭环：generator→critic→summarizer→human_review(interrupt)
+│   └── state.py         # 跨轮 State（verdicts 累加器等）
+├── generation/
+│   ├── router.py        # 按"任务模式+model_hint"路由到协议族 dispatcher
+│   └── protocols/       # 屏蔽 dmxapi 四族差异：A(OpenAI)/B(豆包)/C(Qwen)/D(Gemini)
+├── memory/
+│   ├── knowledge.py     # 经验知识库（conclusions.json 读写 + Critic 驱动 status 判定）
+│   └── schema.py        # Pydantic v2 数据契约（AttemptRecord/CriticVerdict/KnowledgeConclusion）
+├── calibration/         # 闭环 B：排序拟合权重（learning-to-rank, scipy SLSQP）
+├── data/                # 三层数据管理 + trajectory.jsonl（可复用重放）
+└── web/                 # FastAPI 打分台（前后端解耦，Vanilla JS 前端）
+```
+
+**关键技术决策**：dmxapi 聚合 API（全云端，屏蔽 4 协议族）· LangGraph 编排（闭环原生+断点续跑）·
+混合评分（二分可复现 + 连续保渐变）· 三层数据分离（benchmarks/runs/analyses）· 图片全程用文件路径。
+
+## 项目结构
+
+```
+data/
+├── benchmarks/              # 〔你准备的考题，✅入 git，跨 run 复用〕
+│   └── furniture_product_whitebg/
+│       ├── manifest.json    # 6 维评分定义 + 权重先验
+│       └── samples/sNNN/    # target.png(参考锚) + content_spec.json(约束)
+├── runs/                    # 〔系统产出，❌不入 git〕
+│   └── <bench>-<sample>/    # 一题一 loop
+│       ├── trajectory.jsonl # 完整轨迹（每轮含 delta_note）
+│       ├── lessons/conclusions.json   # 经验知识库（Critic 驱动验证）
+│       └── out/             # 生成图
+└── analyses/                # 〔离线分析，只读〕
+```
+
+> [!NOTE]
+> 你唯一需要手动管理素材的地方是 `data/benchmarks/<bench>/samples/`——放产品实物图
+> `target.png` + 写 `content_spec.json`（要生成什么、约束、验收 checklist）。系统跑出来的产物自动进 `data/runs/`。
+
+## 测试
+
+```bash
+python -m pytest          # 83 个测试（含经验闭环验证、一题一 loop、自动校准）
+ruff check src/ tests/    # 代码风格
+```
+
+## 配置
+
+所有配置走环境变量（前缀 `IMG_ITER_`），见 `.env.example`：
+- dmxapi 凭证与地址
+- 四个协议族的生图 model_id（seedream / gpt-image / gemini / qwen）
+- Agent LLM 的 model_id + protocol（Critic 必须多模态）
+
+Agent 的系统提示词与模型 id 也可在 Web 台「Agent 设置」页在线编辑（外部化到
+`data/agents_config/`，不在代码里）。
 
 ## 状态
 
-✅ 架构与技术栈已定稿（dmxapi 后端 / 全云端 / 参考图锚定风格）。见 `docs/ARCHITECTURE.md`。
-🚧 代码骨架与实现待推进。
-
-## 目录与素材管理
-
-**核心规则：素材按"谁创建"分三类，各归其位，绝不混放。**
-
-```
-img-iter-agent/
-├── docs/ARCHITECTURE.md       # 架构与技术栈分析（核心文档）
-├── src/img_iter_agent/        # 源码（待实现）
-├── tests/
-└── data/
-    │
-    ├── benchmarks/            # 〔你准备的考题素材，✅入git，跨run复用〕
-    │   └── <bench_id>/        #   一个 benchmark = 一组考题
-    │       ├── manifest.json  #   评分维度+权重（如家具7维度）
-    │       ├── rubric.md      #   评分细则
-    │       └── samples/       #   ★你的考题素材放这里
-    │           └── sNNN/
-    │               ├── target.png       # 产品实物参考图（对比锚）
-    │               ├── target.md        # 结构/材质/颜色说明+验收点
-    │               └── content_spec.json# 要生成什么（视角/背景/约束）
-    │
-    ├── runs/                  # 〔系统生成的产物，❌不入git，每次重生成〕
-    │   └── <run_id>/          #   = <model>__<bench>__<时间>
-    │       ├── trajectory.jsonl  # 完整训练轨迹（重放/分析的依据）
-    │       ├── out/             # 生成的图
-    │       ├── lessons/         # 归纳的经验MD
-    │       ├── human_scores/    # 人工评分（异步补）
-    │       └── ...
-    │
-    └── analyses/              # 〔离线分析产物，❌不入git，可重算〕
-        └── strategy_compare/    # 策略对比报告等
-```
-
-**我（用户）要往哪放素材？**
-- 准备/修改考题 → `data/benchmarks/<bench>/samples/`（这是你唯一需要手动管理素材的地方）
-- 系统跑出来的东西 → 自动进 `data/runs/`，不用管
-- 没有全局素材库——每份考题自包含在自己的 `samples/` 里
-
-**首个 benchmark 已建**：`data/benchmarks/furniture_product_whitebg/`（家具跨境电商白底产品图），
-待往 `samples/` 放产品实物图即可。详见该目录下 `rubric.md`。
-
-## License
-
-MIT
+- ✅ 核心闭环（生成→评判→经验验证→迭代）已跑通，含 CLI 与 Web 打分台
+- ✅ 经验闭环验证（Critic 驱动 status）、一题一 loop、自动权重校准
+- ✅ 首个 benchmark（家具白底产品图，6 维评分，3 个 sample）
+- 🚧 多策略扩展（增参考图/尺度参考图等）——基建已留好，暂只实现 prompt 策略

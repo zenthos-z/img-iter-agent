@@ -1035,6 +1035,27 @@ src/img_iter_agent/
   3. benchmark "标准答案" = 目标参考图 + 验收 checklist + 多维评分定义（用户准备/定制）。
 - **后果**：+产出可复用、原始不可变可复现、定制接入简单；−目录规范需遵守、分析脚本需另写。
 
+### ADR-010: 经验从「单轮 MD 事实记录」演进为「Critic 驱动的结构化闭环验证」+ 一题一 loop
+- **状态**：✅ 已采纳（用户 2026-08-01 确认，替代 ADR-004 的「经验 MD」表述）
+- **背景**：原 ADR-004 用「每轮一个 lesson_<round>.md」的散落 MD 记录经验。问题：
+  ① 每轮 MD 只是「本轮参数+分数」的**事实快照**，看不到上轮改了什么、效果如何，无法跨轮因果验证；
+  ② 经验散落为碎片，无沉淀层，人无法看到「这道题迭代到现在沉淀了什么」；
+  ③ 多个 loop 各自独立，同一道题的经验不连续。
+- **决策**（三点）：
+  1. **经验改为结构化 JSON 知识库** `runs/<loop_id>/lessons/conclusions.json`（归属 sample）。
+     每条结论 = `{dim, finding, change(=delta_note), status, critic_evidence, lesson, ...}`，
+     废弃散落单轮 MD。`status` 由 Critic 前后 verdict 驱动判定（见下）。
+  2. **Critic 是经验闭环的客观裁判**：Generator 改 prompt（产出 delta_note）→ Critic 前后 verdict 对比
+     → 判 status（`verified_effective`/`ineffective`/`pending`）→ 沉淀为可复用结论。
+     Critic 的 reason 文本（不只分数）是经验的一等内容（解释「为什么有效/无效」）。
+     Generator 下一轮读 conclusions：effective 的保留约束、ineffective 的换思路。
+  3. **一题一 loop**：同一 sample（×model）只有一条 loop，loop_id = `<bench>-<sample>`（不带时间戳）。
+     「继续」= 在该 loop 上叠加轮数（复用 run_dir + checkpoint），不再每次新建独立 loop。
+- **后果**：+经验从事实记录升级为闭环验证知识，可复用、可追溯、指导 Generator；
+  +一题一 loop 让迭代连续、轮数叠加，符合「AI 不停修改提示词总结问题持续迭代」的心智模型；
+  −废弃原 lesson_*.md 单轮文件模型（lessons.py 保留兼容函数，语义指向 conclusions.json）。
+  **注**：ADR-004 正文里「经验写 Markdown」的早期表述已被本 ADR 取代（经验层演进为结构化 JSON）。
+
 ---
 
 ## 9. 参考资料（dmxapi 官方文档实测，doc.dmxapi.cn）

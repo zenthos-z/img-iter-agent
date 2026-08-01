@@ -22,6 +22,12 @@ def project_root() -> Path:
 
 
 @pytest.fixture(scope="session")
+def repo_data_root() -> Path:
+    """真实仓库的 data/ 目录（读真实 benchmarks/runs，只读用途）。"""
+    return PROJECT_ROOT / "data"
+
+
+@pytest.fixture(scope="session")
 def tmp_run_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """独立的临时 data_root，run/analyses 写这里，绝不污染真实 data/。"""
     return tmp_path_factory.mktemp("data_root")

@@ -122,7 +122,7 @@ def test_loop_two_rounds_then_stop(setup):
 
 
 def test_loop_writes_lessons_and_index(setup):
-    """经验 MD + index.json 都正确产出。"""
+    """经验知识库 conclusions.json + index.json 都正确产出。"""
     lb, store = setup
     bench = lb.bench
     gen = Generator(_FakeRouter())
@@ -132,12 +132,11 @@ def test_loop_writes_lessons_and_index(setup):
     run_loop(bench=lb, run_store=store, sample_id="s001",
              generator=gen, critic=critic, summarizer=summ, decisions=["stop"])
 
-    # 经验 MD
-    lessons = sorted((store.run_dir / "lessons").glob("lesson_*.md"))
-    assert len(lessons) == 1
-    text = lessons[0].read_text(encoding="utf-8")
-    assert "还原度" in text
-    assert "seedream" in text or "fake-model" in text
+    # 经验知识库 conclusions.json（替代原单轮 MD）
+    cpath = store.run_dir / "lessons" / "conclusions.json"
+    assert cpath.exists()
+    kb = json.loads(cpath.read_text(encoding="utf-8"))
+    assert kb["sample_id"] == "s001"
 
     # index.json
     idx = json.loads((store.run_dir / "index.json").read_text(encoding="utf-8"))
@@ -146,7 +145,8 @@ def test_loop_writes_lessons_and_index(setup):
     assert e["round"] == 1
     assert e["model"] == "fake-model"
     assert len(e["output_image_refs"]) == 1  # 三视图=一张图
-    assert e["lesson_ref"].startswith("lessons/")
+    assert e["lesson_ref"].startswith("lessons/")  # 指向 conclusions.json
+    assert "delta_note" in e  # 改动说明字段存在
 
 
 def test_control_variable_baseline_ref_set_on_round2(setup):

@@ -79,8 +79,13 @@ def make_entry(
     output_image_refs: list[str],
     lesson_ref: str | None,
     prompt: str | None = None,
+    delta_note: str | None = None,
 ) -> dict[str, Any]:
-    """构造一条索引 entry（字段对齐 ARCH §3.3.2，剔除大字段）。"""
+    """构造一条索引 entry（字段对齐 ARCH §3.3.2，剔除大字段）。
+
+    lesson_ref 现指向该 sample 的经验知识库（lessons/conclusions.json），统一一份。
+    delta_note 记录本轮相对上轮的改动说明（配合 test_variable），便于召回时看改动。
+    """
     return {
         "attempt_id": attempt_id,
         "round": round,
@@ -92,6 +97,7 @@ def make_entry(
         "restoration": restoration,
         "output_image_refs": output_image_refs,
         "lesson_ref": lesson_ref,
+        "delta_note": delta_note,
         "prompt": prompt,
     }
 

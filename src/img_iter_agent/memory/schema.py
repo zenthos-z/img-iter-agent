@@ -250,12 +250,58 @@ class AttemptRecord(BaseModel):
     # --- 评分 ---
     verdict: CriticVerdict | None = None  # Critic 完整判定（含 features + restoration）
 
+    # --- 迭代改动说明（Generator 产出：本轮相对上轮改了什么）---
+    # 多策略基建：配合 test_variable 一起记录"该策略本轮具体改了什么"。
+    # 当前只有 prompt 策略会填；未来 reference_images/size 策略扩展时也走这里。
+    delta_note: str | None = None
+
     # --- 经验链接 ---
-    lesson_ref: str | None = None  # 本轮总结出的经验 MD（相对 run 目录）
+    # 指向该 sample 的经验知识库（lessons/conclusions.json），统一一份而非单轮 MD。
+    lesson_ref: str | None = None
 
     def to_jsonl(self) -> str:
         """序列化成 trajectory.jsonl 的一行（单行 JSON，无换行）。"""
         return self.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# 经验知识库（结构化、Critic 驱动验证的沉淀结论）
+# ---------------------------------------------------------------------------
+
+# 经验验证状态：由 Critic 前后 verdict 驱动判定（update_status_on_evidence 见 knowledge.py）
+ConclusionStatus = Literal["pending", "verified_effective", "ineffective"]
+
+
+class CriticEvidence(BaseModel):
+    """一条经验结论的 Critic 验证证据（前后对比）。
+
+    Critic 是"改动有效性"的客观裁判：before/after 各记录该维度的分数、
+    失败项、以及 Critic 给出的理由文本（reason 是可复用知识的一等内容）。
+    """
+
+    tested_round: int
+    before: dict  # {value, failed: [id...], reason}
+    after: dict  # 同上
+    verdict_delta: str  # 人类可读的变化摘要，如 "A4: ✗→✓, 分 0.75→1.00"
+
+
+class KnowledgeConclusion(BaseModel):
+    """经验知识库里的一条沉淀结论。
+
+    闭环语义：Generator 改了 `change`（delta_note）→ Critic 前后 verdict 对比 →
+    判定 `status`（有效/无效/待验）→ 沉淀为可复用知识。
+    """
+
+    id: str
+    dim: str  # 关联的评分维度
+    finding: str  # 发现的问题（来自上轮 Critic 失败项/低分）
+    change: str  # 本轮改动说明（delta_note）
+    status: ConclusionStatus = "pending"
+    critic_evidence: CriticEvidence | None = None  # 待验证时为空，验证后填入
+    lesson: str | None = None  # 归纳的可复用结论（含 Critic reason）
+    tags: list[str] = Field(default_factory=list)
+    created_round: int  # 首次提出（改动）的轮次
+    verified_round: int | None = None  # 验证完成的轮次
 
 
 __all__ = [
@@ -263,12 +309,15 @@ __all__ = [
     "Benchmark",
     "CheckItem",
     "ChecklistValue",
+    "ConclusionStatus",
     "ContentSpec",
     "ContentSpecTask",
     "ContinuousRubric",
+    "CriticEvidence",
     "CriticItemJudgment",
     "CriticVerdict",
     "DimensionScore",
+    "KnowledgeConclusion",
     "SampleRef",
     "ScoreDimension",
     "ScoringType",

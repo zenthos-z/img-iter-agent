@@ -1,15 +1,16 @@
-"""run 目录管理：`data/runs/<run_id>/`。
+"""run 目录管理：`data/runs/<run_id>/`（一题一 loop：run_id = <bench>-<sample>）。
 
-run 目录布局（ARCH §3.5）：
+run 目录布局（ARCH §3.5，经验层演进见 ADR-010）：
   runs/<run_id>/
     meta.json            # 本次 run 的固定参数（bench/model/起止/说明）
-    index.json           # 记忆索引：attempt 列表（model/mode/scores/tags/链接）
-    lessons/             # 经验 MD（Summarizer 产出，文件链接）
+    index.json           # 记忆索引：attempt 列表（model/mode/scores/改动说明/链接）
+    lessons/
+      conclusions.json   # 经验知识库（结构化、Critic 驱动验证，替代原散落单轮 MD）
     out/                 # 生成图产物（三视图等，按 attempt 子目录）
     human_scores/        # 人工复评（异步补）
-    checkpoints.sqlite   # LangGraph checkpoint（Step 4）
-    calibrated_weights.json  # 排序校准产物（Step 5）
-    trajectory.jsonl     # 头等公民：完整轨迹
+    checkpoints.sqlite   # LangGraph checkpoint（断点续跑）
+    calibrated_weights.json  # 排序校准产物
+    trajectory.jsonl     # 头等公民：完整轨迹（每轮含 delta_note）
 
 git 忽略 runs/* 内容（只留 .gitkeep）—— run 是系统产出，不进版本库。
 """

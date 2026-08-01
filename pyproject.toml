@@ -21,7 +21,13 @@ dependencies = [
     "scipy",
     "pandas",
     "matplotlib",
+    # 可视化打分台 (Step 6, 前后端解耦)
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
 ]
+
+[project.scripts]
+img-iter-web = "img_iter_agent.web.app:main"
 
 [project.optional-dependencies]
 dev = [

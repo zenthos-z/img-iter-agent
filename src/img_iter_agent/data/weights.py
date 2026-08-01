@@ -5,9 +5,10 @@
     features[dim] ∈ [0,1]      # 二分维度=通过率, 连续维度=LLM 0-1 分
     restoration = Σ(wᵢ × features[i])
 
-权重来源优先级：
-    1. `runs/<run_id>/calibrated_weights.json`（排序校准闭环产出，若存在）
-    2. benchmark manifest 的 `weight_init`（先验）
+权重来源优先级（Step 6 web 台加入 sample 级校准）：
+    1. `runs/<run_id>/calibrated_weights.json`（单 loop 校准产物，若存在）
+    2. `calibration/<bench_id>/<sample_id>_weights.json`（sample 级跨 loop 校准产物）
+    3. benchmark manifest 的 `weight_init`（先验）
 
 本模块是**纯函数**，无网络、无 LLM 依赖，可完全单测。
 """
@@ -52,33 +53,58 @@ def init_weights(bench: Benchmark) -> dict[str, float]:
     return bench.init_weights()
 
 
-def load_weights(bench: Benchmark, *, run_dir: Path | None = None) -> dict[str, float]:
-    """加载生效权重：校准文件优先，否则用 benchmark 先验。
+def load_weights(
+    bench: Benchmark, *, run_dir: Path | None = None, sample_id: str | None = None
+) -> dict[str, float]:
+    """加载生效权重：按优先级链找校准文件，否则用 benchmark 先验。
+
+    优先级（高→低）：
+        1. `run_dir/calibrated_weights.json`（单 loop 校准产物）
+        2. `data/calibration/<bench_id>/<sample_id>_weights.json`（sample 级跨 loop 校准产物）
+        3. benchmark manifest 的 weight_init 先验
 
     Args:
         bench: benchmark（提供 weight_init 先验 + 合法维度名）。
-        run_dir: 某次 run 目录；若其下有 calibrated_weights.json 则覆盖先验。
+        run_dir: 某次 run 目录；若其下有 calibrated_weights.json 则最高优先。
+        sample_id: 若给，且 run_dir 没有校准文件，则查 sample 级校准文件。
     """
     prior = init_weights(bench)
-    if run_dir is None:
-        return prior
-    calib = run_dir / "calibrated_weights.json"
-    if not calib.exists():
-        return prior
-    data = json.loads(calib.read_text(encoding="utf-8"))
-    # 校准文件格式：{"weights": {dim: w, ...}} 或直接 {dim: w, ...}
+    if run_dir is not None:
+        w = _load_calib_file(run_dir / "calibrated_weights.json", prior)
+        if w is not None:
+            return w
+    if sample_id is not None:
+        # sample 级文件：data_root/calibration/<bench_id>/<sample_id>_weights.json
+        # run_dir 存在时从它推断 data_root；否则回退 _DEFAULT_DATA_ROOT。
+        data_root = run_dir.parents[1] if run_dir is not None else None
+        if data_root is None:
+            from ...config import get_settings  # 延迟导入避免循环
+
+            data_root = get_settings().data_root
+        p = Path(data_root) / "calibration" / bench.bench_id / f"{sample_id}_weights.json"
+        w = _load_calib_file(p, prior)
+        if w is not None:
+            return w
+    return prior
+
+
+def _load_calib_file(path: Path, prior: dict[str, float]) -> dict[str, float] | None:
+    """从单个校准文件加载权重。无文件/无效则返回 None（让调用方继续找下一级）。"""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
     raw = data.get("weights", data) if isinstance(data, dict) else {}
-    # 只采纳属于本 benchmark 的维度，并过滤非法值
     valid_dims = set(prior)
     calibrated: dict[str, float] = {}
     for dim, w in raw.items():
         if dim in valid_dims and isinstance(w, int | float) and w >= 0:
             calibrated[dim] = float(w)
     if not calibrated:
-        return prior
-    # 用校准值替换先验里出现的维度；未出现在校准文件里的维度保留先验
-    merged = {**prior, **calibrated}
-    return merged
+        return None
+    return {**prior, **calibrated}
 
 
 def apply_weights(verdict: CriticVerdict, weights: dict[str, float]) -> CriticVerdict:

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>img-iter-agent 打分台</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">img-iter-agent · 打分台</a>
+  <nav>
+    <a href="#/">总览</a>
+    <a href="#/config">Agent 设置</a>
+  </nav>
+</header>
+<main id="app"></main>
+
+<!-- 单个 trace 详情 modal -->
+<div id="trace-modal" class="modal hidden">
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-body" id="trace-modal-body"></div>
+</div>
+
+<!-- 图片 lightbox -->
+<div id="lightbox" class="lightbox hidden" data-close>
+  <img id="lightbox-img" alt="">
+</div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

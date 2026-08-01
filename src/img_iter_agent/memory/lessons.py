@@ -1,42 +1,35 @@
-"""经验 MD 读写：Summarizer 写经验、Generator 读经验注入。
+"""经验层入口：统一走结构化知识库 conclusions.json（替代原单轮 MD）。
 
-经验是双层记忆的「人类可读层」（ADR-004）：经验正文用 MD 写（便于人读/改），
-JSON 索引只记参数与文件链接（见 index.py）。这里只管 MD 文件的落地与读取。
+历史：原为「每轮一个 lesson_<round>_<id>.md」的散落碎片，无法跨轮沉淀。
+现改为：所有经验沉淀进 `lessons/conclusions.json`（结构化、Critic 驱动验证，
+见 knowledge.py）。本模块对外保留兼容函数名，但语义指向 conclusions.json。
 
-经验 MD 命名：runs/<run_id>/lessons/lesson_<round>_<short_id>.md
+经验归属 sample（一题一 loop）：每个 run 目录一份 conclusions.json。
+读写/判定逻辑见 knowledge.py；本模块仅作薄封装与目录约定。
 """
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 
-def write_lesson(run_dir: Path, *, round: int, title: str, body: str,
-                 short_id: str = "") -> Path:
-    """把一条经验写成 MD，返回相对 run 目录的路径。"""
-    lessons_dir = run_dir / "lessons"
-    lessons_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    sid = short_id or ts
-    fname = f"lesson_{round:03d}_{sid}.md"
-    path = lessons_dir / fname
-    content = f"# {title}\n\n> 轮次 {round} | {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n{body}\n"
-    path.write_text(content, encoding="utf-8")
-    return Path("lessons") / fname
-
-
-def read_lesson(run_dir: Path, rel_path: str) -> str:
-    """读一条经验 MD（rel_path 相对 run 目录）。"""
-    return (run_dir / rel_path).read_text(encoding="utf-8")
+def conclusions_path(run_dir: Path) -> Path:
+    """conclusions.json 的路径（相对 run 目录）。"""
+    return run_dir / "lessons" / "conclusions.json"
 
 
 def list_lessons(run_dir: Path) -> list[Path]:
-    """列出某 run 的所有经验 MD（按文件名排序）。"""
-    lessons_dir = run_dir / "lessons"
-    if not lessons_dir.exists():
-        return []
-    return sorted(lessons_dir.glob("lesson_*.md"))
+    """列出经验文件。新模型下只有 conclusions.json 一个文件。
+
+    保留原函数名供 web 层兼容；返回单元素列表（或空）。
+    """
+    p = conclusions_path(run_dir)
+    return [p] if p.exists() else []
 
 
-__all__ = ["list_lessons", "read_lesson", "write_lesson"]
+def read_lesson(run_dir: Path, rel_path: str) -> str:
+    """读经验内容。新模型下 rel_path 指向 conclusions.json，返回其 JSON 文本。"""
+    return (run_dir / rel_path).read_text(encoding="utf-8")
+
+
+__all__ = ["conclusions_path", "list_lessons", "read_lesson"]

@@ -77,9 +77,17 @@ class _OpenAiCompatLlm:
 def cmd_run(args: argparse.Namespace) -> int:
     settings = get_settings()
     lb = load_benchmark(args.bench, settings=settings)
-    store = RunStore.create(args.run_id or f"{args.bench}-{args.sample}",
-                            args.bench, model=args.model or settings.model_seedream_pro,
-                            settings=settings, note=args.note)
+    # 一题一 loop：loop_id = <bench>-<sample>（或用户指定的 --run-id）。
+    # 已有则续跑（open），否则新建（create）。
+    loop_id = args.run_id or f"{args.bench}-{args.sample}"
+    run_dir = settings.run_dir(loop_id)
+    if run_dir.exists():
+        store = RunStore.open(loop_id, settings=settings)
+        print(f"[run] 续跑已有 loop: {loop_id}（当前 {len(list(run_dir.glob('out/a*')))} 轮历史）")
+    else:
+        store = RunStore.create(loop_id, args.bench,
+                                model=args.model or settings.model_seedream_pro,
+                                settings=settings, note=args.note)
 
     # 构造 generator/critic/summarizer
     router = Router(settings=settings, client=DmxapiClient(settings))
@@ -108,7 +116,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         verdict = state.get("_verdict")
         r = state.get("round", 0)
         rest = verdict.restoration if verdict else None
-        print(f"\n[round {r}] 还原度={rest:.4f} | 失败项见 lessons")
+        print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
         print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
         try:
             decision = input("  > ").strip() or "continue"
