@@ -21,6 +21,10 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+from langsmith import traceable
 
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
@@ -192,52 +196,28 @@ class Critic:
         self.client = client
         self.bench = bench
 
-    def evaluate(self, inp: CriticInput) -> CriticVerdict:
+    def evaluate(self, inp: CriticInput, *, config: RunnableConfig | None = None) -> CriticVerdict:
         """对一个 trace 打分，产出 CriticVerdict。
 
         系统目标=还原度，故**所有维度都对照参考图(target)与生成图对比评判**：
-        每个 prompt 都同时注入 target + 生成图（无绝对型维度）。
+        每个 prompt 都同时注入 target + 生成图（无绝对型维度）。每个维度的评分
+        经 `_score_dimension` 作为一条 LangSmith chain run 上报（含 LLM 原始输出 +
+        解析后的结构化分），便于在 LangSmith 里按维度排查。config 由 LangGraph 节点
+        注入，透传给 @traceable 子方法以保证 trace 嵌套在节点 run 之下。
         """
         spec = inp.sample.spec
         target = inp.sample.target_path
         generated = inp.generated_images
+        ls_extra: Any = {"config": config} if config is not None else {}
 
         dimension_scores: list[DimensionScore] = []
         for dim_def in self.bench.score_dimensions:
-            name = dim_def.dim
-            checklist_val = spec.checklist.get(name)
-
-            # 所有维度都是对比型（对照 target 评）
-            is_comparative = True
-
-            if dim_def.scoring_type == "binary":
-                items = checklist_val if isinstance(checklist_val, list) else []
-                if not items:
-                    # manifest 声明二分但考题缺 checklist → 当作零项，给中性分
-                    dimension_scores.append(
-                        DimensionScore(dim=name, scoring_type="binary", value=0.0,
-                                       items=[], raw="(无 checklist 项)")
-                    )
-                    continue
-                msgs = _binary_prompt(name, dim_def.desc or name, items,
-                                      is_comparative, target, generated)
-                raw_text = self.client.complete(msgs)
-                raw_json = _extract_json(raw_text)
-                judgments = _parse_binary_items(raw_json, items)
-                value = sum(1 for j in judgments if j.passed) / len(judgments) if judgments else 0.0
-                dimension_scores.append(
-                    DimensionScore(dim=name, scoring_type="binary", value=value, items=judgments)
-                )
-            else:  # continuous
-                rubric = checklist_val if isinstance(checklist_val, ContinuousRubric) else ContinuousRubric(points=[])
-                msgs = _continuous_prompt(name, dim_def.desc or name, rubric,
-                                          is_comparative, target, generated)
-                raw_text = self.client.complete(msgs)
-                raw_json = _extract_json(raw_text)
-                score, reason = _parse_continuous_score(raw_json)
-                dimension_scores.append(
-                    DimensionScore(dim=name, scoring_type="continuous", value=score, raw=reason)
-                )
+            checklist_val = spec.checklist.get(dim_def.dim)
+            result = self._score_dimension(
+                dim_def, target=target, generated=generated,
+                checklist_val=checklist_val, langsmith_extra=ls_extra,
+            )
+            dimension_scores.append(result["score"])
 
         restoration = recompute_restoration(dimension_scores, inp.weights)
         return CriticVerdict(
@@ -246,6 +226,52 @@ class Critic:
             weights_used=dict(inp.weights),
             restoration=restoration,
         )
+
+    @traceable(name="critic.score_dimension", run_type="chain")
+    def _score_dimension(
+        self, dim_def, *, target: Path, generated: list[Path], checklist_val,
+    ) -> dict:
+        """单个维度的评分（作为一条 LangSmith chain run）。
+
+        返回结构化 dict：`score` 是要累加进 verdict 的 DimensionScore；其余字段
+        （raw_llm_output / parsed）作为 trace output，让 LangSmith 看到喂了什么、
+        LLM 原文返回什么、解析后得多少分。解析失败给安全默认值，绝不抛错中断闭环。
+        所有维度都是对比型（对照 target 评）。
+        """
+        name = dim_def.dim
+        if dim_def.scoring_type == "binary":
+            items = checklist_val if isinstance(checklist_val, list) else []
+            if not items:
+                # manifest 声明二分但考题缺 checklist → 当作零项，给中性分
+                return {
+                    "dimension": name,
+                    "score": DimensionScore(dim=name, scoring_type="binary", value=0.0,
+                                            items=[], raw="(无 checklist 项)"),
+                    "raw_llm_output": None,
+                }
+            msgs = _binary_prompt(name, dim_def.desc or name, items, True, target, generated)
+            raw_text = self.client.complete(msgs)
+            raw_json = _extract_json(raw_text)
+            judgments = _parse_binary_items(raw_json, items)
+            value = sum(1 for j in judgments if j.passed) / len(judgments) if judgments else 0.0
+            return {
+                "dimension": name,
+                "score": DimensionScore(dim=name, scoring_type="binary", value=value, items=judgments),
+                "raw_llm_output": raw_text,
+                "parsed": [j.model_dump() for j in judgments],
+            }
+        # continuous
+        rubric = checklist_val if isinstance(checklist_val, ContinuousRubric) else ContinuousRubric(points=[])
+        msgs = _continuous_prompt(name, dim_def.desc or name, rubric, True, target, generated)
+        raw_text = self.client.complete(msgs)
+        raw_json = _extract_json(raw_text)
+        score, reason = _parse_continuous_score(raw_json)
+        return {
+            "dimension": name,
+            "score": DimensionScore(dim=name, scoring_type="continuous", value=score, raw=reason),
+            "raw_llm_output": raw_text,
+            "parsed_reason": reason,
+        }
 
 
 __all__ = ["Critic", "CriticInput"]

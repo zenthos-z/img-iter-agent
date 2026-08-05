@@ -16,6 +16,10 @@ reason 文本本身是可复用知识（"为什么有效/为什么没用"）。
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+from langsmith import traceable
 
 from ..llm import LlmClient
 from ..memory import index, knowledge
@@ -46,6 +50,7 @@ class Summarizer:
         sample_id: str,
         prev_verdict: CriticVerdict | None = None,
         prev_delta_note: str | None = None,
+        config: RunnableConfig | None = None,
     ) -> str:
         """做 Critic 驱动的经验闭环验证，更新 conclusions.json，返回其相对 run 目录路径。
 
@@ -57,10 +62,15 @@ class Summarizer:
         """
         kb = knowledge.load_conclusions(run_dir, sample_id=sample_id, loop_id=outcome.model)
 
+        # config 透传给 @traceable 子方法（_verify_pending/_llm_refine），保证其 chain run
+        # 嵌套在 LangGraph summarizer 节点 run 之下（LangSmith 可观测）。
+        ls_extra: Any = {"config": config} if config is not None else {}
+
         # 1) 验证上轮的 pending 结论：用本轮 verdict 作为"后"证据判定 status
         if prev_verdict is not None and prev_delta_note:
             self._verify_pending(kb, prev_verdict=prev_verdict, cur_verdict=verdict,
-                                 cur_round=round, prev_delta_note=prev_delta_note)
+                                 cur_round=round, prev_delta_note=prev_delta_note,
+                                 langsmith_extra=ls_extra)
 
         # 2) 登记本轮的改动为新 pending 结论（待下轮 Critic 验证）
         if outcome.delta_note:
@@ -68,7 +78,7 @@ class Summarizer:
 
         # 3) 可选 LLM 归纳：用 effective/ineffective 上下文提炼可复用经验
         if self.llm is not None and kb.conclusions:
-            self._llm_refine(kb)
+            self._llm_refine(kb, langsmith_extra=ls_extra)
 
         lesson_ref = str(knowledge.save_conclusions(run_dir, kb).relative_to(run_dir))
 
@@ -90,11 +100,17 @@ class Summarizer:
         index.append_entry(run_dir, entry)
         return lesson_ref
 
+    @traceable(name="summarizer.verify_pending", run_type="chain")
     def _verify_pending(
         self, kb: knowledge.KnowledgeBase, *, prev_verdict: CriticVerdict,
         cur_verdict: CriticVerdict, cur_round: int, prev_delta_note: str,
-    ) -> None:
-        """验证上轮 pending 结论：对比 prev→cur Critic 判定，更新 status + critic_evidence。"""
+    ) -> list[dict]:
+        """验证上轮 pending 结论：对比 prev→cur Critic 判定，更新 status + critic_evidence。
+
+        返回每条 pending 的判定（dim/status/前后分差）作为 LangSmith chain run output，
+        让经验闭环的「上轮改了 X → 这轮分数变了多少 → 判定有效/无效」在 trace 里可见。
+        """
+        results: list[dict] = []
         for c in kb.pending():
             status, evidence, lesson = knowledge.judge_status(prev_verdict, cur_verdict, c.dim)
             evidence.tested_round = cur_round
@@ -102,6 +118,13 @@ class Summarizer:
             c.critic_evidence = evidence
             c.lesson = lesson
             c.verified_round = cur_round
+            results.append({
+                "dim": c.dim,
+                "change": c.change,
+                "status": status,
+                "verdict_delta": evidence.verdict_delta if evidence else None,
+            })
+        return results
 
     def _register_round_changes(
         self, kb: knowledge.KnowledgeBase, *, outcome: GenOutcome,
@@ -132,11 +155,15 @@ class Summarizer:
             return "; ".join(reasons) or f"{dim} 未通过"
         return d.raw or f"{dim} 低分({d.value:.2f})"
 
-    def _llm_refine(self, kb: knowledge.KnowledgeBase) -> None:
-        """用 LLM 对刚验证的结论做一句可复用归纳（写到 lesson 字段）。"""
+    @traceable(name="summarizer.llm_refine", run_type="chain")
+    def _llm_refine(self, kb: knowledge.KnowledgeBase) -> str | None:
+        """用 LLM 对刚验证的结论做一句可复用归纳（写到 lesson 字段）。
+
+        返回归纳文本作为 LangSmith chain run output。
+        """
         verified = [c for c in kb.conclusions if c.status in ("verified_effective", "ineffective")]
         if not verified:
-            return
+            return None
         facts = "\n".join(
             f"- [{c.dim}] 改动「{c.change}」→ {c.status}（{c.critic_evidence.verdict_delta if c.critic_evidence else ''}）"
             for c in verified
@@ -148,7 +175,7 @@ class Summarizer:
         try:
             summary = self.llm.complete(msgs).strip()  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
-            return
+            return None
         if summary:
             # 追加到最近一条 verified 结论的 lesson（不覆盖 Critic 驱动的判定文本）
             for c in reversed(verified):
@@ -157,6 +184,7 @@ class Summarizer:
                 else:
                     c.lesson = summary
                 break
+        return summary or None
 
 
 __all__ = ["Summarizer"]

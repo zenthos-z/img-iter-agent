@@ -17,7 +17,10 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from typing import Any
 
+from langchain_core.runnables import RunnableConfig
+from langsmith import traceable
 from pydantic import BaseModel, Field
 
 from ..data.benchmark import Sample
@@ -85,6 +88,7 @@ class Generator:
         baseline_ref: str | None = None,
         prior_feedback: PriorFeedback | None = None,
         model_hint: ModelFamily | None = None,
+        config: RunnableConfig | None = None,
     ) -> GenOutcome:
         """跑一轮：构造/改进 prompt → 单次生成【一张三视图排版图】→ 记录参数。
 
@@ -104,7 +108,10 @@ class Generator:
             gen_mode = "image_edit"
 
         # 构造/改进 prompt + 记录本轮改动说明（delta_note）
-        base_prompt = self._base_prompt(sample)
+        # config 透传给 @traceable 子方法（_base_prompt/knowledge_context/_improve_prompt），
+        # 保证它们的 chain run 嵌套在 LangGraph 节点 run 之下（LangSmith 可观测）。
+        ls_extra: Any = {"config": config} if config is not None else {}
+        base_prompt = self._base_prompt(sample, langsmith_extra=ls_extra)
         improved = False
         delta_note: str | None = None  # 本轮相对上轮改了什么（供经验闭环沉淀）
         # 多策略基建：按 test_variable 分派改进策略。
@@ -112,8 +119,12 @@ class Generator:
         if round > 1 and prior_feedback and prior_feedback.failed_items:
             # === 策略: prompt（当前唯一实现）===
             # 读经验知识库：让改进知道"之前什么有效/无效"
-            knowledge_ctx = self.knowledge_context(run_dir)
-            prompt, delta_note = self._improve_prompt(base_prompt, prior_feedback, knowledge_ctx)
+            knowledge_ctx = self.knowledge_context(run_dir, langsmith_extra=ls_extra)
+            improved_result = self._improve_prompt(
+                base_prompt, prior_feedback, knowledge_ctx, langsmith_extra=ls_extra,
+            )
+            prompt = improved_result["new_prompt"]
+            delta_note = improved_result["delta_note"]
             improved = True
         else:
             # === 策略: 首轮基线（无改进）===
@@ -130,7 +141,7 @@ class Generator:
             reference_images=reference_images,
             model_hint=model_hint,
         )
-        img: GeneratedImage = self.router.generate(req, out_dir=attempt_out)
+        img: GeneratedImage = self.router.generate(req, out_dir=attempt_out, config=config)
         ext = img.image_path.suffix or ".png"
         dest = attempt_out / f"three_view{ext}"
         if img.image_path != dest:
@@ -155,6 +166,7 @@ class Generator:
             improved_from_feedback=improved,
         )
 
+    @traceable(name="generator.base_prompt", run_type="chain")
     def _base_prompt(self, sample: Sample) -> str:
         """首轮确定性 prompt：考题 instruction + 约束。可选用 LLM 润色措辞。"""
         spec = sample.spec
@@ -172,20 +184,23 @@ class Generator:
         ]
         return self.llm.complete(msgs).strip() or base
 
+    @traceable(name="generator.improve_prompt", run_type="chain")
     def _improve_prompt(
         self, current_prompt: str, feedback: PriorFeedback, knowledge_ctx: str = ""
-    ) -> tuple[str, str]:
+    ) -> dict:
         """基于上轮 Critic 失败反馈改进 prompt。
 
-        返回 (new_prompt, delta_note)：delta_note 描述本轮针对哪些问题做了什么改动，
-        供经验闭环沉淀（Summarizer 用它 + Critic 前后 verdict 判定改动是否有效）。
+        返回 {"new_prompt", "delta_note"}（作为 LangSmith chain run 的 output）：
+        delta_note 描述本轮针对哪些问题做了什么改动，供经验闭环沉淀
+        （Summarizer 用它 + Critic 前后 verdict 判定改动是否有效）。
         knowledge_ctx：经验知识库上下文（effective/ineffective），引导改进方向。
         """
         if self.llm is None:
             # 无 LLM 时，确定性补强：把失败项理由追加为正向要求
             fixes = [f"确保: {it.reason}" for it in feedback.failed_items]
             delta_note = "针对失败项 " + ", ".join(it.id for it in feedback.failed_items) + " 追加正向要求"
-            return current_prompt + "\n改进点:\n" + "\n".join(fixes), delta_note
+            return {"new_prompt": current_prompt + "\n改进点:\n" + "\n".join(fixes),
+                    "delta_note": delta_note}
 
         fails = "\n".join(f"- [{it.id}] {it.reason}" for it in feedback.failed_items)
         cont = ""
@@ -214,11 +229,11 @@ class Generator:
         # 解析两部分
         if "---PROMPT---" in raw:
             note_part, prompt_part = raw.split("---PROMPT---", 1)
-            delta_note = note_part.strip()
-            return prompt_part.strip() or current_prompt, delta_note
+            return {"new_prompt": prompt_part.strip() or current_prompt,
+                    "delta_note": note_part.strip()}
         # 兜底：LLM 没按格式，整体当 prompt，delta_note 粗略描述
-        delta_note = "基于失败项改进 prompt（LLM 未返回结构化改动说明）"
-        return raw, delta_note
+        return {"new_prompt": raw,
+                "delta_note": "基于失败项改进 prompt（LLM 未返回结构化改动说明）"}
 
     def _extract_constraints(self, sample: Sample) -> dict:
         """从 content_spec 读原始 constraints 字段（若存在）。"""
@@ -228,6 +243,7 @@ class Generator:
         except Exception:  # noqa: BLE001
             return {}
 
+    @traceable(name="generator.knowledge_context", run_type="chain")
     def knowledge_context(self, run_dir: Path) -> str:
         """读取经验知识库，构造给下轮 prompt 改进的上下文。
 

@@ -35,7 +35,7 @@ class _FakeRouter(Router):
     def __init__(self) -> None:
         self.calls = 0
 
-    def generate(self, req, out_dir: Path) -> GeneratedImage:  # type: ignore[override]
+    def generate(self, req, out_dir: Path, *, config=None) -> GeneratedImage:  # type: ignore[override]
         self.calls += 1
         out_dir.mkdir(parents=True, exist_ok=True)
         p = out_dir / f"fake_{self.calls}.png"

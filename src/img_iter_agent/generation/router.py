@@ -11,6 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+from langsmith import traceable
 
 from ..config import Settings, get_settings
 from .base import GeneratedImage, GenRequest, ModelFamily
@@ -95,10 +99,30 @@ class Router:
         self.settings = settings or get_settings()
         self.client = client or DmxapiClient(self.settings)
 
-    def generate(self, req: GenRequest, out_dir: Path) -> GeneratedImage:
-        decision = route(req, settings=self.settings)
-        return decision.generate(req, client=self.client, model_id=decision.model_id,
-                                 out_dir=out_dir)
+    def generate(self, req: GenRequest, out_dir: Path,
+                 *, config: RunnableConfig | None = None) -> GeneratedImage:
+        """出图，并作为一条 LangSmith chain run 上报「请求→产物」映射。
+
+        出图本身的 tool 埋点在 client.py:_trace_image_call（run_type=tool），这里只多记
+        一层映射（family/model_id/prompt→产物路径），便于在 LangSmith 关联请求与产物。
+        真实 GeneratedImage 通过 holder 旁路返回（与 client.py 的 _trace_image_call 同模式，
+        避免把含 Path 的大对象塞进 trace output）。
+        """
+        ls_extra: Any = {"config": config} if config is not None else {}
+        holder: dict[str, Any] = {}
+
+        @traceable(name="router.generate", run_type="chain")
+        def _do() -> dict:
+            decision = route(req, settings=self.settings)
+            img = decision.generate(req, client=self.client, model_id=decision.model_id,
+                                    out_dir=out_dir)
+            holder["img"] = img
+            return {"family": decision.family.value, "model_id": decision.model_id,
+                    "request_prompt": req.prompt, "output_path": str(img.image_path),
+                    "model": img.model}
+
+        _do(langsmith_extra=ls_extra)
+        return holder["img"]
 
 
 __all__ = ["RouteDecision", "Router", "family_for_model_id", "route"]
