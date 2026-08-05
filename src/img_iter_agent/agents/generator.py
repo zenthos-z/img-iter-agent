@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import BaseModel, Field
 
 from ..data.benchmark import Sample
 from ..generation.base import GeneratedImage, GenRequest, ModelFamily, SizeSpec
@@ -39,16 +40,14 @@ _DEFAULT_IMPROVE_PROMPT = (
 )
 
 
-@dataclass
-class PriorFeedback:
+class PriorFeedback(BaseModel):
     """上轮 Critic 反馈的摘要，供 Generator 改进 prompt。"""
 
-    failed_items: list[CriticItemJudgment] = field(default_factory=list)
-    continuous_notes: list[str] = field(default_factory=list)  # 连续维度的低分理由
+    failed_items: list[CriticItemJudgment] = Field(default_factory=list)
+    continuous_notes: list[str] = Field(default_factory=list)  # 连续维度的低分理由
 
 
-@dataclass
-class GenOutcome:
+class GenOutcome(BaseModel):
     """Generator 一轮的产出。"""
 
     attempt_id: str
