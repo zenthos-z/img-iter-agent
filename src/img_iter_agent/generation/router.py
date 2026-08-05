@@ -37,6 +37,18 @@ def _model_id_for(family: ModelFamily, settings: Settings) -> str:
     }[family]
 
 
+def family_for_model_id(model_id: str, settings: Settings) -> ModelFamily | None:
+    """反查：一个 model_id 属于哪族（按 .env 配置匹配）。
+
+    用于把 loop 启动时选的 model_id 转成 ModelFamily，作为 model_hint 强制路由，
+    避免 Router 按自动规则选到别的模型（用户选的模型不生效）。
+    """
+    for fam in (ModelFamily.A_OPENAI, ModelFamily.B_DOUBAO, ModelFamily.C_QWEN, ModelFamily.D_GEMINI):
+        if _model_id_for(fam, settings) == model_id:
+            return fam
+    return None
+
+
 _DISPATCHERS = {
     ModelFamily.A_OPENAI: family_a_openai.generate,
     ModelFamily.B_DOUBAO: family_b_doubao.generate,
@@ -89,4 +101,4 @@ class Router:
                                  out_dir=out_dir)
 
 
-__all__ = ["RouteDecision", "Router", "route"]
+__all__ = ["RouteDecision", "Router", "family_for_model_id", "route"]

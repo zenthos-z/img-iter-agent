@@ -26,6 +26,7 @@ def get_loop(loop_id: str) -> dict:
             "status": handle.phase,
             "round": handle.round,
             "interrupt_payload": handle.interrupt_payload,
+            "last_error": handle.last_error,
         }
     detail = build_loop_detail(loop_id, status_extra=status_extra)
     if detail is None:
@@ -35,7 +36,7 @@ def get_loop(loop_id: str) -> dict:
 
 @router.get("/loops/{loop_id}/status")
 def get_loop_status(loop_id: str) -> dict:
-    """轻量状态：只返回 phase/round/interrupt_payload（前端轮询用）。"""
+    """轻量状态：phase/round/interrupt_payload + 当前 agent 节点（前端轮询用）。"""
     handle = get_runner().get(loop_id)
     if handle is None:
         # 不是 web runner 启动的 loop：从 meta 推断
@@ -47,13 +48,27 @@ def get_loop_status(loop_id: str) -> dict:
             "phase": detail.status,
             "round": detail.round,
             "interrupt_payload": None,
+            "current_node": None,
+            "rounds_remaining": 0,
             "controlled": False,
         }
+    # 实时查 graph 的「即将执行节点」，让前端看到 generator→critic→summarizer 推进
+    current_node = None
+    if handle.app is not None and handle.cfg is not None:
+        try:
+            snap = handle.app.get_state(handle.cfg)
+            nxt = getattr(snap, "next", ()) or ()
+            # next 是「下一步要跑的节点名」；interrupt 时为空
+            current_node = nxt[0] if nxt else None
+        except Exception:  # noqa: BLE001
+            current_node = None
     return {
         "loop_id": loop_id,
         "phase": handle.phase,
         "round": handle.round,
         "interrupt_payload": handle.interrupt_payload,
+        "current_node": current_node,
+        "rounds_remaining": handle.rounds_remaining,
         "last_error": handle.last_error,
         "controlled": True,
     }
@@ -66,7 +81,8 @@ def get_loop_status(loop_id: str) -> dict:
 def start_loop(req: LoopStartRequest) -> dict:
     """启动一个新 loop，跑到第一个 interrupt。返回 loop_id。"""
     loop_id = get_runner().start(
-        bench_id=req.bench_id, sample_id=req.sample_id, model=req.model, note=req.note
+        bench_id=req.bench_id, sample_id=req.sample_id,
+        model=req.model, note=req.note, rounds=req.rounds,
     )
     return {"loop_id": loop_id, "phase": "running"}
 

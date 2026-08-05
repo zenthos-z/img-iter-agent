@@ -25,10 +25,12 @@ from langgraph.types import Command, interrupt
 from ..agents.critic import Critic, CriticInput
 from ..agents.generator import Generator, GenOutcome
 from ..agents.summarizer import Summarizer
+from ..config import get_settings
 from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
 from ..data.trajectory import TrajectoryReader, TrajectoryWriter
 from ..data.weights import load_weights
+from ..generation.base import ModelFamily
 from ..memory.schema import AttemptRecord, CriticVerdict
 from .state import CompiledGraph, RunState
 
@@ -51,11 +53,22 @@ def build_graph(
     summarizer: Summarizer,
     sample_id: str,
     checkpointer=None,
+    loop_model: str | None = None,
 ) -> CompiledGraph:
-    """构建闭环 A 图。checkpointer 不传则用 InMemorySaver（测试）。"""
+    """构建闭环 A 图。checkpointer 不传则用 InMemorySaver（测试）。
+
+    loop_model：启动时指定的生图 model_id。若提供，会反查成 ModelFamily 作为
+    model_hint 强制路由，确保用用户选的模型出图（否则 Router 按自动规则选）。
+    """
 
     run_dir = run_store.run_dir
     sample = bench.sample(sample_id)
+
+    # 把 loop 的 model_id 反查成 family，作为每轮出图的强制 hint
+    model_hint: ModelFamily | None = None
+    if loop_model:
+        from ..generation.router import family_for_model_id
+        model_hint = family_for_model_id(loop_model, get_settings())
 
     def generator_node(state: RunState) -> dict:
         round_n = state.get("round", 0) + 1
@@ -82,7 +95,7 @@ def build_graph(
         outcome = generator.generate_round(
             sample=sample, out_dir=run_dir / "out", run_dir=run_dir,
             round=round_n, baseline_ref=baseline_ref,
-            prior_feedback=prior_feedback,
+            prior_feedback=prior_feedback, model_hint=model_hint,
         )
         return {
             "round": round_n,

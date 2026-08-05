@@ -131,6 +131,11 @@ button.sm, .btn.sm { padding: 3px 10px; font-size: 11px; }
 .trace-line { font-size: 12px; margin-top: 10px; color: var(--muted); }
 .trace-line .res { color: var(--text); font-family: var(--mono); }
 .best { color: var(--accent); font-weight: 700; }
+/* trace 卡片的参数列表（模型/尺寸/模式/基线/时间） */
+.trace-params { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.trace-params .param { display: flex; gap: 6px; font-size: 11px; line-height: 1.5; }
+.trace-params .pk { color: var(--muted); flex-shrink: 0; min-width: 36px; }
+.trace-params .pv { color: var(--text); font-family: var(--mono); word-break: break-all; }
 
 /* trace 详情 modal */
 .modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }

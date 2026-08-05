@@ -128,6 +128,7 @@ class LoopDetail(BaseModel):
     status: str = "unknown"
     round: int | None = None  # 当前轮（运行中时）
     interrupt_payload: dict | None = None  # 等审批时给前端展示的 payload
+    last_error: str | None = None  # error 时的错误信息（供前端展示）
     traces: list[TraceOut] = Field(default_factory=list)
     conclusions: list[ConclusionOut] = Field(default_factory=list)  # 经验知识库
     target_image: str | None = None  # benchmark target 图路径
@@ -178,6 +179,7 @@ class LoopStartRequest(BaseModel):
     sample_id: str
     model: str | None = None  # 为空用 settings 默认
     note: str | None = None
+    rounds: int | None = None  # 自动连跑轮数；None/1=单轮跑首停审批，>1=后台连跑不等审批
 
 
 class LoopControlRequest(BaseModel):

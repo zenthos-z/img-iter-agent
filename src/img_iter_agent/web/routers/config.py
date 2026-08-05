@@ -5,9 +5,45 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ...config import get_settings
 from ..services.agent_config import AGENTS, get_agent_config, reset_agent_config, save_agent_config
 
 router = APIRouter()
+
+# 生图模型 key→（settings 字段名, 展示标签）。前端启动弹窗从这里拉可选模型。
+_IMAGE_MODEL_DEFS = [
+    ("seedream_pro", "model_seedream_pro", "Seedream Pro"),
+    ("gpt_image", "model_gpt_image", "GPT Image"),
+    ("gemini_image", "model_gemini_image", "Gemini Image"),
+    ("qwen_image", "model_qwen_image", "Qwen Image"),
+]
+# agent LLM key→（settings 字段名, 展示标签）
+_AGENT_MODEL_DEFS = [
+    ("generator", "generator_model", "Generator"),
+    ("critic", "critic_model", "Critic"),
+    ("summarizer", "summarizer_model", "Summarizer"),
+]
+
+
+@router.get("/models")
+def list_models() -> dict:
+    """列出 .env 中已配置（非空）的模型，供启动弹窗下拉选择。
+
+    image_models 是生图模型（决定 loop 的 model 字段）；
+    agent_models 是 critic/generator/summarizer 的 LLM（仅展示，由全局 .env 控制）。
+    """
+    s = get_settings()
+    image_models = [
+        {"key": k, "label": label, "model_id": mid}
+        for k, fld, label in _IMAGE_MODEL_DEFS
+        if (mid := getattr(s, fld, ""))
+    ]
+    agent_models = [
+        {"key": k, "label": label, "model_id": mid}
+        for k, fld, label in _AGENT_MODEL_DEFS
+        if (mid := getattr(s, fld, ""))
+    ]
+    return {"image_models": image_models, "agent_models": agent_models}
 
 
 class AgentConfigUpdate(BaseModel):

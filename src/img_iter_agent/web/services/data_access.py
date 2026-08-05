@@ -119,13 +119,33 @@ def _read_traces(run_dir: Path) -> list[AttemptRecord]:
     return reader.read_all()
 
 
+def _loop_meta(run_dir: Path) -> dict:
+    """读 loop 的 meta.json（容错）。"""
+    meta_path = run_dir / "meta.json"
+    if meta_path.exists():
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
 def _loop_sample_id(run_dir: Path) -> str:
-    """从 trajectory 第一行取 sample_id（比解析目录名稳）。"""
+    """取 loop 的 sample_id。优先 trajectory，其次 loop_id 解析（<bench>-<sample>）。
+
+    注意：绝不能在 trajectory 为空时直接用 run_dir.name——当 loop 命名与
+    `<bench>-<sample>` 一致时，那等于把 bench 前缀也带进来，造出形如
+    「furniture_product_whitebg-s001」的幽灵 sample。此处用 meta.bench_id 剥前缀。
+    """
     traces = _read_traces(run_dir)
     if traces:
         return traces[0].sample_id
-    # 退化：目录名
-    return run_dir.name
+    # 退化：loop_id = "<bench>-<sample>"，用 bench_id 剥前缀
+    bench_id = _loop_meta(run_dir).get("bench_id", "")
+    name = run_dir.name
+    if bench_id and name.startswith(bench_id + "-"):
+        return name[len(bench_id) + 1:]
+    return name
 
 
 def _loop_bench_id(run_dir: Path) -> str:
@@ -133,13 +153,7 @@ def _loop_bench_id(run_dir: Path) -> str:
     if traces:
         return traces[0].bench_id
     # 退化：从 meta 读
-    meta_path = run_dir / "meta.json"
-    if meta_path.exists():
-        try:
-            return json.loads(meta_path.read_text(encoding="utf-8")).get("bench_id", "")
-        except (json.JSONDecodeError, OSError):
-            pass
-    return ""
+    return _loop_meta(run_dir).get("bench_id", "")
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +325,13 @@ def build_loop_detail(
 
     status = "finished" if (meta and meta.finished_at) else "unknown"
     round_now = traces[-1].round if traces else None
+    # last_error：优先内存 handle（status_extra），否则从持久化的 meta.extras 读（重启后）
+    last_error = (status_extra or {}).get("last_error")
+    if last_error is None and meta and meta.extras.get("last_error"):
+        last_error = meta.extras.get("last_error")
+        # 重启后无内存状态，但有持久化错误 → 推断为 error
+        if status == "unknown":
+            status = "error"
     if status_extra:  # loop_runner 的实时状态覆盖
         status = status_extra.get("status", status)
         round_now = status_extra.get("round", round_now)
@@ -326,6 +347,7 @@ def build_loop_detail(
         status=status,
         round=round_now,
         interrupt_payload=(status_extra or {}).get("interrupt_payload"),
+        last_error=last_error,
         traces=trace_outs,
         conclusions=conclusions,
         target_image=target_image,

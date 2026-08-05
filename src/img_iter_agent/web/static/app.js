@@ -9,6 +9,13 @@ const STATUS_LABEL = {
   error: "错误", unknown: "未知", idle: "空闲",
 };
 const STATUS_ORDER = { awaiting_review: 0, running: 1, error: 2, finished: 3, unknown: 4, idle: 5 };
+// graph 节点 → 中文说明（让用户看到当前是哪个 agent 在操作）
+const NODE_LABEL = {
+  generator: { name: "Generator", desc: "生成提示词 + 出图" },
+  critic: { name: "Critic", desc: "多维度打分" },
+  summarizer: { name: "Summarizer", desc: "归纳经验 + 写记录" },
+  human_review: { name: "等审批", desc: "等待人工裁决" },
+};
 
 // ---- API helpers ----
 async function api(path, opts = {}) {
@@ -142,8 +149,18 @@ function showPromptDiff(idx) {
   const prev = loop.traces[idx - 1], cur = loop.traces[idx];
   const box = document.getElementById(`prompt-full-${idx}`);
   if (!box) return;
+  const btn = document.querySelector(`button[data-prompt-diff="${idx}"]`);
+  // 已在显示 diff → 还原为原始 prompt（保持展开）
+  if (box.dataset.diffing === "1") {
+    box.dataset.diffing = "";
+    box.innerHTML = `<pre>${esc(cur.prompt || "(空)")}</pre>`;
+    if (btn) btn.textContent = `与第${prev.round}轮对比`;
+    return;
+  }
+  box.dataset.diffing = "1";
   box.hidden = false;
   box.innerHTML = `<pre class="diff">${diffPrompt(prev.prompt, cur.prompt)}</pre>`;
+  if (btn) btn.textContent = "还原 prompt";
 }
 
 // 绑定 modal 内的 lightbox、关闭、prompt 展开/diff
@@ -160,33 +177,54 @@ async function viewOverview() {
   const data = await api("/overview");
   const app = document.getElementById("app");
   if (!data.benches.length) {
-    app.innerHTML = '<div class="empty">还没有任何 loop。先在命令行跑一个，或启动新 loop。</div><button onclick="startNewLoop()">启动新 loop</button>';
+    app.innerHTML = '<div class="empty">还没有 benchmark。先放一个，或启动新 loop。</div><button onclick="startNewLoop()">启动新 loop</button>';
     return;
   }
   let html = '<h1>总览</h1><button class="secondary" onclick="startNewLoop()">＋ 启动新 loop</button>';
-  for (const bench of data.benches) {
-    html += `<h2>${esc(bench.bench_id)} ${bench.description ? "· " + esc(bench.description) : ""}</h2>`;
-    for (const sample of bench.samples) {
-      const pendingCls = sample.pending === 0 ? "zero" : "pending";
-      html += `<div class="sample-row">
-        <div class="sample-head">
-          <span class="sample-title">${esc(sample.sample_id)} ${sample.product ? "· " + esc(sample.product) : ""}</span>
-          <span class="badge">${sample.n_traces} trace · ${sample.loops.length} loop</span>
-          <span class="badge ${pendingCls}">待打分 ${sample.pending}</span>
-          <a class="btn" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">给 ${esc(sample.sample_id)} 排序 →</a>
+  // 渲染单个 sample 的行（有 loop 的用）
+  const renderSampleRow = (bench, sample) => {
+    const pendingCls = sample.pending === 0 ? "zero" : "pending";
+    let h = `<div class="sample-row">
+      <div class="sample-head">
+        <span class="sample-title">${esc(sample.sample_id)} ${sample.product ? "· " + esc(sample.product) : ""}</span>
+        <span class="badge">${sample.n_traces} trace · ${sample.loops.length} loop</span>
+        <span class="badge ${pendingCls}">待打分 ${sample.pending}</span>
+        <a class="btn" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">给 ${esc(sample.sample_id)} 排序 →</a>
+      </div>
+      <div class="loop-cards">`;
+    for (const l of sample.loops) {
+      const thumb = l.thumbnail ? imgURL(l.thumbnail, l.loop_id) : "";
+      h += `<div class="loop-card" onclick="location.hash='#/loop/${esc(l.loop_id)}'">
+        ${thumb ? `<img class="loop-thumb" src="${thumb}">` : '<div class="loop-thumb"></div>'}
+        <div class="loop-meta">
+          <span class="dot ${l.status}"></span>${esc(STATUS_LABEL[l.status] || l.status)} · ${l.n_traces}轮<br>
+          ${l.best_restoration != null ? `还原度 <span class="res">${fmt(l.best_restoration)}</span>` : ""}
         </div>
-        <div class="loop-cards">`;
-      for (const l of sample.loops) {
-        const thumb = l.thumbnail ? imgURL(l.thumbnail, l.loop_id) : "";
-        html += `<div class="loop-card" onclick="location.hash='#/loop/${esc(l.loop_id)}'">
-          ${thumb ? `<img class="loop-thumb" src="${thumb}">` : '<div class="loop-thumb"></div>'}
-          <div class="loop-meta">
-            <span class="dot ${l.status}"></span>${esc(STATUS_LABEL[l.status] || l.status)} · ${l.n_traces}轮<br>
-            ${l.best_restoration != null ? `还原度 <span class="res">${fmt(l.best_restoration)}</span>` : ""}
-          </div>
-        </div>`;
+      </div>`;
+    }
+    h += `</div></div>`;
+    return h;
+  };
+  for (const bench of data.benches) {
+    // 拆分：有 loop 的（已运行）vs 无 loop 的（未运行题库）
+    const active = bench.samples.filter(s => s.loops.length > 0);
+    const idle = bench.samples.filter(s => s.loops.length === 0);
+    const hasActive = active.length > 0;
+    html += `<h2>${esc(bench.bench_id)} ${bench.description ? "· " + esc(bench.description) : ""}</h2>`;
+    if (hasActive) {
+      for (const sample of active) html += renderSampleRow(bench, sample);
+    } else {
+      html += '<div class="muted">这个 benchmark 还没有任何 loop。</div>';
+    }
+    // 未运行的题折叠到底部「可选题库」
+    if (idle.length) {
+      html += `<details class="idle-bank" ${hasActive ? "" : "open"} style="margin-top:8px">
+        <summary class="muted">可选题库（${idle.length} 道未运行的题）</summary>
+        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">`;
+      for (const s of idle) {
+        html += `<button class="ghost sm" onclick="location.hash='#/scoring/${esc(bench.bench_id)}/${esc(s.sample_id)}'">${esc(s.sample_id)} ${s.product ? "· " + esc(s.product) : ""}</button>`;
       }
-      html += `</div></div>`;
+      html += `</div></details>`;
     }
   }
   app.innerHTML = html;
@@ -213,8 +251,21 @@ async function viewLoop(loopId) {
     ${st === "awaiting_review" ? `
       <button onclick="resumeLoop('${esc(loopId)}','continue')">继续下一轮</button>
       <button class="danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止</button>` : ""}
-    ${st === "running" ? `<span class="muted">执行中…</span>` : ""}
+    ${st === "running" ? `<span class="muted" id="cur-node">执行中…</span>` : ""}
   </div>`;
+
+  // error 时显示错误摘要（从冗长 traceback 提取首行有用信息）
+  if (st === "error" && loop.last_error) {
+    // 取 traceback 里第一行 "X失败: ..." 或首条 httpx 错误
+    const err = loop.last_error.split("\n").find(l => /失败|Error|error|Forbidden|Timeout|4\d\d|5\d\d/.test(l))
+      || loop.last_error.split("\n")[0];
+    html += `<div class="card" style="margin-bottom:16px;border-color:#e55">
+      <strong style="color:#c33">出错</strong>（已跑 ${loop.traces.length} 轮）<br>
+      <span class="muted">${esc(err.trim())}</span>
+      <details style="margin-top:6px"><summary class="muted">完整错误</summary>
+        <pre style="max-height:200px;overflow:auto;font-size:11px;white-space:pre-wrap">${esc(loop.last_error)}</pre></details>
+    </div>`;
+  }
 
   // 等审批时显示 interrupt payload
   if (st === "awaiting_review" && loop.interrupt_payload) {
@@ -240,6 +291,13 @@ async function viewLoop(loopId) {
         第 ${t.round} 轮 · ${esc(t.test_variable || "基线")}
         ${t.verdict ? `<br>还原度 <span class="res ${best ? "best" : ""}">${fmt(t.verdict.restoration)}${best ? " ★" : ""}</span>` : ""}
         ${t.human_rank != null ? `<br>人工排序: <span class="res">${t.human_rank}</span>` : ""}
+      </div>
+      <div class="trace-params">
+        ${t.model ? `<div class="param"><span class="pk">模型</span><span class="pv">${esc(t.model)}</span></div>` : ""}
+        ${t.size ? `<div class="param"><span class="pk">尺寸</span><span class="pv">${esc(t.size)}</span></div>` : ""}
+        ${t.gen_mode ? `<div class="param"><span class="pk">模式</span><span class="pv">${esc(t.gen_mode)}</span></div>` : ""}
+        ${t.baseline_ref ? `<div class="param"><span class="pk">基线</span><span class="pv">${esc(t.baseline_ref)}</span></div>` : ""}
+        ${t.ts ? `<div class="param"><span class="pk">时间</span><span class="pv">${esc(t.ts)}</span></div>` : ""}
       </div>
       <div class="prompt-tools">
         <button class="ghost sm" data-ptog="${i}">展开 prompt</button>
@@ -291,6 +349,29 @@ async function viewLoop(loopId) {
       if (col && col.dataset.idx != null) openTraceModal(+col.dataset.idx);
     });
   }
+
+  // 运行中/等审批时轮询状态：实时显示当前 agent 节点；状态或轮次真正变化才整页刷新。
+  // 注意：error/finished 是终态，不轮询（否则会无限 reload 把滚动位置冲回顶部）。
+  if (st === "running" || st === "awaiting_review") {
+    _loopPollTimer = setInterval(async () => {
+      try {
+        const s = await api(`/loops/${loopId}/status`);
+        // 终态（error/finished）才整页刷新拉取最终数据；运行中只更新节点文本
+        if (s.phase === "error" || s.phase === "finished") {
+          clearInterval(_loopPollTimer); _loopPollTimer = null;
+          location.reload();
+          return;
+        }
+        // 实时更新当前节点（不刷整页，避免打断观察）
+        const nodeEl = document.getElementById("cur-node");
+        if (nodeEl && s.current_node) {
+          const n = NODE_LABEL[s.current_node] || { name: s.current_node, desc: "" };
+          const extra = s.rounds_remaining > 0 ? `（自动连跑剩 ${s.rounds_remaining} 轮）` : "";
+          nodeEl.innerHTML = `执行中：<strong>${esc(n.name)}</strong> · ${esc(n.desc)}${extra}`;
+        }
+      } catch (_) {}
+    }, 2000);
+  }
 }
 
 // 列表内 prompt 展开/折叠
@@ -299,25 +380,28 @@ function toggleRowPrompt(idx) {
   if (!el) return;
   el.hidden = !el.hidden;
 }
-// 列表内 prompt diff 对比
+// 列表内 prompt diff 对比（再次点击还原为原始 prompt）
 function showRowDiff(idx) {
   const loop = window.__loopCache.current;
   if (!loop || idx <= 0) return;
-  const prev = loop.traces[idx - 1], cur = loop.traces[idx];
+  const cur = loop.traces[idx];
   const box = document.getElementById(`row-prompt-${idx}`);
   if (!box) return;
+  const btn = document.querySelector(`button[data-pdiff="${idx}"]`);
+  // 已在显示 diff → 还原为原始 prompt 并收起
+  if (box.dataset.diffing === "1") {
+    box.dataset.diffing = "";
+    box.innerHTML = `<pre>${esc(cur.prompt || "(空)")}</pre>`;
+    box.hidden = true;
+    if (btn) btn.textContent = `对比第${loop.traces[idx - 1].round}轮`;
+    return;
+  }
+  // 展开 diff
+  const prev = loop.traces[idx - 1];
+  box.dataset.diffing = "1";
   box.hidden = false;
   box.innerHTML = `<pre class="diff">${diffPrompt(prev.prompt, cur.prompt)}</pre>`;
-
-  // 运行中/等审批时轮询状态
-  if (st === "running" || st === "awaiting_review") {
-    _loopPollTimer = setInterval(async () => {
-      try {
-        const s = await api(`/loops/${loopId}/status`);
-        if (s.phase !== st) location.reload(); // 状态变了重载
-      } catch (_) {}
-    }, 3000);
-  }
+  if (btn) btn.textContent = "还原 prompt";
 }
 
 async function resumeLoop(loopId, decision) {
@@ -523,8 +607,12 @@ async function resetCfg() {
 
 // ============ 启动新 loop ============
 let _newLoopData = null; // 缓存 overview 供表单用
+let _newLoopModels = null; // 缓存 /api/models（可选生图模型）
 async function startNewLoop() {
   if (!_newLoopData) _newLoopData = await api("/overview");
+  if (!_newLoopModels) {
+    try { _newLoopModels = await api("/models"); } catch (_) { _newLoopModels = { image_models: [], agent_models: [] }; }
+  }
   if (!_newLoopData.benches.length) { alert("还没有 benchmark，无法启动"); return; }
   const body = document.getElementById("trace-modal-body");
   const firstBench = _newLoopData.benches[0];
@@ -537,9 +625,23 @@ async function startNewLoop() {
 
 function renderNewLoopForm(benchId, sampleId) {
   const benches = _newLoopData.benches;
+  const models = _newLoopModels || { image_models: [], agent_models: [] };
+  // 生图模型下拉：默认项 + .env 已配置的非空模型
+  const imageOpts = [
+    `<option value="">默认（settings）</option>`,
+    ...models.image_models.map(
+      m => `<option value="${esc(m.model_id)}">${esc(m.label)} · ${esc(m.model_id)}</option>`
+    ),
+  ].join("");
+  // agent LLM 作为只读参考（由全局 .env 控制，此处仅展示，不随 loop 改动）
+  const agentInfo = (models.agent_models || [])
+    .map(m => `${esc(m.label)}=<code>${esc(m.model_id)}</code>`).join(" · ") || "（未配置）";
+  // 轮数选项：1=单轮跑首停审批；2~8=后台自动连跑
+  const roundsOpts = [1, 2, 3, 4, 5, 6, 7, 8]
+    .map(n => `<option value="${n}"${n === 4 ? " selected" : ""}>${n} 轮</option>`).join("");
   return `
     <h1>启动新 loop</h1>
-    <div class="muted">对一个 sample 用固定模型跑一条自迭代闭环（跑到首轮等审批）。</div>
+    <div class="muted">对一个 sample 用固定模型跑一条自迭代闭环。</div>
     <div class="newloop-form" style="margin-top:14px">
       <label>benchmark</label>
       <select id="nl-bench" onchange="onNewLoopBenchChange()">
@@ -547,10 +649,14 @@ function renderNewLoopForm(benchId, sampleId) {
       </select>
       <label>sample</label>
       <select id="nl-sample" onchange="updateNewLoopPreview()"></select>
-      <label>模型（留空用 settings 默认）</label>
-      <input type="text" id="nl-model" placeholder="如 doubao-seedream-5-0-pro-260628">
+      <label>生图模型（决定本 loop 出图，留空用 settings 默认）</label>
+      <select id="nl-model" onchange="updateNewLoopPreview()">${imageOpts}</select>
+      <label>轮数</label>
+      <select id="nl-rounds" onchange="updateNewLoopPreview()">${roundsOpts}</select>
+      <div class="muted" style="font-size:11px">选 1 = 首轮跑到等审批就停；选 &gt;1 = 后台自动连跑，无需逐轮审批，跑满后自动结束。</div>
       <label>备注</label>
       <input type="text" id="nl-note" placeholder="可选">
+      <div class="muted" style="font-size:11px">Agent LLM（全局，不随 loop 改）：${agentInfo}</div>
       <div class="preview" id="nl-preview"></div>
       <div class="row" style="margin-top:8px">
         <button id="nl-submit" onclick="submitNewLoop()">启动 loop</button>
@@ -573,6 +679,7 @@ function updateNewLoopPreview() {
   const benchId = document.getElementById("nl-bench").value;
   const sampleId = document.getElementById("nl-sample").value;
   const model = document.getElementById("nl-model").value.trim() || "（settings 默认）";
+  const rounds = parseInt(document.getElementById("nl-rounds").value, 10) || 1;
   // 一题一 loop：检测该 sample 是否已有 loop
   const bench = _newLoopData.benches.find(b => b.bench_id === benchId);
   const sample = bench?.samples.find(s => s.sample_id === sampleId);
@@ -584,25 +691,29 @@ function updateNewLoopPreview() {
     document.getElementById("nl-submit").textContent = "继续跑下一轮";
   } else {
     action = `新建 loop <code>${esc(benchId)}-${esc(sampleId)}</code>`;
-    detail = `首轮回跑到人工审批节点，可在 loop 详情里点「继续/停止」。`;
     document.getElementById("nl-submit").textContent = "启动 loop";
   }
+  // 轮数说明
+  const roundsDesc = rounds > 1
+    ? `将自动连跑 <strong>${rounds}</strong> 轮（无需逐轮审批，跑满自动结束）。`
+    : `首轮回跑到人工审批节点停下，可在 loop 详情里点「继续/停止」。`;
   const product = sample?.product ? `（${esc(sample.product)}）` : "";
   document.getElementById("nl-preview").innerHTML =
-    `将对 <code>${esc(sampleId)}</code>${product} 用 <code>${esc(model)}</code> ${action}<br>` + detail;
+    `将对 <code>${esc(sampleId)}</code>${product} 用 <code>${esc(model)}</code> ${action}<br>` + roundsDesc;
 }
 
 async function submitNewLoop() {
   const benchId = document.getElementById("nl-bench").value;
   const sampleId = document.getElementById("nl-sample").value;
   const model = document.getElementById("nl-model").value.trim() || undefined;
+  const rounds = parseInt(document.getElementById("nl-rounds").value, 10) || undefined;
   const note = document.getElementById("nl-note").value.trim() || undefined;
   const btn = document.getElementById("nl-submit");
   btn.disabled = true; btn.textContent = "启动中…";
   try {
     const r = await api(`/loops`, {
       method: "POST",
-      body: JSON.stringify({ bench_id: benchId, sample_id: sampleId, model, note }),
+      body: JSON.stringify({ bench_id: benchId, sample_id: sampleId, model, note, rounds }),
     });
     closeTraceModal();
     location.hash = `#/loop/${r.loop_id}`; // 跳转到新 loop 详情

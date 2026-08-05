@@ -25,53 +25,46 @@ from .data.benchmark import load_benchmark
 from .data.runstore import RunStore
 from .generation.client import DmxapiClient
 from .generation.router import Router
-from .llm import LlmClient
 from .pipeline.graph import build_graph
 
 
-def _make_llm(settings: Settings, *, multimodal: bool) -> LlmClient:
-    """按 settings 构造 agent LLM client。
-
-    当前先用 OpenAI 兼容客户端（protocol=openai）。
-    TODO: 支持 gemini/doubao/claude 协议族（各族 chat 端点不同）。
-    暂用最小实现：调 /v1/chat/completions。
-    """
-    # 暂返回一个轻量 OpenAI 兼容 client（httpx 直调）。
-    # Critic 的多模态图片注入需 client 支持；此处先给文本 capable 的实现。
-    return _OpenAiCompatLlm(settings)
-
-
 class _OpenAiCompatLlm:
-    """OpenAI 兼容端点的最小 LLM client（/v1/chat/completions）。
+    """Agent LLM 客户端：走 dmxapi 的 OpenAI 兼容端点（/v1/chat/completions）。
 
-    多模态图片注入：Critic 在 content 里放图片路径时，这里转 data-URI。
-    （Step 4 先支持文本；图片注入完整支持留待 Critic 与 client 联调。）
+    用官方 openai SDK 调用，并用 langsmith.wrap_openai 包装客户端——这是 LangSmith
+    官方推荐的追踪方式（见 docs.langchain.com/langsmith/observability-quickstart）：
+
+    - dmxapi 网关对**所有协议族**都暴露统一的 OpenAI 兼容 chat 端点，故一个 client
+      即可覆盖 Critic(多模态)/Generator/Summarizer，无需按 protocol 分派。
+    - wrap_openai 让每次 chat.completions.create 自动作为 LangSmith 的 run_type="llm"
+      run 上报，带标准 I/O（messages → generations）、模型名(ls_model_name)、
+      provider(ls_provider)、token usage 与起止时间(耗时)，并自动嵌套在 LangGraph
+      节点 run 之下。无需手写 traceable，也不用手动构造 I/O 格式。
+
+    多模态：Critic 在 content 里放图片时构造的是 OpenAI 标准多模态 content
+    （[{"type":"text",...},{"type":"image_url","image_url":{"url":"data:..."}}]），
+    openai SDK 原生支持，直接透传即可。
     """
 
     def __init__(self, settings: Settings, *, model: str | None = None,
-                 multimodal: bool = False) -> None:
-        import httpx
-        self._httpx = httpx
+                 http_client=None) -> None:
+        from langsmith.wrappers import wrap_openai
+        from openai import OpenAI
+
+        base_url = f"{settings.dmxapi_host.rstrip('/')}/v1"
+        # api_key 为空时用占位串（真实运行 .env 必配 dmxapi_key）；dmxapi 走 Bearer 鉴权。
+        # http_client 可注入（测试用 MockTransport 拦截请求、回 canned 响应，不联网）。
+        client = OpenAI(base_url=base_url, api_key=settings.dmxapi_key or "missing",
+                        timeout=120.0, http_client=http_client)
+        self._client = wrap_openai(client)
         self.settings = settings
-        self.multimodal = multimodal
-        # model 由调用方指定（critic/generator/summarizer 各自的字段）
-        self._model_override = model
+        # model 由调用方指定（critic/generator/summarizer 各自的 *_model 字段）
+        self._model = model or settings.critic_model
 
     def complete(self, messages: list[dict]) -> str:
-        # 调用方未在 messages 里带 model；用注入的或默认
-        model = self._model_override or self.settings.critic_model
-        url = f"{self.settings.dmxapi_host.rstrip('/')}/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {self.settings.dmxapi_key}",
-                   "Content-Type": "application/json"}
-        body = {"model": model, "messages": messages}
-        with self._httpx.Client(timeout=120.0) as c:
-            r = c.post(url, headers=headers, json=body)
-            r.raise_for_status()
-            data = r.json()
-        choices = data.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+        model = self._model
+        resp = self._client.chat.completions.create(model=model, messages=messages)
+        return resp.choices[0].message.content or ""
 
 
 def cmd_run(args: argparse.Namespace) -> int:

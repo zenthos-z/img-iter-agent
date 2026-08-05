@@ -102,13 +102,47 @@ class DmxapiClient:
     def post_json(self, family: ModelFamily, path: str, body: dict) -> dict[str, Any]:
         url = f"{self.host}{path}"
         headers = auth_headers(family, self.key)
-        return self.executor.post_json(url, headers, body)
+        return _trace_image_call(family, path, body, lambda: self.executor.post_json(url, headers, body))
 
     def post_multipart(self, family: ModelFamily, path: str, data: dict,
                        files: list[tuple]) -> dict[str, Any]:
         url = f"{self.host}{path}"
         headers = auth_headers(family, self.key)
-        return self.executor.post_multipart(url, headers, data, files)
+        return _trace_image_call(
+            family, path, data,
+            lambda: self.executor.post_multipart(url, headers, data, files),
+        )
+
+
+def _trace_image_call(family: ModelFamily, path: str, req_body: dict, fn) -> dict[str, Any]:
+    """出图调用埋点：作为 LangSmith 的 run_type="tool" run 上报，并把真实响应原样返回。
+
+    生图是外部图像生成调用，**不是文本 LLM 调用**——不能用 run_type="llm"，否则会把
+    一堆无 token/无模型语义的图像调用混进 LLM 面板，污染模型调用统计。用 tool 类型记录
+    协议族/路径/请求摘要（截断 base64，避免塞整张图进 trace）/响应键与耗时，与真正的
+    LLM 调用清晰区分。
+
+    注意：trace 的 output 只记响应摘要（resp_keys），但本函数**必须把真实响应原样返回**给
+    dispatcher——后者要从中取 data[].b64_json/url 落盘。早期版本把摘要当返回值，导致生图
+    拿不到图（静默出空图），这里用 holder 旁路：_do 返回摘要供 trace，真实 resp 旁路返回。
+    """
+    from langsmith import traceable
+
+    # 记录请求体摘要（截断长字段，避免把整个 base64 图片塞进 trace）
+    body_summary = {k: (f"<{len(v)} chars>" if isinstance(v, str) and len(v) > 200 else v)
+                    for k, v in (req_body or {}).items()}
+
+    holder: dict[str, Any] = {}
+
+    @traceable(name=f"image_gen.{family.value}", run_type="tool")
+    def _do() -> dict:
+        resp = fn()
+        holder["resp"] = resp
+        # trace output 只记摘要，不塞整张 base64 图
+        return {"status": "ok", "resp_keys": list(resp.keys()) if isinstance(resp, dict) else "n/a"}
+
+    _do(langsmith_extra={"metadata": {"family": family.value, "path": path, "req": body_summary}})
+    return holder["resp"]
 
 
 __all__ = ["DmxapiClient", "HttpExecutor", "HttpxExecutor", "auth_headers"]

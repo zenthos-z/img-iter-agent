@@ -146,6 +146,14 @@ class RunStore:
             self.meta.note = note
         self._write_meta(self.meta)
 
+    def mark_error(self, msg: str) -> None:
+        """把错误信息持久化到 meta（extras.last_error），重启后仍可见。"""
+        if self.meta is None:
+            self._load_meta()
+        assert self.meta is not None
+        self.meta.extras["last_error"] = msg
+        self._write_meta(self.meta)
+
     # --- index.json（记忆索引骨架；完整查询见 memory/index.py，Step 4）---
     def init_index(self) -> None:
         if not self.index_path.exists():

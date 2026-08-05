@@ -97,6 +97,50 @@ class Settings(BaseSettings):
 
 
 # 单例：模块级共享一份配置。测试若要隔离可自行构造 Settings(...)。
+_settings: Settings | None = None
+
+
 def get_settings() -> Settings:
     """返回全局 Settings 单例。"""
-    return Settings()
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+        # LangSmith SDK 读 os.environ（非 pydantic 字段），此处从 .env 同步过去。
+        # 首次构造 settings 时注入一次，确保 tracing 在任何 LLM 调用前生效。
+        _sync_langsmith_env(_settings)
+    return _settings
+
+
+def _sync_langsmith_env(_unused: Settings = None) -> None:
+    """把 LangSmith 配置写入 os.environ（SDK 直读环境变量，不走 pydantic）。
+
+    用 python-dotenv 读 .env 里 LANGSMITH_* / LANGCHAIN_TRACING_* 系列变量，
+    仅在尚未设置时注入（不覆盖调用方显式传入的环境变量）。
+    """
+    import os
+
+    keys = (
+        "LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT",
+        "LANGSMITH_ENDPOINT", "LANGCHAIN_TRACING_V2", "LANGCHAIN_API_KEY",
+        "LANGCHAIN_ENDPOINT", "LANGCHAIN_PROJECT",
+    )
+    # 先尝试从 .env 读取（uvicorn 进程未必加载了 .env 到 os.environ）
+    env_vals: dict[str, str] = {}
+    try:
+        from pathlib import Path
+
+        env_path = Path(_DEFAULT_DATA_ROOT).parent / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k in keys:
+                    env_vals[k] = v.strip().strip('"').strip("'")
+    except Exception:  # noqa: BLE001, S110  .env 读取失败不阻断启动
+        pass
+    for k in keys:
+        if not os.environ.get(k) and env_vals.get(k):
+            os.environ[k] = env_vals[k]
