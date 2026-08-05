@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
@@ -70,7 +71,7 @@ def build_graph(
         from ..generation.router import family_for_model_id
         model_hint = family_for_model_id(loop_model, get_settings())
 
-    def generator_node(state: RunState) -> dict:
+    def generator_node(state: RunState, config: RunnableConfig) -> dict:
         round_n = state.get("round", 0) + 1
         baseline_ref = None
         prior_feedback = None
@@ -95,7 +96,7 @@ def build_graph(
         outcome = generator.generate_round(
             sample=sample, out_dir=run_dir / "out", run_dir=run_dir,
             round=round_n, baseline_ref=baseline_ref,
-            prior_feedback=prior_feedback, model_hint=model_hint,
+            prior_feedback=prior_feedback, model_hint=model_hint, config=config,
         )
         return {
             "round": round_n,
@@ -103,17 +104,17 @@ def build_graph(
             "images": list(outcome.output_image_refs),
         }
 
-    def critic_node(state: RunState) -> dict:
+    def critic_node(state: RunState, config: RunnableConfig) -> dict:
         outcome: GenOutcome = state["_outcome"]  # type: ignore[typeddict-item]
         weights = load_weights(bench.bench, run_dir=run_dir, sample_id=sample_id)
         # 生成的图绝对路径
         gen_imgs = [run_dir / r for r in outcome.output_image_refs]
         verdict = critic.evaluate(CriticInput(
             sample=sample, generated_images=gen_imgs, weights=weights,
-        ))
+        ), config=config)
         return {"_verdict": verdict, "verdicts": [verdict]}
 
-    def summarizer_node(state: RunState) -> dict:
+    def summarizer_node(state: RunState, config: RunnableConfig) -> dict:
         outcome: GenOutcome = state["_outcome"]  # type: ignore[typeddict-item]
         verdict: CriticVerdict = state["_verdict"]  # type: ignore[typeddict-item]
         # Critic 驱动的经验闭环：取上轮 verdict + 上轮改动说明，做跨轮验证
@@ -124,7 +125,7 @@ def build_graph(
         lesson_ref = summarizer.summarize(
             run_dir=run_dir, round=state["round"], outcome=outcome,
             verdict=verdict, sample_id=sample_id,
-            prev_verdict=prev_verdict, prev_delta_note=prev_delta_note,
+            prev_verdict=prev_verdict, prev_delta_note=prev_delta_note, config=config,
         )
         # 写 trajectory
         rec = AttemptRecord(
@@ -139,7 +140,7 @@ def build_graph(
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)
         return {"attempts": [rec]}
 
-    def human_review_node(state: RunState) -> dict:
+    def human_review_node(state: RunState, config: RunnableConfig) -> dict:
         verdict: CriticVerdict | None = state.get("_verdict")  # type: ignore[assignment]
         restoration = verdict.restoration if verdict else None
         round_n = state.get("round", 0)
@@ -196,8 +197,11 @@ def run_loop(
     用于测试与 CLI。
     """
     import uuid
+
+    from .runner import make_loop_config
     tid = thread_id or f"{run_store.run_dir.name}-{uuid.uuid4().hex[:6]}"
-    cfg = {"configurable": {"thread_id": tid}}
+    model = run_store.meta.model if run_store.meta else ""
+    cfg = make_loop_config(tid, bench.bench.bench_id, sample_id, model)
     app = build_graph(bench=bench, run_store=run_store, generator=generator,
                       critic=critic, summarizer=summarizer, sample_id=sample_id)
 

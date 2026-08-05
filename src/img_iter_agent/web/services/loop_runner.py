@@ -9,34 +9,23 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from ...agents.critic import Critic
-from ...agents.generator import Generator
-from ...agents.summarizer import Summarizer
-from ...config import Settings, get_settings
+from ...config import get_settings
 from ...data.benchmark import load_benchmark
 from ...data.runstore import RunStore
-from ...generation.client import DmxapiClient
-from ...generation.router import Router
-from ...llm import LlmClient
-from ...pipeline.graph import build_graph
-
-# 复用 cli 里的 OpenAI 兼容 LLM（openai SDK + wrap_openai，自动 LangSmith 追踪）。
-# 延迟导入避免循环依赖。
-
-
-def _make_openai_llm(settings: Settings, *, model: str | None = None) -> LlmClient:
-    from ...cli import _OpenAiCompatLlm
-
-    return _OpenAiCompatLlm(settings, model=model) if model else _OpenAiCompatLlm(settings)
+from ...pipeline.runner import (
+    build_loop_context,
+    close_checkpointer,
+    create_loop_trace,
+    end_loop_trace,
+    loop_trace_context,
+)
 
 
 @dataclass
@@ -54,6 +43,7 @@ class LoopHandle:
     app: object | None = field(default=None, repr=False)
     cfg: dict | None = field(default=None, repr=False)
     store: RunStore | None = field(default=None, repr=False)
+    loop_root: object | None = field(default=None, repr=False)  # LangSmith loop trace root（web 跨请求 1-loop-1-trace）
 
 
 class LoopRunner:
@@ -174,6 +164,11 @@ class LoopRunner:
                 handle.app = app
                 handle.cfg = cfg
                 handle.store = store  # 供 _post_invoke 在结束时调 store.finish()
+                # 建 loop trace root（web 跨请求 1-loop-1-trace）：所有轮 invoke 嵌套其下
+                handle.loop_root = create_loop_trace(
+                    loop_id, lb.bench.bench_id, sample_id,
+                    store.meta.model if store.meta else "",
+                )
                 inputs = {
                     "round": 0,
                     "model": store.meta.model if store.meta else "",
@@ -181,16 +176,17 @@ class LoopRunner:
                     "sample_id": sample_id,
                     "run_id": loop_id,
                 }
-                # 直接 invoke：LANGSMITH_TRACING=true 时 LangGraph 会自动把这次 invoke
-                # （含所有节点 + 节点内的 LLM/出图调用）作为一条完整 trace 上报。
-                # 节点内的 LLM 调用经 wrap_openai 自动嵌套为 run_type="llm"，
-                # 出图调用为 run_type="tool"。同一 loop 的多轮 invoke 靠 metadata.loop_id
-                # 在 LangSmith 里关联/过滤，无需手动拼接 RunTree。
-                if resume_existing:
-                    # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
-                    state = app.invoke(Command(resume="continue"), config=cfg)
-                else:
-                    state = app.invoke(inputs, config=cfg)
+                # 每次 invoke 包在 loop_trace_context 下 → graph run 嵌套到 loop trace root，
+                # 实现一个 loop（跨多轮 invoke/resume）一条 trace。round/phase 在 config metadata 辨认轮次。
+                with loop_trace_context(handle.loop_root):
+                    if resume_existing:
+                        # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
+                        state = app.invoke(
+                            Command(resume="continue"),
+                            config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
+                        )
+                    else:
+                        state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"首轮失败: {e}\n{traceback.format_exc()}")
@@ -199,43 +195,37 @@ class LoopRunner:
     def _run_resume(self, handle: LoopHandle, decision: str):
         def task() -> None:
             try:
-                state = handle.app.invoke(
-                    Command(resume=decision), config=handle.cfg,
-                )
+                with loop_trace_context(handle.loop_root):
+                    state = handle.app.invoke(
+                        Command(resume=decision),
+                        config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
+                    )
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"resume 失败: {e}\n{traceback.format_exc()}")
         return task
 
     def _build_app(self, settings, lb, store, sample_id):
-        """构造图 + checkpointer（SqliteSaver 强制）。"""
-        router = Router(settings=settings, client=DmxapiClient(settings))
-        gen_llm = _make_openai_llm(settings, model=settings.generator_model) if settings.generator_model else None
-        generator = Generator(router, llm=gen_llm)
-        critic = Critic(_make_openai_llm(settings, model=settings.critic_model), bench=lb.bench)
-        summarizer = Summarizer()
+        """构造图 + checkpointer（SqliteSaver 强制，显式 setup）+ 标准 config（带 metadata/tags）。
 
-        conn = sqlite3.connect(store.run_dir / "checkpoints.sqlite", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
-        app = build_graph(
-            bench=lb, run_store=store, generator=generator, critic=critic,
-            summarizer=summarizer, sample_id=sample_id, checkpointer=checkpointer,
+        收口到 pipeline.runner.build_loop_context（agent 配方 + open_checkpointer + build_graph
+        + make_loop_config）。返回 (app, cfg) 保持不变，供 _run_first_round 解包；checkpointer 挂在
+        app.checkpointer 上，由 _post_invoke/_fail 在 finished/error 时关闭。
+        """
+        ctx = build_loop_context(
+            lb, store, sample_id,
             loop_model=store.meta.model if store.meta else None,
         )
-        loop_id = store.run_dir.name
-        # metadata 是「同一 loop 多轮 invoke 在 LangSmith 里关联起来」的唯一手段：
-        # 每个 round 的 invoke 是独立 trace，靠 metadata.loop_id / tags 在 UI 里过滤聚拢。
-        cfg = {
-            "configurable": {"thread_id": loop_id},
-            "metadata": {
-                "loop_id": loop_id,
-                "bench_id": lb.bench.bench_id,
-                "sample_id": sample_id,
-                "model": store.meta.model if store.meta else "",
-            },
-            "tags": [f"loop:{loop_id}"],
-        }
-        return app, cfg
+        return ctx.app, ctx.cfg
+
+    @staticmethod
+    def _cfg_with_round(handle: LoopHandle, round_n: int, phase: str) -> dict:
+        """在标准 config 上叠加 round/phase，让 LangSmith 里每一轮 trace 可辨认（按 round/phase 过滤、列表加 metadata/tags 列）。"""
+        base = handle.cfg or {"configurable": {"thread_id": handle.loop_id}}
+        cfg = dict(base)
+        cfg["metadata"] = {**(base.get("metadata") or {}), "round": round_n, "phase": phase}
+        cfg["tags"] = list(base.get("tags") or []) + [f"round:{round_n}", f"phase:{phase}"]
+        return cfg
 
     def _post_invoke(self, handle: LoopHandle, state: dict) -> None:
         """invoke 返回后判定 phase：到 END=finished，到 interrupt=awaiting_review。"""
@@ -262,9 +252,11 @@ class LoopRunner:
                 else:
                     handle.phase = "awaiting_review"
             elif (snapshot.next or ()) == ():
-                # next 为空 = 到 END，结束
+                # next 为空 = 到 END，结束 + 收尾 loop trace
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 结束")
+                end_loop_trace(handle.loop_root)
+                handle.loop_root = None
             else:
                 # 还在执行中（一般不会，invoke 是同步跑到 interrupt/END）
                 handle.phase = "running"
@@ -273,10 +265,15 @@ class LoopRunner:
             if state.get("decision") == "stop":
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 停止")
+                end_loop_trace(handle.loop_root)
+                handle.loop_root = None
 
     def _fail(self, handle: LoopHandle, msg: str) -> None:
         handle.phase = "error"
         handle.last_error = msg
+        _close_app_checkpointer(handle)  # error 不可 resume，关闭 checkpointer 避免 sqlite 连接泄漏
+        end_loop_trace(handle.loop_root, error=True, error_msg=msg)
+        handle.loop_root = None
         # 持久化错误到 meta.json（extras.last_error），重启后仍可见
         if handle.store is not None:
             try:
@@ -286,6 +283,16 @@ class LoopRunner:
 
     def _submit(self, handle: LoopHandle, task) -> None:
         handle.future = self._pool.submit(task)
+
+
+def _close_app_checkpointer(handle: LoopHandle) -> None:
+    """关闭 loop 持有的 checkpointer（仅在 _fail/error 时；finished/awaiting 保留以支持后续 resume）。
+
+    幂等，容忍无 app/checkpointer（测试的 fake _build_app 可能不挂 checkpointer）。
+    """
+    app = getattr(handle, "app", None)
+    checkpointer = getattr(app, "checkpointer", None) if app else None
+    close_checkpointer(checkpointer)
 
 
 

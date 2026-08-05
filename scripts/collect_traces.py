@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
 from img_iter_agent.agents.summarizer import Summarizer
-from img_iter_agent.cli import _OpenAiCompatLlm
+from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
 from img_iter_agent.config import get_settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.data.runstore import RunStore
@@ -43,10 +43,10 @@ def run_one_sample(sample_id: str, rounds: int, model: str) -> dict:
                             note=f"批量攒trace {sample_id}")
 
     router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = (_OpenAiCompatLlm(settings, model=settings.generator_model)
+    gen_llm = (OpenAiCompatLlm(settings, model=settings.generator_model)
                if settings.generator_model else None)
     generator = Generator(router, llm=gen_llm)
-    critic = Critic(_OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
+    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
     summarizer = Summarizer()
 
     # decisions: 第1轮跑到 interrupt 后 continue(进第2轮), 第2轮后 stop
