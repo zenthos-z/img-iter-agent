@@ -9,34 +9,17 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from ...agents.critic import Critic
-from ...agents.generator import Generator
-from ...agents.summarizer import Summarizer
-from ...config import Settings, get_settings
+from ...config import get_settings
 from ...data.benchmark import load_benchmark
 from ...data.runstore import RunStore
-from ...generation.client import DmxapiClient
-from ...generation.router import Router
-from ...llm import LlmClient
-from ...pipeline.graph import build_graph
-
-# 复用 cli 里的 OpenAI 兼容 LLM（openai SDK + wrap_openai，自动 LangSmith 追踪）。
-# 延迟导入避免循环依赖。
-
-
-def _make_openai_llm(settings: Settings, *, model: str | None = None) -> LlmClient:
-    from ...llm.openai_compat import OpenAiCompatLlm
-
-    return OpenAiCompatLlm(settings, model=model) if model else OpenAiCompatLlm(settings)
+from ...pipeline.runner import build_loop_context, close_checkpointer
 
 
 @dataclass
@@ -208,34 +191,17 @@ class LoopRunner:
         return task
 
     def _build_app(self, settings, lb, store, sample_id):
-        """构造图 + checkpointer（SqliteSaver 强制）。"""
-        router = Router(settings=settings, client=DmxapiClient(settings))
-        gen_llm = _make_openai_llm(settings, model=settings.generator_model) if settings.generator_model else None
-        generator = Generator(router, llm=gen_llm)
-        critic = Critic(_make_openai_llm(settings, model=settings.critic_model), bench=lb.bench)
-        summarizer = Summarizer()
+        """构造图 + checkpointer（SqliteSaver 强制，显式 setup）+ 标准 config（带 metadata/tags）。
 
-        conn = sqlite3.connect(store.run_dir / "checkpoints.sqlite", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
-        app = build_graph(
-            bench=lb, run_store=store, generator=generator, critic=critic,
-            summarizer=summarizer, sample_id=sample_id, checkpointer=checkpointer,
+        收口到 pipeline.runner.build_loop_context（agent 配方 + open_checkpointer + build_graph
+        + make_loop_config）。返回 (app, cfg) 保持不变，供 _run_first_round 解包；checkpointer 挂在
+        app.checkpointer 上，由 _post_invoke/_fail 在 finished/error 时关闭。
+        """
+        ctx = build_loop_context(
+            lb, store, sample_id,
             loop_model=store.meta.model if store.meta else None,
         )
-        loop_id = store.run_dir.name
-        # metadata 是「同一 loop 多轮 invoke 在 LangSmith 里关联起来」的唯一手段：
-        # 每个 round 的 invoke 是独立 trace，靠 metadata.loop_id / tags 在 UI 里过滤聚拢。
-        cfg = {
-            "configurable": {"thread_id": loop_id},
-            "metadata": {
-                "loop_id": loop_id,
-                "bench_id": lb.bench.bench_id,
-                "sample_id": sample_id,
-                "model": store.meta.model if store.meta else "",
-            },
-            "tags": [f"loop:{loop_id}"],
-        }
-        return app, cfg
+        return ctx.app, ctx.cfg
 
     def _post_invoke(self, handle: LoopHandle, state: dict) -> None:
         """invoke 返回后判定 phase：到 END=finished，到 interrupt=awaiting_review。"""
@@ -277,6 +243,7 @@ class LoopRunner:
     def _fail(self, handle: LoopHandle, msg: str) -> None:
         handle.phase = "error"
         handle.last_error = msg
+        _close_app_checkpointer(handle)  # error 不可 resume，关闭 checkpointer 避免 sqlite 连接泄漏
         # 持久化错误到 meta.json（extras.last_error），重启后仍可见
         if handle.store is not None:
             try:
@@ -286,6 +253,16 @@ class LoopRunner:
 
     def _submit(self, handle: LoopHandle, task) -> None:
         handle.future = self._pool.submit(task)
+
+
+def _close_app_checkpointer(handle: LoopHandle) -> None:
+    """关闭 loop 持有的 checkpointer（仅在 _fail/error 时；finished/awaiting 保留以支持后续 resume）。
+
+    幂等，容忍无 app/checkpointer（测试的 fake _build_app 可能不挂 checkpointer）。
+    """
+    app = getattr(handle, "app", None)
+    checkpointer = getattr(app, "checkpointer", None) if app else None
+    close_checkpointer(checkpointer)
 
 
 

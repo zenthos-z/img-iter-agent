@@ -14,20 +14,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from .agents.critic import Critic
-from .agents.generator import Generator
-from .agents.summarizer import Summarizer
 from .config import get_settings
 from .data.benchmark import load_benchmark
 from .data.runstore import RunStore
-from .generation.client import DmxapiClient
-from .generation.router import Router
-from .llm.openai_compat import OpenAiCompatLlm
-from .pipeline.graph import build_graph
-
+from .pipeline.runner import build_loop_context, close_checkpointer
 
 # Agent LLM client（OpenAiCompatLlm，含 langsmith.wrap_openai）已抽到 llm/openai_compat.py，
 # 消除 web.services.loop_runner → cli 的反向依赖。
@@ -48,48 +40,38 @@ def cmd_run(args: argparse.Namespace) -> int:
                                 model=args.model or settings.model_seedream_pro,
                                 settings=settings, note=args.note)
 
-    # 构造 generator/critic/summarizer
-    router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
-    generator = Generator(router, llm=gen_llm)
-    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
-    summarizer = Summarizer()
-
-    # SqliteSaver 持久化 checkpoint（可断点续跑）
-    import sqlite3
-    conn = sqlite3.connect(store.run_dir / "checkpoints.sqlite", check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
-    app = build_graph(bench=lb, run_store=store, generator=generator, critic=critic,
-                      summarizer=summarizer, sample_id=args.sample, checkpointer=checkpointer)
-
-    cfg = {"configurable": {"thread_id": store.run_dir.name}}
-    # 首轮：跑到第一个 interrupt
+    # 一处收口：agent 配方 + checkpointer（显式 setup）+ build_graph + 标准 config（带 metadata/tags）。
     assert store.meta is not None  # create() 必已设置
-    fixed_model = store.meta.model
-    print(f"[run] {args.bench}/{args.sample} | model={fixed_model} | run_id={store.meta.run_id}")
-    state = app.invoke({"round": 0, "model": fixed_model, "bench_id": args.bench,
-                        "sample_id": args.sample, "run_id": store.run_dir.name}, config=cfg)
+    ctx = build_loop_context(lb, store, args.sample, loop_model=store.meta.model)
+    try:
+        app, cfg = ctx.app, ctx.cfg
+        fixed_model = store.meta.model
+        print(f"[run] {args.bench}/{args.sample} | model={fixed_model} | run_id={store.meta.run_id}")
+        state = app.invoke({"round": 0, "model": fixed_model, "bench_id": args.bench,
+                            "sample_id": args.sample, "run_id": store.run_dir.name}, config=cfg)
 
-    round_done = 0
-    for i in range(args.rounds):
-        verdict = state.get("_verdict")
-        r = state.get("round", 0)
-        rest = verdict.restoration if verdict else None
-        print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
-        print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
-        try:
-            decision = input("  > ").strip() or "continue"
-        except EOFError:
-            decision = "stop"
-        state = app.invoke(Command(resume=decision), config=cfg)
-        round_done = i + 1
-        if state.get("decision") == "stop":
-            print("[run] 已停止。")
-            break
+        round_done = 0
+        for i in range(args.rounds):
+            verdict = state.get("_verdict")
+            r = state.get("round", 0)
+            rest = verdict.restoration if verdict else None
+            print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
+            print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
+            try:
+                decision = input("  > ").strip() or "continue"
+            except EOFError:
+                decision = "stop"
+            state = app.invoke(Command(resume=decision), config=cfg)
+            round_done = i + 1
+            if state.get("decision") == "stop":
+                print("[run] 已停止。")
+                break
 
-    store.finish(note=f"跑完 {round_done} 轮")
-    print(f"[run] 完成。trajectory: {store.trajectory_path}")
-    return 0
+        store.finish(note=f"跑完 {round_done} 轮")
+        print(f"[run] 完成。trajectory: {store.trajectory_path}")
+        return 0
+    finally:
+        close_checkpointer(ctx.checkpointer)
 
 
 def cmd_calibrate(args: argparse.Namespace) -> int:
