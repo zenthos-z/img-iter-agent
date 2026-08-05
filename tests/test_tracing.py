@@ -2,7 +2,7 @@
 
 验证目标：修复「所有节点都变成 chain、拿不到模型调用信息/耗时」之后，trace 结构正确——
 
-  1. LLM 调用（Critic/Generator/Summarizer 经 _OpenAiCompatLlm）→ run_type="llm"，
+  1. LLM 调用（Critic/Generator/Summarizer 经 OpenAiCompatLlm）→ run_type="llm"，
      带 ls_provider / ls_model_name（模型名）+ usage + 耗时，自动嵌套在 LangGraph 节点下。
      （由 langsmith.wrap_openai 官方机制保证，这里捕获 create_run 断言其元数据。）
   2. 出图调用（generation/client._trace_image_call）→ run_type="tool"（**不是** llm），
@@ -87,7 +87,7 @@ def _mock_chat_handler(payload: dict):
 
 
 def test_llm_client_traces_as_llm_with_model_metadata(captured_runs):
-    from img_iter_agent.cli import _OpenAiCompatLlm
+    from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
 
     chat_payload = {
         "id": "c1", "object": "chat.completion", "model": "critic-mm-1",
@@ -96,7 +96,7 @@ def test_llm_client_traces_as_llm_with_model_metadata(captured_runs):
         "usage": {"prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8},
     }
     settings = Settings(_env_file=None, dmxapi_host="http://o.test", dmxapi_key="k")
-    llm = _OpenAiCompatLlm(
+    llm = OpenAiCompatLlm(
         settings, model="critic-mm-1",
         http_client=httpx.Client(transport=_mock_chat_handler(chat_payload)),
     )
@@ -163,17 +163,17 @@ def test_loop_runner_has_no_manual_runtree():
 
 
 def test_llm_client_uses_wrap_openai():
-    """_OpenAiCompatLlm 必须用官方 wrap_openai（不得手写 @traceable 套 LLM 调用）。"""
+    """OpenAiCompatLlm 必须用官方 wrap_openai（不得手写 @traceable 套 LLM 调用）。"""
     import ast
-    tree = _parse("img_iter_agent.cli")
+    tree = _parse("img_iter_agent.llm.openai_compat")
 
     # 必须调用 wrap_openai(...)
     calls = {n.func.id for n in ast.walk(tree)
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "wrap_openai" in calls, "LLM client 必须用 langsmith.wrap_openai"
 
-    # cli.py 不应再出现任何 @traceable（LLM 追踪已交给 wrap_openai）
-    assert _traceable_run_types(tree) == [], "cli.py 不应再手写 @traceable"
+    # llm 模块不应出现任何 @traceable（LLM 追踪已交给 wrap_openai）
+    assert _traceable_run_types(tree) == [], "llm 模块不应手写 @traceable"
 
 
 def test_image_trace_run_types_are_tool_only():
@@ -186,7 +186,7 @@ def test_image_trace_run_types_are_tool_only():
 # ---------------------------------------------------------------------------
 # 4. 端到端：跑一轮真实 graph，断言完整 trace 层级——
 #    chain(graph) ⊃ chain(节点) ⊃ run_type="llm"(Critic 调用)，且出图是 tool run。
-#    LLM 走 _OpenAiCompatLlm(wrap_openai + mock transport)，出图走真 Router + mock executor。
+#    LLM 走 OpenAiCompatLlm(wrap_openai + mock transport)，出图走真 Router + mock executor。
 # ---------------------------------------------------------------------------
 
 def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
@@ -198,12 +198,12 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     from img_iter_agent.agents.critic import Critic
     from img_iter_agent.agents.generator import Generator
     from img_iter_agent.agents.summarizer import Summarizer
-    from img_iter_agent.cli import _OpenAiCompatLlm
     from img_iter_agent.config import Settings
     from img_iter_agent.data.benchmark import load_benchmark
     from img_iter_agent.data.runstore import RunStore
     from img_iter_agent.generation.client import DmxapiClient
     from img_iter_agent.generation.router import Router
+    from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
     from img_iter_agent.pipeline.graph import build_graph
 
     project_root = Path(__file__).resolve().parents[1]
@@ -228,7 +228,7 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         })
 
-    critic_llm = _OpenAiCompatLlm(
+    critic_llm = OpenAiCompatLlm(
         settings, model="critic-mm",
         http_client=httpx.Client(transport=httpx.MockTransport(chat_handler)),
     )

@@ -34,9 +34,9 @@ from ...pipeline.graph import build_graph
 
 
 def _make_openai_llm(settings: Settings, *, model: str | None = None) -> LlmClient:
-    from ...cli import _OpenAiCompatLlm
+    from ...llm.openai_compat import OpenAiCompatLlm
 
-    return _OpenAiCompatLlm(settings, model=model) if model else _OpenAiCompatLlm(settings)
+    return OpenAiCompatLlm(settings, model=model) if model else OpenAiCompatLlm(settings)
 
 
 @dataclass

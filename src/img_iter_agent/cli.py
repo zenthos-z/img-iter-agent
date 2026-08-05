@@ -20,51 +20,17 @@ from langgraph.types import Command
 from .agents.critic import Critic
 from .agents.generator import Generator
 from .agents.summarizer import Summarizer
-from .config import Settings, get_settings
+from .config import get_settings
 from .data.benchmark import load_benchmark
 from .data.runstore import RunStore
 from .generation.client import DmxapiClient
 from .generation.router import Router
+from .llm.openai_compat import OpenAiCompatLlm
 from .pipeline.graph import build_graph
 
 
-class _OpenAiCompatLlm:
-    """Agent LLM 客户端：走 dmxapi 的 OpenAI 兼容端点（/v1/chat/completions）。
-
-    用官方 openai SDK 调用，并用 langsmith.wrap_openai 包装客户端——这是 LangSmith
-    官方推荐的追踪方式（见 docs.langchain.com/langsmith/observability-quickstart）：
-
-    - dmxapi 网关对**所有协议族**都暴露统一的 OpenAI 兼容 chat 端点，故一个 client
-      即可覆盖 Critic(多模态)/Generator/Summarizer，无需按 protocol 分派。
-    - wrap_openai 让每次 chat.completions.create 自动作为 LangSmith 的 run_type="llm"
-      run 上报，带标准 I/O（messages → generations）、模型名(ls_model_name)、
-      provider(ls_provider)、token usage 与起止时间(耗时)，并自动嵌套在 LangGraph
-      节点 run 之下。无需手写 traceable，也不用手动构造 I/O 格式。
-
-    多模态：Critic 在 content 里放图片时构造的是 OpenAI 标准多模态 content
-    （[{"type":"text",...},{"type":"image_url","image_url":{"url":"data:..."}}]），
-    openai SDK 原生支持，直接透传即可。
-    """
-
-    def __init__(self, settings: Settings, *, model: str | None = None,
-                 http_client=None) -> None:
-        from langsmith.wrappers import wrap_openai
-        from openai import OpenAI
-
-        base_url = f"{settings.dmxapi_host.rstrip('/')}/v1"
-        # api_key 为空时用占位串（真实运行 .env 必配 dmxapi_key）；dmxapi 走 Bearer 鉴权。
-        # http_client 可注入（测试用 MockTransport 拦截请求、回 canned 响应，不联网）。
-        client = OpenAI(base_url=base_url, api_key=settings.dmxapi_key or "missing",
-                        timeout=120.0, http_client=http_client)
-        self._client = wrap_openai(client)
-        self.settings = settings
-        # model 由调用方指定（critic/generator/summarizer 各自的 *_model 字段）
-        self._model = model or settings.critic_model
-
-    def complete(self, messages: list[dict]) -> str:
-        model = self._model
-        resp = self._client.chat.completions.create(model=model, messages=messages)
-        return resp.choices[0].message.content or ""
+# Agent LLM client（OpenAiCompatLlm，含 langsmith.wrap_openai）已抽到 llm/openai_compat.py，
+# 消除 web.services.loop_runner → cli 的反向依赖。
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -84,9 +50,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # 构造 generator/critic/summarizer
     router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = _OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
+    gen_llm = OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
     generator = Generator(router, llm=gen_llm)
-    critic = Critic(_OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
+    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
     summarizer = Summarizer()
 
     # SqliteSaver 持久化 checkpoint（可断点续跑）

@@ -88,15 +88,13 @@ def build_loop_context(
     - persist=False（批量/测试）：InMemorySaver（不落盘）。
     - loop_model：启动时指定的生图 model_id，反查成 ModelFamily 作为 model_hint 强制路由。
     """
-    # 阶段4 把 _OpenAiCompatLlm 搬到 llm/openai_compat.py 后，改为：
-    #   from ..llm.openai_compat import OpenAiCompatLlm
-    from ..cli import _OpenAiCompatLlm
+    from ..llm.openai_compat import OpenAiCompatLlm
 
     settings = settings or get_settings()
     router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = _OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
+    gen_llm = OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
     generator = Generator(router, llm=gen_llm)
-    critic = Critic(_OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
+    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
     summarizer = Summarizer()
 
     checkpointer = open_checkpointer(store.run_dir) if persist else InMemorySaver()
