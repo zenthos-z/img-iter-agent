@@ -12,11 +12,14 @@ cli.cmd_run / loop_runner._build_app / collect_traces 三处驱动统一调用 b
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
+from langsmith import traceable
 
 from ..agents.critic import Critic
 from ..agents.generator import Generator
@@ -26,6 +29,7 @@ from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
 from ..generation.client import DmxapiClient
 from ..generation.router import Router
+from ..memory.schema import CriticVerdict
 from .graph import CompiledGraph, build_graph
 
 
@@ -119,10 +123,61 @@ def build_loop_context(
     return LoopContext(app, cfg, checkpointer if persist else None)
 
 
+@traceable(name="loop", run_type="chain")
+def run_loop_session(
+    app: CompiledGraph,
+    cfg: dict,
+    store: RunStore,
+    *,
+    rounds: int,
+    bench_id: str,
+    sample_id: str,
+    prompt_decision: Callable[[int, CriticVerdict | None], str] | None = None,
+) -> int:
+    """跑整个闭环 loop（首轮 + rounds 次 resume）作为**一条** LangSmith trace。
+
+    所有 app.invoke 嵌套在本函数的 loop run 之下（Python≥3.11 的 contextvar 继承），
+    实现「1 loop = 1 trace」——而非 LangGraph 默认的每轮 invoke 一条 trace。
+    prompt_decision(round, verdict)→decision：CLI 传交互 input；None=自动 continue（脚本/批量）。
+    """
+    assert store.meta is not None
+    fixed_model = store.meta.model
+    loop_id = store.run_dir.name
+    print(f"[run] {bench_id}/{sample_id} | model={fixed_model} | run_id={store.meta.run_id}")
+    state: dict = app.invoke(
+        {"round": 0, "model": fixed_model, "bench_id": bench_id,
+         "sample_id": sample_id, "run_id": loop_id},
+        config=cfg,
+    )
+    round_done = 0
+    for i in range(rounds):
+        verdict = state.get("_verdict")
+        r = state.get("round", 0)
+        rest = verdict.restoration if verdict else None
+        print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
+        print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
+        if prompt_decision is not None:
+            try:
+                decision = prompt_decision(r, verdict).strip() or "continue"
+            except EOFError:
+                decision = "stop"
+        else:
+            decision = "continue"
+        state = app.invoke(Command(resume=decision), config=cfg)
+        round_done = i + 1
+        if state.get("decision") == "stop":
+            print("[run] 已停止。")
+            break
+    store.finish(note=f"跑完 {round_done} 轮")
+    print(f"[run] 完成。trajectory: {store.trajectory_path}")
+    return 0
+
+
 __all__ = [
     "LoopContext",
     "build_loop_context",
     "close_checkpointer",
     "make_loop_config",
     "open_checkpointer",
+    "run_loop_session",
 ]

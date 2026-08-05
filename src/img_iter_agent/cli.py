@@ -14,12 +14,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from langgraph.types import Command
-
 from .config import get_settings
 from .data.benchmark import load_benchmark
 from .data.runstore import RunStore
-from .pipeline.runner import build_loop_context, close_checkpointer
+from .pipeline.runner import build_loop_context, close_checkpointer, run_loop_session
 
 # Agent LLM client（OpenAiCompatLlm，含 langsmith.wrap_openai）已抽到 llm/openai_compat.py，
 # 消除 web.services.loop_runner → cli 的反向依赖。
@@ -40,36 +38,20 @@ def cmd_run(args: argparse.Namespace) -> int:
                                 model=args.model or settings.model_seedream_pro,
                                 settings=settings, note=args.note)
 
-    # 一处收口：agent 配方 + checkpointer（显式 setup）+ build_graph + 标准 config（带 metadata/tags）。
+    # 一处收口：agent 配方 + checkpointer + build_graph + 标准 config。
+    # loop 整体跑在 run_loop_session（@traceable）下 → 1 loop = 1 LangSmith trace。
     assert store.meta is not None  # create() 必已设置
     ctx = build_loop_context(lb, store, args.sample, loop_model=store.meta.model)
     try:
-        app, cfg = ctx.app, ctx.cfg
-        fixed_model = store.meta.model
-        print(f"[run] {args.bench}/{args.sample} | model={fixed_model} | run_id={store.meta.run_id}")
-        state = app.invoke({"round": 0, "model": fixed_model, "bench_id": args.bench,
-                            "sample_id": args.sample, "run_id": store.run_dir.name}, config=cfg)
-
-        round_done = 0
-        for i in range(args.rounds):
-            verdict = state.get("_verdict")
-            r = state.get("round", 0)
-            rest = verdict.restoration if verdict else None
-            print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
-            print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
-            try:
-                decision = input("  > ").strip() or "continue"
-            except EOFError:
-                decision = "stop"
-            state = app.invoke(Command(resume=decision), config=cfg)
-            round_done = i + 1
-            if state.get("decision") == "stop":
-                print("[run] 已停止。")
-                break
-
-        store.finish(note=f"跑完 {round_done} 轮")
-        print(f"[run] 完成。trajectory: {store.trajectory_path}")
-        return 0
+        return run_loop_session(
+            ctx.app, ctx.cfg, store,
+            rounds=args.rounds, bench_id=args.bench, sample_id=args.sample,
+            prompt_decision=lambda _r, _v: input("  > "),
+            langsmith_extra={"metadata": {
+                "loop_id": loop_id, "bench_id": args.bench,
+                "sample_id": args.sample, "model": store.meta.model,
+            }},
+        )
     finally:
         close_checkpointer(ctx.checkpointer)
 
