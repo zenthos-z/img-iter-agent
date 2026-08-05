@@ -39,13 +39,24 @@ class LoopContext:
 
 
 def open_checkpointer(run_dir: Path) -> SqliteSaver:
-    """开 SqliteSaver 并显式 setup()（建 checkpoints/writes 表）。
+    """开 SqliteSaver 并显式 setup()（建 checkpoints/writes 表）+ 注册 state 自定义类型。
 
-    替代裸 `SqliteSaver(conn)` 的隐式建表行为。返回的 saver 暴露 .conn，
+    替代裸 `SqliteSaver(conn)` 的隐式建表行为。把 state 里的自定义类型
+    （CriticVerdict/AttemptRecord/GenOutcome）注册到 msgpack allowlist，消除
+    "Deserializing unregistered type ... This will be blocked in a future version"
+    warning（未来 strict msgpack 默认开启会直接 block）。返回的 saver 暴露 .conn，
     由调用方在 loop 终态时 close_checkpointer(saver) 关连接。
     """
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    from ..agents.generator import GenOutcome
+    from ..memory.schema import AttemptRecord, CriticVerdict
+
     conn = sqlite3.connect(run_dir / "checkpoints.sqlite", check_same_thread=False)
-    saver = SqliteSaver(conn)
+    serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[CriticVerdict, AttemptRecord, GenOutcome]
+    )
+    saver = SqliteSaver(conn, serde=serde)
     saver.setup()
     return saver
 
