@@ -171,9 +171,12 @@ class LoopRunner:
                 # 在 LangSmith 里关联/过滤，无需手动拼接 RunTree。
                 if resume_existing:
                     # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
-                    state = app.invoke(Command(resume="continue"), config=cfg)
+                    state = app.invoke(
+                        Command(resume="continue"),
+                        config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
+                    )
                 else:
-                    state = app.invoke(inputs, config=cfg)
+                    state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"首轮失败: {e}\n{traceback.format_exc()}")
@@ -183,7 +186,8 @@ class LoopRunner:
         def task() -> None:
             try:
                 state = handle.app.invoke(
-                    Command(resume=decision), config=handle.cfg,
+                    Command(resume=decision),
+                    config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
                 )
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
@@ -202,6 +206,15 @@ class LoopRunner:
             loop_model=store.meta.model if store.meta else None,
         )
         return ctx.app, ctx.cfg
+
+    @staticmethod
+    def _cfg_with_round(handle: LoopHandle, round_n: int, phase: str) -> dict:
+        """在标准 config 上叠加 round/phase，让 LangSmith 里每一轮 trace 可辨认（按 round/phase 过滤、列表加 metadata/tags 列）。"""
+        base = handle.cfg or {"configurable": {"thread_id": handle.loop_id}}
+        cfg = dict(base)
+        cfg["metadata"] = {**(base.get("metadata") or {}), "round": round_n, "phase": phase}
+        cfg["tags"] = list(base.get("tags") or []) + [f"round:{round_n}", f"phase:{phase}"]
+        return cfg
 
     def _post_invoke(self, handle: LoopHandle, state: dict) -> None:
         """invoke 返回后判定 phase：到 END=finished，到 interrupt=awaiting_review。"""
