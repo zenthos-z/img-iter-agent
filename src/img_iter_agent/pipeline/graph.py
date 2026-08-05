@@ -197,8 +197,11 @@ def run_loop(
     用于测试与 CLI。
     """
     import uuid
+
+    from .runner import make_loop_config
     tid = thread_id or f"{run_store.run_dir.name}-{uuid.uuid4().hex[:6]}"
-    cfg = {"configurable": {"thread_id": tid}}
+    model = run_store.meta.model if run_store.meta else ""
+    cfg = make_loop_config(tid, bench.bench.bench_id, sample_id, model)
     app = build_graph(bench=bench, run_store=run_store, generator=generator,
                       critic=critic, summarizer=summarizer, sample_id=sample_id)
 
