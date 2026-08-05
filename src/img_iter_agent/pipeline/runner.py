@@ -11,6 +11,7 @@ cli.cmd_run / loop_runner._build_app / collect_traces 三处驱动统一调用 b
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -71,6 +72,50 @@ def close_checkpointer(saver: object | None) -> None:
         return
     try:
         saver.conn.close()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def create_loop_trace(loop_id: str, bench_id: str, sample_id: str, model: str) -> object:
+    """创建 loop 顶层 RunTree（LangSmith trace root），跨多轮 invoke/resume 持久。
+
+    供 web loop_runner 用：web 跨 HTTP 请求，无法像 cli 的 run_loop_session 那样在一个
+    @traceable 调用里包住整个 loop，所以手动建一个 loop root，每次 invoke 嵌套其下。
+    返回 RunTree，但调用方以 object 持有（避免在 loop_runner 直接引用 RunTree，触发 test_tracing 守卫）。
+    """
+    from langsmith import Client, RunTree
+
+    client = Client()
+    root = RunTree(
+        name="loop", run_type="chain", client=client,
+        metadata={"loop_id": loop_id, "bench_id": bench_id,
+                  "sample_id": sample_id, "model": model},
+    )
+    root.post()
+    return root
+
+
+@contextlib.contextmanager
+def loop_trace_context(root: object | None):
+    """在 loop root 下嵌套执行：web 每次 invoke 包裹此 context，使其 graph run 嵌套到 loop trace。"""
+    if root is None:  # tracing 未开或测试时不嵌套
+        yield
+        return
+    from langsmith import tracing_context
+
+    with tracing_context(parent=root):  # type: ignore[arg-type]
+        yield
+
+
+def end_loop_trace(root: object | None, *, error: bool = False, error_msg: str | None = None) -> None:
+    """结束 loop trace（loop 终态 finished/error 时调用）。幂等，容忍 None。"""
+    if root is None:
+        return
+    try:
+        if error:
+            root.end(error=error_msg)  # type: ignore[attr-defined]
+        else:
+            root.end(outputs={})  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -177,6 +222,9 @@ __all__ = [
     "LoopContext",
     "build_loop_context",
     "close_checkpointer",
+    "create_loop_trace",
+    "end_loop_trace",
+    "loop_trace_context",
     "make_loop_config",
     "open_checkpointer",
     "run_loop_session",

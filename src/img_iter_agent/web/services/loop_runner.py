@@ -19,7 +19,13 @@ from langgraph.types import Command
 from ...config import get_settings
 from ...data.benchmark import load_benchmark
 from ...data.runstore import RunStore
-from ...pipeline.runner import build_loop_context, close_checkpointer
+from ...pipeline.runner import (
+    build_loop_context,
+    close_checkpointer,
+    create_loop_trace,
+    end_loop_trace,
+    loop_trace_context,
+)
 
 
 @dataclass
@@ -37,6 +43,7 @@ class LoopHandle:
     app: object | None = field(default=None, repr=False)
     cfg: dict | None = field(default=None, repr=False)
     store: RunStore | None = field(default=None, repr=False)
+    loop_root: object | None = field(default=None, repr=False)  # LangSmith loop trace root（web 跨请求 1-loop-1-trace）
 
 
 class LoopRunner:
@@ -157,6 +164,11 @@ class LoopRunner:
                 handle.app = app
                 handle.cfg = cfg
                 handle.store = store  # 供 _post_invoke 在结束时调 store.finish()
+                # 建 loop trace root（web 跨请求 1-loop-1-trace）：所有轮 invoke 嵌套其下
+                handle.loop_root = create_loop_trace(
+                    loop_id, lb.bench.bench_id, sample_id,
+                    store.meta.model if store.meta else "",
+                )
                 inputs = {
                     "round": 0,
                     "model": store.meta.model if store.meta else "",
@@ -164,19 +176,17 @@ class LoopRunner:
                     "sample_id": sample_id,
                     "run_id": loop_id,
                 }
-                # 直接 invoke：LANGSMITH_TRACING=true 时 LangGraph 会自动把这次 invoke
-                # （含所有节点 + 节点内的 LLM/出图调用）作为一条完整 trace 上报。
-                # 节点内的 LLM 调用经 wrap_openai 自动嵌套为 run_type="llm"，
-                # 出图调用为 run_type="tool"。同一 loop 的多轮 invoke 靠 metadata.loop_id
-                # 在 LangSmith 里关联/过滤，无需手动拼接 RunTree。
-                if resume_existing:
-                    # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
-                    state = app.invoke(
-                        Command(resume="continue"),
-                        config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
-                    )
-                else:
-                    state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
+                # 每次 invoke 包在 loop_trace_context 下 → graph run 嵌套到 loop trace root，
+                # 实现一个 loop（跨多轮 invoke/resume）一条 trace。round/phase 在 config metadata 辨认轮次。
+                with loop_trace_context(handle.loop_root):
+                    if resume_existing:
+                        # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
+                        state = app.invoke(
+                            Command(resume="continue"),
+                            config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
+                        )
+                    else:
+                        state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"首轮失败: {e}\n{traceback.format_exc()}")
@@ -185,10 +195,11 @@ class LoopRunner:
     def _run_resume(self, handle: LoopHandle, decision: str):
         def task() -> None:
             try:
-                state = handle.app.invoke(
-                    Command(resume=decision),
-                    config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
-                )
+                with loop_trace_context(handle.loop_root):
+                    state = handle.app.invoke(
+                        Command(resume=decision),
+                        config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
+                    )
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"resume 失败: {e}\n{traceback.format_exc()}")
@@ -241,9 +252,11 @@ class LoopRunner:
                 else:
                     handle.phase = "awaiting_review"
             elif (snapshot.next or ()) == ():
-                # next 为空 = 到 END，结束
+                # next 为空 = 到 END，结束 + 收尾 loop trace
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 结束")
+                end_loop_trace(handle.loop_root)
+                handle.loop_root = None
             else:
                 # 还在执行中（一般不会，invoke 是同步跑到 interrupt/END）
                 handle.phase = "running"
@@ -252,11 +265,15 @@ class LoopRunner:
             if state.get("decision") == "stop":
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 停止")
+                end_loop_trace(handle.loop_root)
+                handle.loop_root = None
 
     def _fail(self, handle: LoopHandle, msg: str) -> None:
         handle.phase = "error"
         handle.last_error = msg
         _close_app_checkpointer(handle)  # error 不可 resume，关闭 checkpointer 避免 sqlite 连接泄漏
+        end_loop_trace(handle.loop_root, error=True, error_msg=msg)
+        handle.loop_root = None
         # 持久化错误到 meta.json（extras.last_error），重启后仍可见
         if handle.store is not None:
             try:
