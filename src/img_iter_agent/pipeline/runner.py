@@ -111,7 +111,7 @@ def build_loop_context(
 __all__ = [
     "LoopContext",
     "build_loop_context",
-    "open_checkpointer",
     "close_checkpointer",
     "make_loop_config",
+    "open_checkpointer",
 ]
