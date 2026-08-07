@@ -4,6 +4,8 @@
   run        闭环 A：生成→评分→总结→人工审批（逐轮 interrupt）
   calibrate  闭环 B：用人工排序拟合维度权重（learning-to-rank）
   analyze    策略对比：跨 run 汇总还原度，画图
+  summarize  跨 loop 经验蒸馏：独立 Summarizer 读一批 run 的 trajectory+conclusions
+             → 通用经验 → experience/<bench>/general.json（不跑 loop、不动 conclusions.json）
 
 真实生图与 LLM 评分需 .env 配好 key 与 model_id。
 """
@@ -143,6 +145,55 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_summarize(args: argparse.Namespace) -> int:
+    """跨 loop 经验蒸馏：独立 Summarizer 读一批 run 的 trajectory+conclusions → 通用经验。
+
+    不跑 loop、不动 conclusions.json。产物写 <data_root>/experience/<bench>/general.json。
+    """
+    import glob
+
+    from .agents.experience_distiller import ExperienceDistiller
+    from .llm.chat_model import build_chat_model
+    from .memory.experience import save_general_experience
+    from .pipeline.runner import _skills_dir
+
+    settings = get_settings()
+    # 确定 run_dirs：显式 --runs，或 --bench 取 runs_dir 下 <bench>-*
+    if args.runs:
+        run_dirs = [Path(p) for p in args.runs]
+    elif args.bench:
+        run_dirs = [Path(p) for p in glob.glob(str(settings.runs_dir / f"{args.bench}-*"))]
+    else:
+        print("错误：需要 --bench 或 --runs", file=sys.stderr)
+        return 1
+    run_dirs = [rd for rd in run_dirs if (rd / "trajectory.jsonl").exists()]
+    if not run_dirs:
+        print("[summarize] 没有含 trajectory 的 run", file=sys.stderr)
+        return 1
+
+    # bench_id：显式或从首条 trajectory 推断
+    if args.bench:
+        bench_id = args.bench
+    else:
+        from .data.trajectory import TrajectoryReader
+        first = next(iter(TrajectoryReader(run_dirs[0] / "trajectory.jsonl").iter_records()), None)
+        bench_id = first.bench_id if first else "unknown"
+    bench = load_benchmark(bench_id, settings=settings).bench
+
+    chat = build_chat_model(settings, role="summarizer")
+    distiller = ExperienceDistiller(
+        chat, run_dirs=run_dirs, bench=bench,
+        skills_dir=_skills_dir("experience-distiller"),
+    )
+    exp = distiller.distill()
+    path = save_general_experience(settings.data_root, bench.bench_id, exp)
+    print(f"[summarize] {len(exp.lessons)} 条通用经验（来自 {len(exp.source_runs)} 个 run）→ {path}")
+    print(f"summary: {exp.summary}")
+    for i, ls in enumerate(exp.lessons, 1):
+        print(f"  {i}. [{ls.dim}] {ls.insight} (conf={ls.confidence:.2f})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="img-iter-agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -168,6 +219,11 @@ def main(argv: list[str] | None = None) -> int:
     p_ana.add_argument("--runs", nargs="*", default=None, help="指定 run 目录（默认全部）")
     p_ana.add_argument("--plot", default=None, help="输出折线图路径（可选）")
     p_ana.set_defaults(func=cmd_analyze)
+
+    p_sum = sub.add_parser("summarize", help="跨 loop 经验蒸馏（独立 Summarizer，不跑 loop）")
+    p_sum.add_argument("--bench", default=None, help="bench_id（取 runs_dir 下 <bench>-* 全部 run）")
+    p_sum.add_argument("--runs", nargs="*", default=None, help="显式指定 run 目录")
+    p_sum.set_defaults(func=cmd_summarize)
 
     args = parser.parse_args(argv)
     return args.func(args)
