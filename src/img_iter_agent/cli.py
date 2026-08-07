@@ -1,4 +1,4 @@
-"""CLI 入口：跑闭环 A（生成迭代）/ 闭环 B（校准）/ 分析。
+"""CLI 入口：跑闭环 A（生成迭代）/ 闭环 B（校准）/ 分析 / 经验蒸馏。
 
 子命令：
   run        闭环 A：生成→评分→总结→人工审批（逐轮 interrupt）
@@ -19,8 +19,8 @@ from .data.benchmark import load_benchmark
 from .data.runstore import RunStore
 from .pipeline.runner import build_loop_context, close_checkpointer, run_loop_session
 
-# Agent LLM client（OpenAiCompatLlm，含 langsmith.wrap_openai）已抽到 llm/openai_compat.py，
-# 消除 web.services.loop_runner → cli 的反向依赖。
+# Generator/Critic 的 LLM 由 build_loop_context 用 build_chat_model（ChatOpenAI，指向 dmxapi）
+# 构造并注入 deepagent；本模块不直接触碰 LLM client。
 
 
 def cmd_run(args: argparse.Namespace) -> int:

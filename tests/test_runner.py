@@ -1,6 +1,6 @@
 """pipeline.runner 收口层的单测：make_loop_config / open_checkpointer / close_checkpointer / build_loop_context。
 
-build_loop_context 内部构造真 agent（OpenAiCompatLlm + Router），但这里只验「构造出的
+build_loop_context 内部构造真 agent（deepagent + ChatOpenAI + Router），但这里只验「构造出的
 LoopContext 结构 + 标准 config + checkpointer setup」，不 invoke（避免真实 API 调用）。
 """
 

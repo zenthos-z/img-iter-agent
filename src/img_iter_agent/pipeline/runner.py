@@ -30,8 +30,16 @@ from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
 from ..generation.client import DmxapiClient
 from ..generation.router import Router
+from ..llm.chat_model import build_chat_model
 from ..memory.schema import CriticVerdict
 from .graph import CompiledGraph, build_graph
+
+# 项目根（定位 skills/<role>/SKILL.md，随仓库分发；deepagents SkillsMiddleware 从此读）
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _skills_dir(role: str) -> Path:
+    return _PROJECT_ROOT / "skills" / role
 
 
 @dataclass
@@ -148,13 +156,13 @@ def build_loop_context(
     - persist=False（批量/测试）：InMemorySaver（不落盘）。
     - loop_model：启动时指定的生图 model_id，反查成 ModelFamily 作为 model_hint 强制路由。
     """
-    from ..llm.openai_compat import OpenAiCompatLlm
-
     settings = settings or get_settings()
     router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = OpenAiCompatLlm(settings, model=settings.generator_model) if settings.generator_model else None
-    generator = Generator(router, llm=gen_llm)
-    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
+    # Generator/Critic：deepagent 引擎（tool-using agent）。chat_model 指向 dmxapi OpenAI 兼容端点。
+    gen_chat = build_chat_model(settings, role="generator")
+    generator = Generator(router, chat_model=gen_chat, skills_dir=_skills_dir("generator"))
+    critic_chat = build_chat_model(settings, role="critic")
+    critic = Critic(critic_chat, bench=lb.bench, skills_dir=_skills_dir("critic"))
     summarizer = Summarizer()
 
     checkpointer = open_checkpointer(store.run_dir) if persist else InMemorySaver()

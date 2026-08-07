@@ -13,15 +13,9 @@ DMXAPI key 仅在 Step 2（Critic 真正调 LLM）及之后才需要。
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-# Agent LLM（及生图）走 dmxapi 的协议族。openai=OpenAI 兼容端点（默认，最通用）；
-# gemini/doubao/qwen=对应原生族；claude=Anthropic 兼容端点。各族的端点/认证/请求体差异
-# 由后续的 LLM client（Step 2 Critic 起）按此字段分派。
-AgentProtocol = Literal["openai", "gemini", "doubao", "qwen", "claude"]
 
 # 默认数据根目录 = 项目下的 data/
 # 本文件位于 <project>/src/img_iter_agent/config.py，向上 parents[2] 即项目根。
@@ -60,22 +54,11 @@ class Settings(BaseSettings):
 
     # --- Agent LLM（用户决定每个 agent 用哪个模型，见 ADR-006）---
     # Critic 看图打分（必须多模态）；Generator 构造 prompt、Summarizer 写经验（文本即可）。
-    # 三者各自独立配置 model_id + protocol，因为不同模型系列走 dmxapi 的不同端点/认证/请求体
-    # （生图四协议族同样适用于 agent LLM 的 chat/多模态端点）。
-    # 默认 protocol=openai：dmxapi 对 OpenAI 兼容端点支持最广（/v1/chat/completions, Bearer 鉴权）。
-    # 若用 Gemini/Claude/豆包 系列模型，把对应 protocol 改成对应族。
+    # Generator/Critic 改造为 deepagent 后，由 ChatOpenAI 指向 dmxapi 的 OpenAI 兼容端点
+    # （/v1/chat/completions, Bearer 鉴权，支持 tool-calling）；模型 id 在此配置。
     critic_model: str = Field(default="", description="Critic 的 dmxapi model_id（必须多模态）")
-    critic_protocol: AgentProtocol = Field(
-        default="openai", description="Critic LLM 走的协议族（openai/gemini/doubao/claude）"
-    )
     generator_model: str = Field(default="", description="Generator 的 dmxapi model_id（文本即可）")
-    generator_protocol: AgentProtocol = Field(
-        default="openai", description="Generator LLM 走的协议族"
-    )
     summarizer_model: str = Field(default="", description="Summarizer 的 dmxapi model_id（文本即可）")
-    summarizer_protocol: AgentProtocol = Field(
-        default="openai", description="Summarizer LLM 走的协议族"
-    )
 
     @property
     def benchmarks_dir(self) -> Path:

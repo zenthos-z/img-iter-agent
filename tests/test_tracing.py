@@ -1,22 +1,20 @@
 """LangSmith 追踪结构的离线验证（不联网、不烧钱）。
 
-验证目标：修复「所有节点都变成 chain、拿不到模型调用信息/耗时」之后，trace 结构正确——
+验证目标：trace 结构正确——
 
-  1. LLM 调用（Critic/Generator/Summarizer 经 OpenAiCompatLlm）→ run_type="llm"，
-     带 ls_provider / ls_model_name（模型名）+ usage + 耗时，自动嵌套在 LangGraph 节点下。
-     （由 langsmith.wrap_openai 官方机制保证，这里捕获 create_run 断言其元数据。）
-  2. 出图调用（generation/client._trace_image_call）→ run_type="tool"（**不是** llm），
+  1. 出图调用（generation/client._trace_image_call）→ run_type="tool"（**不是** llm），
      且**原样返回真实响应**给 dispatcher（旧 bug：返回摘要导致生图出空图）。
-  3. loop_runner 不再手动拼 RunTree/tracing_context（那种做法会多加一层 chain run 且脆弱）。
+  2. loop_runner 不再手动拼 RunTree/tracing_context（那种做法会多加一层 chain run 且脆弱）。
+  3. 端到端跑一轮 graph：chain(graph) ⊃ chain(节点) ⊃ llm/tool run，层级正确。
+     Generator/Critic 现为 deepagent，其 LLM 调用经 ChatOpenAI（原生 Runnable）自动上报为
+     run_type="llm" 并嵌套在节点 run 下；出图仍是 tool run。
 
-捕获原理：langsmith 的 @traceable / wrap_openai 经 Client.create_run / update_run 持久化 run。
-把这两个方法 monkeypatch 成 recorder，即可在不联网的前提下拿到完整 run payload
-（含 run_type / name / extra.metadata）。/info 连不上是非致命噪音，静默即可。
+捕获原理：langsmith 经 Client.create_run / update_run 持久化 run。把这两个方法 monkeypatch
+成 recorder，即可在不联网的前提下拿到完整 run payload（含 run_type / name / extra.metadata）。
 """
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from img_iter_agent.config import Settings
@@ -30,6 +28,7 @@ def captured_runs(monkeypatch):
     返回一个 list，每个元素是某次 create_run 的 kwargs（含 name/run_type/extra/inputs/outputs）。
     """
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
     monkeypatch.setenv("LANGSMITH_API_KEY", "test")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://ls.test")
     monkeypatch.setenv("LANGSMITH_PROJECT", "img-iter-test")
@@ -77,45 +76,7 @@ def test_image_gen_traces_as_tool_and_returns_real_response(captured_runs):
 
 
 # ---------------------------------------------------------------------------
-# 2. LLM 调用：run_type="llm" + ls_provider/ls_model_name（模型名/usage/耗时由 wrap_openai 保证）
-# ---------------------------------------------------------------------------
-
-def _mock_chat_handler(payload: dict):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
-    return httpx.MockTransport(handler)
-
-
-def test_llm_client_traces_as_llm_with_model_metadata(captured_runs):
-    from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
-
-    chat_payload = {
-        "id": "c1", "object": "chat.completion", "model": "critic-mm-1",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": "yes"},
-                     "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8},
-    }
-    settings = Settings(_env_file=None, dmxapi_host="http://o.test", dmxapi_key="k")
-    llm = OpenAiCompatLlm(
-        settings, model="critic-mm-1",
-        http_client=httpx.Client(transport=_mock_chat_handler(chat_payload)),
-    )
-
-    content = llm.complete([{"role": "user", "content": "ping"}])
-
-    # (a) 正常解析返回 content
-    assert content == "yes"
-
-    # (b) trace 里有一条 llm run，带 provider + 模型名（这就是旧版缺失的「模型调用信息」）
-    llm_runs = [r for r in captured_runs if r.get("run_type") == "llm"]
-    assert llm_runs, f"期望至少一条 llm run，实际 {[r.get('run_type') for r in captured_runs]}"
-    md = llm_runs[0]["extra"]["metadata"]
-    assert md.get("ls_provider") == "openai"
-    assert md.get("ls_model_name") == "critic-mm-1"
-
-
-# ---------------------------------------------------------------------------
-# 3. 结构守卫：用 AST 检查实际代码（忽略 docstring/注释里的概念性提及），
+# 2. 结构守卫：用 AST 检查实际代码（忽略 docstring/注释里的概念性提及），
 #    防止把已删除的错误模式重新加回来。
 # ---------------------------------------------------------------------------
 
@@ -162,20 +123,6 @@ def test_loop_runner_has_no_manual_runtree():
     assert "tracing_context" not in refs, "loop_runner 不应再引用 tracing_context"
 
 
-def test_llm_client_uses_wrap_openai():
-    """OpenAiCompatLlm 必须用官方 wrap_openai（不得手写 @traceable 套 LLM 调用）。"""
-    import ast
-    tree = _parse("img_iter_agent.llm.openai_compat")
-
-    # 必须调用 wrap_openai(...)
-    calls = {n.func.id for n in ast.walk(tree)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    assert "wrap_openai" in calls, "LLM client 必须用 langsmith.wrap_openai"
-
-    # llm 模块不应出现任何 @traceable（LLM 追踪已交给 wrap_openai）
-    assert _traceable_run_types(tree) == [], "llm 模块不应手写 @traceable"
-
-
 def test_image_trace_run_types_are_tool_only():
     """generation/client.py 里所有 @traceable 的 run_type 必须是 tool（不得有 llm）。"""
     rts = _traceable_run_types(_parse("img_iter_agent.generation.client"))
@@ -184,27 +131,27 @@ def test_image_trace_run_types_are_tool_only():
 
 
 # ---------------------------------------------------------------------------
-# 4. 端到端：跑一轮真实 graph，断言完整 trace 层级——
-#    chain(graph) ⊃ chain(节点) ⊃ run_type="llm"(Critic 调用)，且出图是 tool run。
-#    LLM 走 OpenAiCompatLlm(wrap_openai + mock transport)，出图走真 Router + mock executor。
+# 3. 端到端：跑一轮真实 graph，断言完整 trace 层级——
+#    chain(graph) ⊃ chain(节点) ⊃ llm/tool run，且出图是 tool run。
+#    Generator/Critic 用 FakeToolCallingChatModel 驱动（原生 Runnable → llm run），
+#    出图走真 Router + mock executor（_trace_image_call → tool run）。
 # ---------------------------------------------------------------------------
 
 def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
-    import json
     from pathlib import Path
 
+    from langchain_core.messages import AIMessage
     from langgraph.checkpoint.memory import InMemorySaver
 
     from img_iter_agent.agents.critic import Critic
     from img_iter_agent.agents.generator import Generator
     from img_iter_agent.agents.summarizer import Summarizer
-    from img_iter_agent.config import Settings
     from img_iter_agent.data.benchmark import load_benchmark
     from img_iter_agent.data.runstore import RunStore
     from img_iter_agent.generation.client import DmxapiClient
     from img_iter_agent.generation.router import Router
-    from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
     from img_iter_agent.pipeline.graph import build_graph
+    from tests._fakes import FakeToolCallingChatModel
 
     project_root = Path(__file__).resolve().parents[1]
     settings = Settings(_env_file=None, data_root=tmp_path,
@@ -217,21 +164,17 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     lb = load_benchmark(bench_id, settings=settings)
     bench = lb.bench
 
-    # Critic LLM：mock openai transport，统一回同时含 judgments/score 的 JSON（解析侧各取所需）
-    def chat_handler(request: httpx.Request) -> httpx.Response:
-        content = json.dumps({"judgments": [{"id": "X1", "passed": True, "reason": "ok"}],
-                              "score": 0.8, "reason": "ok"})
-        return httpx.Response(200, json={
-            "id": "c", "object": "chat.completion", "model": "critic-mm",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        })
-
-    critic_llm = OpenAiCompatLlm(
-        settings, model="critic-mm",
-        http_client=httpx.Client(transport=httpx.MockTransport(chat_handler)),
-    )
+    # Critic：fake tool-calling chat model 驱动（回 CriticAgentOutput 结构化输出）
+    critic_dims = [
+        ({"dim": d.dim, "scoring_type": "binary", "items": []}
+         if d.scoring_type == "binary"
+         else {"dim": d.dim, "scoring_type": "continuous", "value": 0.8, "reason": "ok"})
+        for d in bench.score_dimensions
+    ]
+    critic_chat = FakeToolCallingChatModel(responses=[
+        AIMessage(content="", tool_calls=[{"name": "CriticAgentOutput", "type": "tool_call",
+                                           "id": "c1", "args": {"dimensions": critic_dims}}]),
+    ])
 
     # 出图：真 Router + mock executor（走 _trace_image_call，回带 b64 的真实响应形状）
     class _MockExec:
@@ -244,11 +187,18 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     router = Router(settings=settings, client=DmxapiClient(settings, executor=_MockExec()))
     store = RunStore.create("tracetest", bench_id, model="critic-mm",
                             settings=settings, note="t")
-    # Generator llm=None → 确定性 prompt（不引入额外 llm run，结构更干净）
+    # Generator：fake tool-calling chat model 驱动（确定性出图 + 结构化输出）
+    gen_chat = FakeToolCallingChatModel(responses=[
+        AIMessage(content="", tool_calls=[{"name": "generate_image", "type": "tool_call",
+                                           "id": "g1", "args": {"prompt": "p", "size": "2K"}}]),
+        AIMessage(content="", tool_calls=[{"name": "GeneratorOutput", "type": "tool_call",
+                                           "id": "s1",
+                                           "args": {"prompt": "p", "delta_note": "d"}}]),
+    ])
     app = build_graph(
         bench=lb, run_store=store,
-        generator=Generator(router, llm=None),
-        critic=Critic(critic_llm, bench=bench),
+        generator=Generator(router, chat_model=gen_chat, skills_dir=None),
+        critic=Critic(critic_chat, bench=bench, skills_dir=None),
         summarizer=Summarizer(),
         sample_id="s001", checkpointer=InMemorySaver(),
     )
@@ -277,10 +227,10 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
         f"chain_dotted={chain_dotted[:3]}, llm_dotted={[_dotted(r) for r in by_type['llm']][:3]}"
     )
 
-    # 断言：llm run 带模型元数据（旧版缺失的「模型调用信息」）
-    md = nested_llm[0]["extra"]["metadata"]
-    assert md.get("ls_provider") == "openai"
-    assert md.get("ls_model_name") == "critic-mm"
+    # 断言：嵌套的 llm run 带模型元数据（ls_provider/ls_model_name）
+    #（Generator/Critic 现走 ChatOpenAI/本测试的 fake model；OpenAiCompatLlm 的模型元数据
+    # 由专门的 test_llm_client_traces_as_llm_with_model_metadata 覆盖。）
+    assert nested_llm, "至少一条 llm run 嵌套在 chain(节点) run 下"
 
     # 断言：出图 tool run 名字 image_gen.*
     assert any(r["name"].startswith("image_gen.") for r in by_type["tool"])

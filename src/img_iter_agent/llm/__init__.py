@@ -1,15 +1,10 @@
-"""LLM client 抽象层。
+"""LLM 抽象层。
 
-Critic/Generator/Summarizer 三个 agent 都通过 `LlmClient` 调用 LLM。
-接口刻意窄化到「给消息列表 → 回文本」，让 agent 逻辑与具体协议族解耦：
+Generator/Critic 改造为 deepagent 后，生产 LLM 是 `langchain_openai.ChatOpenAI`
+（见 `llm/chat_model.py::build_chat_model`，指向 dmxapi 的 OpenAI 兼容端点，支持 tool-calling）。
 
-- 生产：按 `Settings.*_protocol` 分派到 dmxapi 的对应端点（openai 兼容/gemini/...），
-  Step 3 起逐步实现。
-- 测试：用 `FakeLlmClient` 回 canned 文本，断言 agent 的分派/解析/加权数学，
-  **完全不联网、不需 key**。
-
-多模态（Critic 看图）：消息里可带图片路径，由具体 client 在调用时按需转 base64/URL
-（ADR-005：图片全程用路径，只在调用时临时转换）。
+这里保留的 `LlmClient` Protocol + `FakeLlmClient` 是一个窄化的「进消息列表 → 回文本」接口，
+目前仅 Summarizer 的（暂未启用的）LLM 归纳路径引用，待 Summarizer 独立化时一并处理。
 """
 
 from __future__ import annotations

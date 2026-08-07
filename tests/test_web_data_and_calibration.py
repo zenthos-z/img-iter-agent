@@ -251,10 +251,9 @@ def test_summarizer_writes_critic_driven_conclusions(tmp_path):
 
 
 def test_generator_reads_conclusions(tmp_path):
-    """Generator 读 conclusions.json，effective/ineffective 上下文正确生成。"""
-    from img_iter_agent.agents.generator import Generator
-    from img_iter_agent.config import Settings
-    from img_iter_agent.generation.router import Router
+    """经验注入：query_experience 工具背后的 _format_experience 读 conclusions.json，
+    effective/ineffective 正确格式化。"""
+    from img_iter_agent.agents.tools.generator_tools import _format_experience
     from img_iter_agent.memory.knowledge import (
         KnowledgeBase,
         save_conclusions,
@@ -272,8 +271,7 @@ def test_generator_reads_conclusions(tmp_path):
                       lesson="色温描述无效")
     save_conclusions(run_dir, kb)
 
-    gen = Generator(Router(settings=Settings(data_root=tmp_path, dmxapi_key=""), client=None))  # type: ignore[arg-type]
-    ctx = gen.knowledge_context(run_dir)
+    ctx = _format_experience(run_dir)
     assert "加阴影" in ctx and "有效" in ctx  # effective 出现
     assert "色温描述" in ctx and "无效" in ctx  # ineffective 出现
 

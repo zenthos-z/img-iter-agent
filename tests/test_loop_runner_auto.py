@@ -1,10 +1,11 @@
 """LoopRunner 自动连跑（auto_mode）的离线验证：不依赖真实生图/LLM API。
 
-用 FakeRouter + FakeLlmClient 构造 mock graph，覆盖 LoopRunner._build_app，
+用 FakeRouter + FakeToolCallingChatModel（驱动 deepagent）构造 mock graph，覆盖 LoopRunner._build_app，
 验证：
   1. rounds=2 时，round1 完成后自动 resume(continue) 进 round2（remaining 1→0）；
-  2. round2 完成后 auto_mode 触发 resume(stop)，loop 走到 END，phase=finished；
-  3. rounds=1（非自动模式）首轮停在 awaiting_review（不自动续跑）。
+  2. round2 跑满后停在 awaiting_review（不再自动 stop→END），保持 graph 可续；
+  3. 跑满后 resume("continue") 能继续跑第 3 轮（核心：跑满不堵死）；
+  4. rounds=1（非自动模式）首轮停在 awaiting_review（不自动续跑）。
 
 这绕开了网络/API 超时，100% 确定性地覆盖 auto_mode 收尾逻辑。
 """
@@ -16,6 +17,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
@@ -24,9 +26,9 @@ from img_iter_agent.config import Settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.generation.base import GeneratedImage
 from img_iter_agent.generation.router import Router
-from img_iter_agent.llm import FakeLlmClient
 from img_iter_agent.pipeline.graph import build_graph
 from img_iter_agent.web.services.loop_runner import get_runner
+from tests._fakes import FakeToolCallingChatModel
 
 
 class _FakeRouter(Router):
@@ -46,18 +48,44 @@ class _FakeRouter(Router):
         )
 
 
-def _critic_responses(bench):
-    import json as _j
-    out = []
-    for dim_def in bench.score_dimensions:
-        if dim_def.scoring_type == "binary":
-            out.append(_j.dumps({"judgments": [
-                {"id": f"{dim_def.dim[0].upper()}{i+1}", "passed": i == 0, "reason": "mock"}
-                for i in range(3)
-            ]}))
+def _critic_chat(lb) -> FakeToolCallingChatModel:
+    """驱动 Critic deepagent 的 canned CriticAgentOutput（含全部维度评分，多轮复用）。"""
+    spec = lb.sample("s001").spec
+    bench = lb.bench
+    dims = []
+    for ddef in bench.score_dimensions:
+        if ddef.scoring_type == "binary":
+            items = spec.checklist.get(ddef.dim, [])
+            items = items if isinstance(items, list) else []
+            judgments = [
+                {"id": it.id, "passed": i == 0, "reason": "mock"}
+                for i, it in enumerate(items)
+            ]
+            dims.append({"dim": ddef.dim, "scoring_type": "binary", "items": judgments})
         else:
-            out.append(_j.dumps({"score": 0.7, "reason": "mock"}))
-    return out
+            dims.append({"dim": ddef.dim, "scoring_type": "continuous",
+                         "value": 0.7, "reason": "mock"})
+    resp = AIMessage(content="", tool_calls=[{
+        "name": "CriticAgentOutput", "type": "tool_call", "id": "c1",
+        "args": {"dimensions": dims},
+    }])
+    return FakeToolCallingChatModel(responses=[resp])
+
+
+def _gen_responses(num_rounds: int) -> list[AIMessage]:
+    """Generator deepagent 的 canned 序列（每轮 generate_image + GeneratorOutput 两步）。"""
+    resps: list[AIMessage] = []
+    for r in range(1, num_rounds + 1):
+        prompt = f"product 3-view round {r}"
+        resps.append(AIMessage(content="", tool_calls=[{
+            "name": "generate_image", "type": "tool_call", "id": f"g{r}",
+            "args": {"prompt": prompt, "size": "2K"},
+        }]))
+        resps.append(AIMessage(content="", tool_calls=[{
+            "name": "GeneratorOutput", "type": "tool_call", "id": f"s{r}",
+            "args": {"prompt": prompt, "delta_note": f"round {r}"},
+        }]))
+    return resps
 
 
 @pytest.fixture()
@@ -87,9 +115,9 @@ def _patch_build_app(monkeypatch, lb, settings):
 
     def _fake_build_app(self, settings, lb, store, sample_id):
         router = _FakeRouter()
-        gen = Generator(router)
-        # 给足多轮的 critic 响应（每轮 6 维）
-        critic = Critic(FakeLlmClient(responses=_critic_responses(bench) * 8), bench=bench)
+        gen = Generator(router, chat_model=FakeToolCallingChatModel(responses=_gen_responses(3)),
+                        skills_dir=None)
+        critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
         summ = Summarizer()
         conn = sqlite3.connect(store.run_dir / "checkpoints.sqlite", check_same_thread=False)
         from langgraph.checkpoint.sqlite import SqliteSaver
@@ -120,8 +148,9 @@ def _wait_phase(runner, loop_id, target, timeout=20):
     return h
 
 
-def test_auto_mode_2_rounds_finishes(setup, monkeypatch):
-    """rounds=2：round1 自动续跑 round2，跑满后 auto_mode 触发 stop → finished。"""
+def test_auto_mode_2_rounds_stops_at_review(setup, monkeypatch):
+    """rounds=2：round1 自动续跑 round2，跑满后停在 awaiting_review（不再自动 stop→END），
+    且可由 resume("continue") 继续跑第 3 轮（核心：跑满不堵死）。"""
     settings, lb, bench_id = setup
     _patch_build_app(monkeypatch, lb, settings)
     runner = get_runner()
@@ -129,18 +158,27 @@ def test_auto_mode_2_rounds_finishes(setup, monkeypatch):
     loop_id = runner.start(
         bench_id=bench_id, sample_id="s001", model="fake-model", rounds=2,
     )
-    # 自动连跑：最终应到 finished（而非停在 awaiting_review）
-    h = _wait_phase(runner, loop_id, {"finished", "error"})
-    assert h.phase == "finished", f"期望 finished，实际 {h.phase}: {h.last_error}"
+    # 跑满 2 轮后停在 awaiting_review（不再自动 finished）
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"期望 awaiting_review，实际 {h.phase}: {h.last_error}"
+
+    def _rounds():
+        traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
+        return [json.loads(l) for l in traj.strip().splitlines() if l.strip()]
 
     # 跑了 2 轮（trajectory 2 条）
-    traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
-    rounds = [json.loads(l) for l in traj.strip().splitlines() if l.strip()]
-    assert len(rounds) == 2
-    assert [r["round"] for r in rounds] == [1, 2]
-    # meta 标记 finished
+    rs = _rounds()
+    assert [r["round"] for r in rs] == [1, 2]
+    # 跑满后未结束：meta 不写 finished_at
     meta = json.loads((settings.run_dir(loop_id) / "meta.json").read_text(encoding="utf-8"))
-    assert meta["finished_at"] is not None
+    assert meta.get("finished_at") is None
+
+    # 关键：跑满后仍可继续 —— resume(continue) 应跑出第 3 轮
+    assert runner.resume(loop_id, "continue") is True
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"resume 后期望 awaiting_review，实际 {h.phase}: {h.last_error}"
+    rs = _rounds()
+    assert [r["round"] for r in rs] == [1, 2, 3], f"期望跑到第 3 轮，实际 {[r['round'] for r in rs]}"
 
 
 def test_single_round_stops_at_review(setup, monkeypatch):

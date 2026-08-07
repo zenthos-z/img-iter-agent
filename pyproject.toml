@@ -17,6 +17,11 @@ dependencies = [
     # agent 编排 (Step 4)
     "langgraph",
     "langgraph-checkpoint-sqlite",
+    # Generator/Critic 改造为真正的 tool-using agent：用官方 deepagents（langchain-ai 出品，
+    # 建在 langgraph 之上，自带 skills/规划/子agent 能力）。langchain-openai 提供 ChatOpenAI，
+    # 指向 dmxapi 的 OpenAI 兼容端点（支持 tool-calling）。生图仍走下面的 openai SDK（Router）。
+    "deepagents",
+    "langchain-openai",
     # LLM 调用 + LangSmith 追踪：dmxapi 暴露 OpenAI 兼容端点，用官方 openai SDK 调用，
     # langsmith.wrap_openai 自动把每次 chat 调用上报为带模型名/usage/耗时的 run_type="llm" run。
     # langsmith 虽是 langgraph 的传递依赖，但我们直接 import 它，故显式声明。

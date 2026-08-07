@@ -1,55 +1,43 @@
-"""Critic：看图按 benchmark 维度打分，产出 CriticVerdict。
+"""Critic：对照参考图(target)对生成图打分的 agent（deepagent 版）。
 
-混合评分（ARCH §2.6.1 / EVALUATION §4）：
-  - 二分维度(scoring_type=binary)：按 content_spec 的 checklist 逐项 ✓/✗ + 理由
-    → features[dim] = 通过项数 / 总项数
-  - 连续维度(scoring_type=continuous)：按 rubric points 让 LLM 给 0-1 分（承认偏差）
-    → features[dim] = LLM 归一化分
+改造前是「逐维度单次 LLM 调用 + 手抠 JSON」；现在是一个真正的 tool-using agent：
+  - 生成图 + target 直接注入初始 HumanMessage（多模态），agent 循环每步都看得到；
+  - 可用工具 `query_rubric(dim_name)` 按需查某维度的判定标准；
+  - 用 `response_format=CriticAgentOutput` 约束最终输出（每维度原始评分）；
+  - 代码侧把原始评分映射成 `DimensionScore`，再用权重 `recompute_restoration` 算还原度
+    （agent 不知道权重，不返回 restoration）——保住「权重变更不影响打分」的契约。
 
-喂图策略（由 manifest.comparative_dims / content_spec.anchor_for 决定）：
-  - 对比型维度：同时喂「参考图(target) + 生成图(三视图)」
-  - 绝对型维度：只喂「生成图」
-  三视图任务里 consistency 是跨张对照（三视图之间 + target）。
-
-LLM 调用走依赖注入（`LlmClient`），故可用 `FakeLlmClient` 完全离线测试分派与加权。
-LLM 输出约定为 JSON，本模块负责解析 + 容错（解析失败给安全默认值，绝不抛错中断闭环）。
+deepagent 在 `evaluate` 内部构建并同步跑完一轮（checkpointer=None），作为引擎嵌入外层
+LangGraph 的 critic 节点。agent 跑飞时退安全默认评分，绝不中断闭环。
 """
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
+from deepagents import create_deep_agent
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langsmith import traceable
 
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
 from ..generation.image_io import file_to_data_uri
-from ..llm import LlmClient
 from ..memory.schema import (
     Benchmark,
-    CheckItem,
-    ContinuousRubric,
-    CriticItemJudgment,
     CriticVerdict,
     DimensionScore,
 )
+from ._agent_output import CriticAgentOutput
 from .agent_config_loader import load_system_prompt
+from .tools.critic_tools import make_critic_tools
 
-# 代码默认提示词（agents_config/critic.md / critic_continuous.md 缺失时回退）
-_DEFAULT_BINARY_PROMPT = (
-    "你是严格的产品图评判员。对下列 checklist 项逐项判定 通过/不通过，"
-    "每项给一句简短理由。只输出 JSON，不要任何额外文字。\n"
-    'JSON 格式: {"judgments":[{"id":"C1","passed":true,"reason":"..."}, ...]}'
-)
-_DEFAULT_CONTINUOUS_PROMPT = (
-    "你是产品图材质/颜色评判员。对生成图的还原图整体给一个 0-1 分"
-    "（0=完全没还原，1=完美还原），并给一句理由。只输出 JSON。\n"
-    'JSON 格式: {"score":0.72,"reason":"..."}'
+_DEFAULT_CRITIC_SYS = (
+    "你是严格的产品图评判员。对照参考图(target)对生成图打分：二分维度逐项判通过/不通过 + 一句理由，"
+    "连续维度给 0-1 分 + 一句理由。可用 query_rubric 查某维度的判定标准。所有维度都是"
+    "「生成图 vs target」的还原对比，不是绝对评判。拿不准倾向判不通过/给低分。"
+    "最后结构化输出每个维度的评分（不要自己算加权和/还原度，权重不在你手上）。"
 )
 
 
@@ -63,15 +51,12 @@ class CriticInput:
 
 
 # ---------------------------------------------------------------------------
-# prompt 构造
+# 多模态内容构造（生成图 + target 注入 HumanMessage）
 # ---------------------------------------------------------------------------
 
-def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str:
-    """构造 OpenAI 兼容的多模态 content：text + 图片(data-URI)。
 
-    无图时直接返回 text（保持纯文本模型兼容）。有图时返回 content 数组：
-    [{"type":"text",...}, {"type":"image_url","image_url":{"url":"data:..."}}, ...]
-    """
+def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str:
+    """构造 OpenAI 兼容的多模态 content：text + 图片(data-URI)。无图时返回纯文本。"""
     if not images:
         return text
     parts: list[dict] = [{"type": "text", "text": text}]
@@ -84,104 +69,17 @@ def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str
     return parts
 
 
-def _images_block(comparative: bool, target: Path, generated: list[Path]) -> str:
-    """文字版喂图说明（多模态 content 里也会带这段文字锚，便于 LLM 区分图序）。"""
+def _images_block(target: Path, generated: list[Path]) -> str:
+    """文字版喂图说明（多模态 content 里也带这段文字锚，便于 LLM 区分图序）。"""
     parts = ["[生成图]"] + [f"  - view {i+1}: {p.name}" for i, p in enumerate(generated)]
-    if comparative:
-        parts += ["[参考图(target 产品实物)]", f"  - {target.name}"]
+    parts += ["[参考图(target 产品实物)]", f"  - {target.name}"]
     return "\n".join(parts)
 
 
-def _binary_prompt(dim_name: str, dim_desc: str, items: list[CheckItem],
-                   comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
-    """二分维度的 prompt：要求逐项 ✓/✗ + 理由，返回 JSON。多模态（带图）。"""
-    item_lines = "\n".join(f"  - {it.id}: {it.check}" for it in items)
-    sys_msg = load_system_prompt("critic", _DEFAULT_BINARY_PROMPT)
-    text = (
-        f"维度: {dim_name}\n描述: {dim_desc}\n\n"
-        f"判定项:\n{item_lines}\n\n"
-        f"{_images_block(comparative, target, generated)}\n\n"
-        "请逐项判定。passed=true 表示通过，false 表示不通过。"
-    )
-    # 喂的图：生成图（必给）；对比型再加 target
-    images = list(generated) + ([target] if comparative else [])
-    user_content = _build_multimodal_content(text, images)
-    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_content}]
-
-
-def _continuous_prompt(dim_name: str, dim_desc: str, rubric: ContinuousRubric,
-                       comparative: bool, target: Path, generated: list[Path]) -> list[dict]:
-    """连续维度的 prompt：按 rubric points 整体给 0-1 分，返回 JSON。多模态（带图）。"""
-    points = "\n".join(f"  - {p}" for p in rubric.points) or "  - (按维度描述整体评分)"
-    sys_msg = load_system_prompt("critic_continuous", _DEFAULT_CONTINUOUS_PROMPT)
-    text = (
-        f"维度: {dim_name}\n描述: {dim_desc}\n评分要点:\n{points}\n\n"
-        f"{_images_block(comparative, target, generated)}\n\n"
-        "请给 0-1 的 score 与一句 reason。"
-    )
-    images = list(generated) + ([target] if comparative else [])
-    user_content = _build_multimodal_content(text, images)
-    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_content}]
-
-
-# ---------------------------------------------------------------------------
-# LLM 输出解析（容错：解析失败给安全默认，不抛错）
-# ---------------------------------------------------------------------------
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _extract_json(text: str) -> dict | None:
-    """从 LLM 文本里抠出第一个 JSON 对象。失败返回 None。"""
-    text = text.strip()
-    # 去掉 ```json ... ``` 包裹
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        m = _JSON_RE.search(text)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                return None
-    return None
-
-
-def _parse_binary_items(raw: dict | None, items: list[CheckItem]) -> list[CriticItemJudgment]:
-    """解析二分维度的逐项判定。缺失/坏项默认 passed=False。"""
-    judgments = raw.get("judgments", []) if raw else []
-    by_id = {}
-    for j in judgments:
-        jid = j.get("id")
-        if jid:
-            by_id[jid] = j
-    out: list[CriticItemJudgment] = []
-    for it in items:
-        j = by_id.get(it.id)
-        if j is None:
-            out.append(CriticItemJudgment(id=it.id, passed=False, reason="(未返回)"))
-        else:
-            passed = bool(j.get("passed", False))
-            reason = str(j.get("reason", "")).strip()
-            out.append(CriticItemJudgment(id=it.id, passed=passed, reason=reason))
-    return out
-
-
-def _parse_continuous_score(raw: dict | None) -> tuple[float, str]:
-    """解析连续维度的 0-1 分。坏值默认 0.0。"""
-    if not raw:
-        return 0.0, "(解析失败)"
-    score = raw.get("score", 0.0)
-    try:
-        score = float(score)
-    except (TypeError, ValueError):
-        score = 0.0
-    score = max(0.0, min(1.0, score))  # clamp 到 [0,1]
-    reason = str(raw.get("reason", "")).strip()
-    return score, reason
+def _merge_recursion(config: RunnableConfig | None, limit: int) -> dict:
+    cfg: dict = dict(config) if config else {}
+    cfg["recursion_limit"] = limit
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -190,88 +88,106 @@ def _parse_continuous_score(raw: dict | None) -> tuple[float, str]:
 
 
 class Critic:
-    """混合评分 Critic。LLM client 注入。"""
+    """混合评分 Critic（deepagent 引擎）。chat model + bench 注入。"""
 
-    def __init__(self, client: LlmClient, *, bench: Benchmark) -> None:
-        self.client = client
+    def __init__(
+        self,
+        chat_model: BaseChatModel,
+        *,
+        bench: Benchmark,
+        system_prompt: str | None = None,
+        skills_dir: Path | str | None = None,
+    ) -> None:
+        self.chat_model = chat_model
         self.bench = bench
+        self.system_prompt = system_prompt or load_system_prompt("critic", _DEFAULT_CRITIC_SYS)
+        self.skills_dir = str(skills_dir) if skills_dir else None
 
     def evaluate(self, inp: CriticInput, *, config: RunnableConfig | None = None) -> CriticVerdict:
         """对一个 trace 打分，产出 CriticVerdict。
 
-        系统目标=还原度，故**所有维度都对照参考图(target)与生成图对比评判**：
-        每个 prompt 都同时注入 target + 生成图（无绝对型维度）。每个维度的评分
-        经 `_score_dimension` 作为一条 LangSmith chain run 上报（含 LLM 原始输出 +
-        解析后的结构化分），便于在 LangSmith 里按维度排查。config 由 LangGraph 节点
-        注入，透传给 @traceable 子方法以保证 trace 嵌套在节点 run 之下。
+        所有维度都对照 target 评判。生成图 + target 以 image_url 注入初始 HumanMessage。
+        agent 用 response_format=CriticAgentOutput 约束最终输出；代码侧映射 + 算 restoration。
+        agent 跑飞 → 安全默认评分（不中断闭环）。
         """
         spec = inp.sample.spec
         target = inp.sample.target_path
         generated = inp.generated_images
-        ls_extra: Any = {"config": config} if config is not None else {}
 
-        dimension_scores: list[DimensionScore] = []
-        for dim_def in self.bench.score_dimensions:
-            checklist_val = spec.checklist.get(dim_def.dim)
-            result = self._score_dimension(
-                dim_def, target=target, generated=generated,
-                checklist_val=checklist_val, langsmith_extra=ls_extra,
+        user_content = self._build_user_content(target, generated, inp.weights)
+        tools = make_critic_tools(bench=self.bench, spec=spec)
+        agent = create_deep_agent(
+            model=self.chat_model, tools=tools,
+            system_prompt=self.system_prompt,
+            skills=[self.skills_dir] if self.skills_dir else None,
+            response_format=CriticAgentOutput, checkpointer=None, name="critic",
+        )
+
+        try:
+            result = agent.invoke(
+                {"messages": [HumanMessage(content=user_content)]},
+                config=_merge_recursion(config, 40),
             )
-            dimension_scores.append(result["score"])
+            out: CriticAgentOutput | None = result.get("structured_response")
+        except Exception:  # noqa: BLE001  agent 跑飞不能让闭环崩 → 安全默认
+            out = None
 
-        restoration = recompute_restoration(dimension_scores, inp.weights)
+        dim_scores = self._to_dimension_scores(out)
+        restoration = recompute_restoration(dim_scores, inp.weights)
         return CriticVerdict(
             sample_id=spec.sample_id,
-            dimensions=dimension_scores,
+            dimensions=dim_scores,
             weights_used=dict(inp.weights),
             restoration=restoration,
         )
 
-    @traceable(name="critic.score_dimension", run_type="chain")
-    def _score_dimension(
-        self, dim_def, *, target: Path, generated: list[Path], checklist_val,
-    ) -> dict:
-        """单个维度的评分（作为一条 LangSmith chain run）。
+    # --- 辅助 ---
 
-        返回结构化 dict：`score` 是要累加进 verdict 的 DimensionScore；其余字段
-        （raw_llm_output / parsed）作为 trace output，让 LangSmith 看到喂了什么、
-        LLM 原文返回什么、解析后得多少分。解析失败给安全默认值，绝不抛错中断闭环。
-        所有维度都是对比型（对照 target 评）。
-        """
-        name = dim_def.dim
-        if dim_def.scoring_type == "binary":
-            items = checklist_val if isinstance(checklist_val, list) else []
-            if not items:
-                # manifest 声明二分但考题缺 checklist → 当作零项，给中性分
-                return {
-                    "dimension": name,
-                    "score": DimensionScore(dim=name, scoring_type="binary", value=0.0,
-                                            items=[], raw="(无 checklist 项)"),
-                    "raw_llm_output": None,
-                }
-            msgs = _binary_prompt(name, dim_def.desc or name, items, True, target, generated)
-            raw_text = self.client.complete(msgs)
-            raw_json = _extract_json(raw_text)
-            judgments = _parse_binary_items(raw_json, items)
-            value = sum(1 for j in judgments if j.passed) / len(judgments) if judgments else 0.0
-            return {
-                "dimension": name,
-                "score": DimensionScore(dim=name, scoring_type="binary", value=value, items=judgments),
-                "raw_llm_output": raw_text,
-                "parsed": [j.model_dump() for j in judgments],
-            }
-        # continuous
-        rubric = checklist_val if isinstance(checklist_val, ContinuousRubric) else ContinuousRubric(points=[])
-        msgs = _continuous_prompt(name, dim_def.desc or name, rubric, True, target, generated)
-        raw_text = self.client.complete(msgs)
-        raw_json = _extract_json(raw_text)
-        score, reason = _parse_continuous_score(raw_json)
-        return {
-            "dimension": name,
-            "score": DimensionScore(dim=name, scoring_type="continuous", value=score, raw=reason),
-            "raw_llm_output": raw_text,
-            "parsed_reason": reason,
-        }
+    def _build_user_content(
+        self, target: Path, generated: list[Path], weights: dict[str, float],
+    ) -> list[dict] | str:
+        """初始 HumanMessage：喂图说明 + 维度清单 + 评分指令 + 生成图与 target(image_url)。"""
+        dim_lines = []
+        for d in self.bench.score_dimensions:
+            kind = "二分(逐项通过/不通过 + 理由)" if d.scoring_type == "binary" else "连续(0-1 分 + 理由)"
+            dim_lines.append(f"- {d.dim}（{kind}）：{d.desc or ''}")
+        task = (
+            "对照参考图(target)，对生成图按下列维度逐一打分（所有维度都是 生成图 vs target 的还原对比）。\n"
+            "二分维度：对每个 checklist 项给 passed(true/false) + 一句理由（可用 query_rubric 查判定项）；"
+            "连续维度：给 0-1 的 value + 一句 reason。拿不准倾向低分。\n"
+            "维度清单：\n" + "\n".join(dim_lines) + "\n\n请结构化输出每个维度的评分。"
+        )
+        text = _images_block(target, generated) + "\n\n" + task
+        images = list(generated) + ([target] if target.exists() else [])
+        return _build_multimodal_content(text, images)
+
+    def _to_dimension_scores(self, out: CriticAgentOutput | None) -> list[DimensionScore]:
+        """把 agent 输出映射成 DimensionScore 列表（按 bench 维度顺序，缺失→安全默认）。"""
+        by_dim = {d.dim: d for d in (out.dimensions if out else [])}
+        scores: list[DimensionScore] = []
+        for ddef in self.bench.score_dimensions:
+            o = by_dim.get(ddef.dim)
+            if o is None:
+                scores.append(self._safe_dim(ddef.dim, ddef.scoring_type))
+                continue
+            if ddef.scoring_type == "binary":
+                items = o.items or []
+                value = (sum(1 for it in items if it.passed) / len(items)) if items else 0.0
+                scores.append(DimensionScore(
+                    dim=ddef.dim, scoring_type="binary", value=value, items=items,
+                ))
+            else:
+                v = o.value if o.value is not None else 0.0
+                scores.append(DimensionScore(
+                    dim=ddef.dim, scoring_type="continuous", value=v, raw=o.reason or "",
+                ))
+        return scores
+
+    @staticmethod
+    def _safe_dim(dim: str, scoring_type: str) -> DimensionScore:
+        if scoring_type == "binary":
+            return DimensionScore(dim=dim, scoring_type="binary", value=0.0, items=[])
+        return DimensionScore(dim=dim, scoring_type="continuous", value=0.0, raw="(eval failed)")
 
 
 __all__ = ["Critic", "CriticInput"]

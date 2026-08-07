@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+# 测试默认把 LangSmith 指向「立即拒绝」的本地端点 + 静默日志：tracing 仍开启（语义不变，
+# 也不污染 test_tracing 的状态），但后台上传瞬间连接失败、不打日志、不 30s 超时。
+# test_tracing 的 captured_runs fixture 会 monkeypatch 成进程内 recorder（不走上传）。
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+os.environ.setdefault("LANGSMITH_TRACING", "true")
+os.environ.setdefault("LANGSMITH_API_KEY", "test-disabled")
+os.environ.setdefault("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
+os.environ.setdefault("LANGCHAIN_API_KEY", "test-disabled")
+os.environ.setdefault("LANGCHAIN_ENDPOINT", "http://127.0.0.1:9")
+import logging
+
+logging.getLogger("langsmith").setLevel(logging.CRITICAL)
 
 # 项目根（tests/ 的上一级）
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

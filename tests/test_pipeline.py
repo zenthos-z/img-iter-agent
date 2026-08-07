@@ -1,4 +1,4 @@
-"""闭环 A 测试：用假 Router（不联网出图）+ FakeLlmClient 跑完整 LangGraph 循环。
+"""闭环 A 测试：用假 Router（不联网出图）+ FakeToolCallingChatModel 驱动 deepagent 跑完整 LangGraph 循环。
 
 验证：generator→critic→summarizer→human_review(interrupt)→条件边 全链路，
 且 trajectory.jsonl / index.json / lessons MD 都正确产出。
@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
@@ -19,8 +20,8 @@ from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.data.runstore import RunStore
 from img_iter_agent.generation.base import GeneratedImage
 from img_iter_agent.generation.router import Router
-from img_iter_agent.llm import FakeLlmClient
 from img_iter_agent.pipeline.graph import run_loop
+from tests._fakes import FakeToolCallingChatModel
 
 
 class _FakeRouter(Router):
@@ -41,19 +42,46 @@ class _FakeRouter(Router):
         )
 
 
-def _critic_responses(bench):
-    """构造 6 维 canned 判定（与 test_critic 同款）。"""
-    import json as _j
-    out = []
-    for dim_def in bench.score_dimensions:
-        if dim_def.scoring_type == "binary":
-            out.append(_j.dumps({"judgments": [
-                {"id": f"{dim_def.dim[0].upper()}{i+1}", "passed": i == 0, "reason": "mock"}
-                for i in range(3)
-            ]}))
+def _critic_chat(lb) -> FakeToolCallingChatModel:
+    """构造驱动 Critic deepagent 的 canned 响应：一条 CriticAgentOutput（含全部维度评分）。
+    单条响应被多轮复用（fake 耗尽后重复最后一条）。"""
+    spec = lb.sample("s001").spec
+    bench = lb.bench
+    dims = []
+    for ddef in bench.score_dimensions:
+        if ddef.scoring_type == "binary":
+            items = spec.checklist.get(ddef.dim, [])
+            items = items if isinstance(items, list) else []
+            judgments = [
+                {"id": it.id, "passed": i == 0, "reason": "mock"}
+                for i, it in enumerate(items)
+            ]
+            dims.append({"dim": ddef.dim, "scoring_type": "binary", "items": judgments})
         else:
-            out.append(_j.dumps({"score": 0.7, "reason": "mock"}))
-    return out
+            dims.append({"dim": ddef.dim, "scoring_type": "continuous",
+                         "value": 0.7, "reason": "mock"})
+    resp = AIMessage(content="", tool_calls=[{
+        "name": "CriticAgentOutput", "type": "tool_call", "id": "c1",
+        "args": {"dimensions": dims},
+    }])
+    return FakeToolCallingChatModel(responses=[resp])
+
+
+def _gen_chat_model(num_rounds: int) -> FakeToolCallingChatModel:
+    """构造驱动 Generator deepagent 的 canned AIMessage 序列（每轮 2 条：
+    generate_image 调用 + GeneratorOutput 结构化输出）。跨轮共享、顺序出队。"""
+    resps: list[AIMessage] = []
+    for r in range(1, num_rounds + 1):
+        prompt = f"product white-bg 3-view, round {r}"
+        resps.append(AIMessage(content="", tool_calls=[{
+            "name": "generate_image", "type": "tool_call", "id": f"g{r}",
+            "args": {"prompt": prompt, "size": "2K"},
+        }]))
+        resps.append(AIMessage(content="", tool_calls=[{
+            "name": "GeneratorOutput", "type": "tool_call", "id": f"s{r}",
+            "args": {"prompt": prompt, "delta_note": f"round {r} change"},
+        }]))
+    return FakeToolCallingChatModel(responses=resps)
 
 
 @pytest.fixture()
@@ -76,8 +104,8 @@ def test_loop_runs_one_round_and_stops(setup):
     lb, store = setup
     bench = lb.bench
     router = _FakeRouter()
-    gen = Generator(router)
-    critic = Critic(FakeLlmClient(responses=_critic_responses(bench)), bench=bench)
+    gen = Generator(router, chat_model=_gen_chat_model(1))
+    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
     summ = Summarizer()
 
     state = run_loop(
@@ -103,10 +131,8 @@ def test_loop_two_rounds_then_stop(setup):
     lb, store = setup
     bench = lb.bench
     router = _FakeRouter()
-    gen = Generator(router)
-    # critic 每轮要 6 次响应；两轮共 12 次
-    resp = _critic_responses(bench) * 2
-    critic = Critic(FakeLlmClient(responses=resp), bench=bench)
+    gen = Generator(router, chat_model=_gen_chat_model(2))
+    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
     summ = Summarizer()
 
     state = run_loop(
@@ -125,8 +151,8 @@ def test_loop_writes_lessons_and_index(setup):
     """经验知识库 conclusions.json + index.json 都正确产出。"""
     lb, store = setup
     bench = lb.bench
-    gen = Generator(_FakeRouter())
-    critic = Critic(FakeLlmClient(responses=_critic_responses(bench)), bench=bench)
+    gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(1))
+    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
     summ = Summarizer()
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
@@ -153,8 +179,8 @@ def test_control_variable_baseline_ref_set_on_round2(setup):
     """第 2 轮的 baseline_ref 应指向第 1 轮的 attempt（控制变量法）。"""
     lb, store = setup
     bench = lb.bench
-    gen = Generator(_FakeRouter())
-    critic = Critic(FakeLlmClient(responses=_critic_responses(bench) * 2), bench=bench)
+    gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(2))
+    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
     summ = Summarizer()
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
@@ -169,13 +195,12 @@ def test_control_variable_baseline_ref_set_on_round2(setup):
 
 
 def test_round2_prompt_improved_from_round1_feedback(setup):
-    """第 2 轮 prompt 应基于第 1 轮 Critic 失败项改进（确定性补强，无 LLM）。"""
+    """第 2 轮：Generator deepagent 据上轮 Critic 失败项改进 prompt（结构化断言）。"""
     lb, store = setup
     bench = lb.bench
-    # 无 LLM 的 Generator：_improve_prompt 走确定性补强（追加失败项理由）
-    gen = Generator(_FakeRouter())
+    gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(2))
     # 构造一些失败项：让二分维度有失败（前 N-1 通过 → 最后 1 项失败）
-    critic = Critic(FakeLlmClient(responses=_critic_responses(bench) * 2), bench=bench)
+    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
     summ = Summarizer()
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
@@ -185,10 +210,10 @@ def test_round2_prompt_improved_from_round1_feedback(setup):
     traj = [json.loads(l) for l in
             (store.run_dir / "trajectory.jsonl").read_text(encoding="utf-8").strip().splitlines()]
     p1, p2 = traj[0]["prompt"], traj[1]["prompt"]
-    # 第 2 轮 prompt 应不同于第 1 轮（基于失败项补强）
+    # 第 2 轮 prompt 应不同于第 1 轮（canned 序列里两轮 prompt 不同）
     assert p2 != p1
-    # 第 2 轮应含补强标记（确定性补强会加 "改进点"）
-    assert "改进点" in p2 or "确保" in p2
+    # 第 2 轮应携带改动说明（delta_note 由 GeneratorOutput 结构化输出给出）
+    assert traj[1].get("delta_note")
     # test_variable 始终是 prompt（不再是 size 轮换）
     assert traj[1]["test_variable"] == "prompt"
     # size 两轮一致（固定不动）
