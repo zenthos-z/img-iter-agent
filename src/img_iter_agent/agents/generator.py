@@ -36,7 +36,8 @@ from .tools.generator_tools import _size_from_str, make_generator_tools
 # 短的「始终生效」角色放这里；更长的诀窍/流程在 skills/generator/SKILL.md（agent 按需读）。
 _DEFAULT_GENERATOR_SYS = (
     "你是产品白底三视图的生图提示词工程师。每轮：读考题指令与约束（round>1 时还看上轮 Critic "
-    "失败项），可用 query_experience 查已验证的有效/无效经验，构造或改进英文优先的生图 prompt，"
+    "失败项），可用 query_experience 查【本 loop】已验证经验、query_general_experience 查"
+    "【跨 loop 通用经验】（先验，首题也用得上），构造或改进英文优先的生图 prompt，"
     "调 generate_image 出图，最后结构化输出 prompt 与 delta_note（本轮相对上轮改了什么）。"
     "保留原有正确部分，针对每个失败项给出具体的、可执行的正面描述（不要只写『不要 X』）。"
 )
@@ -80,11 +81,16 @@ class Generator:
         chat_model: BaseChatModel,
         system_prompt: str | None = None,
         skills_dir: Path | str | None = None,
+        data_root: Path | None = None,
+        bench_id: str | None = None,
     ) -> None:
         self.router = router
         self.chat_model = chat_model
         self.system_prompt = system_prompt or load_system_prompt("generator", _DEFAULT_GENERATOR_SYS)
         self.skills_dir = str(skills_dir) if skills_dir else None
+        # 跨 loop 通用经验库定位（query_general_experience 工具用）；None 时该工具回「未配置」。
+        self.data_root = data_root
+        self.bench_id = bench_id
 
     def generate_round(
         self,
@@ -122,6 +128,7 @@ class Generator:
         tools = make_generator_tools(
             router=self.router, sample=sample, out_dir=attempt_out, run_dir=run_dir,
             model_hint=model_hint, sink=sink,
+            data_root=self.data_root, bench_id=self.bench_id,
         )
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
@@ -199,13 +206,13 @@ class Generator:
                 cont = "\n连续维度低分:\n" + "\n".join(f"- {n}" for n in prior_feedback.continuous_notes)
             text += (
                 f"\n\n【上轮 Critic 失败项（需改进）】\n{fails}{cont}\n"
-                "请先 query_experience 查已验证经验，再针对性改进 prompt，调 generate_image 出图，"
-                "最后结构化输出 prompt + delta_note。"
+                "请先 query_experience / query_general_experience 查经验，再针对性改进 prompt，"
+                "调 generate_image 出图，最后结构化输出 prompt + delta_note。"
             )
         else:
             text += (
-                "\n请把指令精炼成清晰 prompt，调 generate_image 出图，"
-                "最后结构化输出 prompt + delta_note。"
+                "\n请把指令精炼成清晰 prompt（首题可先 query_general_experience 取跨题先验），"
+                "调 generate_image 出图，最后结构化输出 prompt + delta_note。"
             )
 
         if not reference_images:

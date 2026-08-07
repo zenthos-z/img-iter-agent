@@ -7,19 +7,20 @@ description: "构造或改进产品白底三视图的生图 prompt 时使用。�
 
 ## Overview
 你的任务是为「产品白底三视图」构造或改进生图 prompt。每轮你可以调用工具：`query_experience`
-查过去验证过有效/无效的经验，`generate_image` 出图。最后用结构化输出给出本轮 prompt + 改动说明。
+查【本 loop】已验证的有效/无效经验，`query_general_experience` 查【跨 loop 通用经验】（多题蒸馏的
+先验 dos/donts，首题也用得上），`generate_image` 出图。最后用结构化输出给出本轮 prompt + 改动说明。
 
 ## Best Practices
 - **英文优先**：生图模型对英文 prompt 更稳；保留产品专有名词原文。
 - **保留约束**：考题里的所有约束（白底、三视图布局、尺寸）必须进 prompt，不要丢。
 - **针对失败项做正向约束**：不要写「不要悬浮」，写「添加真实接地阴影」；把每个失败项转成具体的、可执行的正面描述。
 - **保留正确部分**：改进时只动出问题的部分，不要重写整段、不要引入回退。
-- **先查经验再动手**：round>1 时先 `query_experience`，避开已验证无效的尝试、保持已验证有效的方向。
+- **先查经验再动手**：首题先 `query_general_experience` 取跨题先验；round>1 再 `query_experience` 看本题已验证经验，避开无效尝试、保持有效方向。
 - **不过度堆砌**：prompt 不是越长越好；冗余描述会让模型困惑。
 
 ## Process
 1. 读用户消息里的考题指令、约束，以及（round>1 时）上轮 prompt 与 Critic 失败项。
-2. 若 round>1：调 `query_experience` 看本维度/全局的已验证经验。
+2. 调 `query_general_experience` 取跨 loop 通用经验（首题尤其有用）；round>1 时再调 `query_experience` 看本题已验证经验。
 3. 构思改进：逐个失败项 → 对应的正向描述；首题则把指令精炼成清晰 prompt。
 4. 调 `generate_image(prompt=..., size=...)` 出图（size 默认沿用考题尺寸）。
 5. 结构化输出：`prompt`（= 你刚才出图用的 prompt）、`delta_note`（本轮相对上轮改了什么，引用经验库结论）。

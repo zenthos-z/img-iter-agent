@@ -18,6 +18,7 @@ from langchain_core.tools import BaseTool, tool
 from ...data.benchmark import Sample
 from ...generation.base import GenRequest, ModelFamily, SizeSpec
 from ...generation.router import Router
+from ...memory.experience import load_general_experience
 from ...memory.knowledge import load_conclusions
 
 
@@ -113,6 +114,34 @@ def make_query_experience_tool(*, run_dir: Path) -> BaseTool:
     return query_experience
 
 
+def make_query_general_experience_tool(data_root: Path | None, bench_id: str | None) -> BaseTool:
+    @tool
+    def query_general_experience(dim: str = "") -> str:
+        """查询【跨 loop 通用经验库】（多 run 蒸馏出的 dos/donts，跨题复用）。
+
+        比 query_experience 更通用：从许多 loop 综合出的先验知识，本题首次跑也用得上。
+        Args:
+            dim: 可选，只看某维度（或 'general'）；留空看全部。
+        无通用经验时返回提示（可先 run 多个 sample 并 `img-iter summarize` 生成）。
+        """
+        if data_root is None or bench_id is None:
+            return "（跨 loop 经验未配置：无 data_root/bench_id）"
+        exp = load_general_experience(data_root, bench_id)
+        lessons = [l for l in exp.lessons if (not dim or l.dim == dim)] if dim else exp.lessons
+        if not lessons:
+            return "（暂无跨 loop 通用经验；可先 run 多个 sample 并 `img-iter summarize` 生成）"
+        lines = [f"summary: {exp.summary or '(无)'}"]
+        for l in lessons:
+            dos = "; ".join(l.dos) or "(无)"
+            donts = "; ".join(l.donts) or "(无)"
+            lines.append(
+                f"- [{l.dim}] {l.insight} (conf={l.confidence:.2f}) dos: {dos} | donts: {donts}"
+            )
+        return "\n".join(lines)
+
+    return query_general_experience
+
+
 def make_generator_tools(
     *,
     router: Router,
@@ -121,8 +150,13 @@ def make_generator_tools(
     run_dir: Path,
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
+    data_root: Path | None = None,
+    bench_id: str | None = None,
 ) -> list[BaseTool]:
-    """组装本轮 Generator 工具集。sink 由调用方持有，工具运行时回写生成结果元信息。"""
+    """组装本轮 Generator 工具集。sink 由调用方持有，工具运行时回写生成结果元信息。
+
+    query_experience = 本 loop 单题经验；query_general_experience = 跨 loop 通用经验（先验）。
+    """
     # 参考：image_edit 模式用 target 作风格锚
     reference_images: list[Path] = []
     if sample.target_path.exists():
@@ -133,7 +167,13 @@ def make_generator_tools(
             reference_images=reference_images, model_hint=model_hint, sink=sink,
         ),
         make_query_experience_tool(run_dir=run_dir),
+        make_query_general_experience_tool(data_root, bench_id),
     ]
 
 
-__all__ = ["make_generate_image_tool", "make_generator_tools", "make_query_experience_tool"]
+__all__ = [
+    "make_generate_image_tool",
+    "make_generator_tools",
+    "make_query_experience_tool",
+    "make_query_general_experience_tool",
+]

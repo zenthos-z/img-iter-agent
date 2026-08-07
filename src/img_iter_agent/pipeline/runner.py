@@ -160,7 +160,10 @@ def build_loop_context(
     router = Router(settings=settings, client=DmxapiClient(settings))
     # Generator/Critic：deepagent 引擎（tool-using agent）。chat_model 指向 dmxapi OpenAI 兼容端点。
     gen_chat = build_chat_model(settings, role="generator")
-    generator = Generator(router, chat_model=gen_chat, skills_dir=_skills_dir("generator"))
+    generator = Generator(
+        router, chat_model=gen_chat, skills_dir=_skills_dir("generator"),
+        data_root=settings.data_root, bench_id=lb.bench.bench_id,
+    )
     critic_chat = build_chat_model(settings, role="critic")
     critic = Critic(critic_chat, bench=lb.bench, skills_dir=_skills_dir("critic"))
     summarizer = Summarizer()
