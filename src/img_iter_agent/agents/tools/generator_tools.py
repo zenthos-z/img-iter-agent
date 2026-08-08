@@ -67,8 +67,12 @@ def make_generate_image_tool(
     reference_images: list[Path],
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
+    aspect_ratio: str | None = None,
 ) -> BaseTool:
-    """生成三视图并落盘的工具。sink 用于把 model/family/ref 回传给 generate_round。"""
+    """生成三视图并落盘的工具。sink 用于把 model/family/ref 回传给 generate_round。
+
+    aspect_ratio：三视图等宽幅任务传 "16:9"，让 family D 用宽 aspectRatio（避免 1:1 把三视图挤变形）。
+    """
 
     @tool
     def generate_image(prompt: str, size: str = "2K") -> str:
@@ -80,6 +84,8 @@ def make_generate_image_tool(
         返回生成图相对 run 目录的路径。
         """
         size_spec = _size_from_str(size)
+        if aspect_ratio:
+            size_spec.ratio = aspect_ratio
         req = GenRequest(
             prompt=prompt,
             size=size_spec,
@@ -161,10 +167,15 @@ def make_generator_tools(
     reference_images: list[Path] = []
     if sample.target_path.exists():
         reference_images = [sample.target_path]
+    # 三视图单图 → 宽幅，避免 1:1 把三个视图挤变形（比例失真）
+    layout = (sample.spec.task.output.get("layout")
+              if sample.spec.task and sample.spec.task.output else None)
+    aspect_ratio = "16:9" if layout == "three_view_single_image" else None
     return [
         make_generate_image_tool(
             router=router, out_dir=out_dir, run_dir=run_dir,
             reference_images=reference_images, model_hint=model_hint, sink=sink,
+            aspect_ratio=aspect_ratio,
         ),
         make_query_experience_tool(run_dir=run_dir),
         make_query_general_experience_tool(data_root, bench_id),

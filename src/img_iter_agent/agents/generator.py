@@ -13,6 +13,7 @@ deepagent 在 `generate_round` 内部构建并同步跑完一轮（checkpointer=
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -29,17 +30,25 @@ from ..generation.image_io import file_to_data_uri
 from ..generation.router import Router
 from ..memory.schema import CriticItemJudgment, TestVariable
 from ._agent_output import GeneratorOutput
+from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 from .tools.generator_tools import _size_from_str, make_generator_tools
 
 # 代码默认 system prompt（data/agents_config/generator.md 缺失时回退）。
 # 短的「始终生效」角色放这里；更长的诀窍/流程在 skills/generator/SKILL.md（agent 按需读）。
+# 关键：明确工具清单 + 「参考图已在消息里/不要找文件/每个工具至多一次/出图一次即输出」，
+# 配合 NarrowToolsMiddleware 剥掉 fs 工具，杜绝在空 sandbox 里乱逛导致 GraphRecursionError。
 _DEFAULT_GENERATOR_SYS = (
-    "你是产品白底三视图的生图提示词工程师。每轮：读考题指令与约束（round>1 时还看上轮 Critic "
-    "失败项），可用 query_experience 查【本 loop】已验证经验、query_general_experience 查"
-    "【跨 loop 通用经验】（先验，首题也用得上），构造或改进英文优先的生图 prompt，"
-    "调 generate_image 出图，最后结构化输出 prompt 与 delta_note（本轮相对上轮改了什么）。"
-    "保留原有正确部分，针对每个失败项给出具体的、可执行的正面描述（不要只写『不要 X』）。"
+    "你是产品白底三视图的生图提示词工程师。每轮按以下精简流程，不要发散：\n"
+    "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项）。"
+    "参考产品图已直接附在消息里，**不要去文件系统找图**。\n"
+    "2. 至多各调一次：query_general_experience（跨题先验，首题也用得上）、"
+    "query_experience（本题已验证经验，round>1 才有意义）。\n"
+    "3. 构造/改进**英文优先**的生图 prompt：保留考题所有约束（白底/三视图布局/尺寸）；"
+    "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分。\n"
+    "4. **只调一次** generate_image(prompt=..., size=...) 出图；成功后立即结构化输出 "
+    "prompt + delta_note（本轮相对上轮改了什么）。不要重复出图、不要再调其它工具。\n"
+    "你的可用工具只有：generate_image / query_experience / query_general_experience。"
 )
 
 
@@ -135,18 +144,17 @@ class Generator:
             system_prompt=self.system_prompt,
             skills=[self.skills_dir] if self.skills_dir else None,
             response_format=GeneratorOutput, checkpointer=None, name="generator",
+            middleware=narrow_tools_middleware(),
         )
 
         user_content = self._build_user_content(sample, round, prior_feedback, reference_images)
-        invoke_cfg = self._merge_recursion(config, 25)
+        invoke_cfg = self._merge_recursion(config, AGENT_RECURSION_LIMIT)
 
-        try:
-            result = agent.invoke(
-                {"messages": [HumanMessage(content=user_content)]}, config=invoke_cfg,
-            )
-            out: GeneratorOutput = result.get("structured_response") or GeneratorOutput(prompt="")
-        except Exception:  # noqa: BLE001  agent 跑飞不能让闭环崩 → 兜底
-            out = GeneratorOutput(prompt=self._base_prompt_text(sample))
+        result, _ok = invoke_with_retry(
+            agent, {"messages": [HumanMessage(content=user_content)]},
+            config=invoke_cfg, label="generator",
+        )
+        out: GeneratorOutput = (result.get("structured_response") if result else None) or GeneratorOutput(prompt="")
 
         prompt = (out.prompt or "").strip() or self._base_prompt_text(sample)
         delta_note = (out.delta_note or "").strip() or None
@@ -157,11 +165,32 @@ class Generator:
             model_used = sink.get("model", "")
             model_family = sink.get("family", "?")
         else:
+            fb_size = _size_from_str(size_str)
+            layout = (sample.spec.task.output.get("layout")
+                      if sample.spec.task and sample.spec.task.output else None)
+            if layout == "three_view_single_image":
+                fb_size.ratio = "16:9"  # 三视图宽幅，避免 1:1 挤变形
             req = GenRequest(
-                prompt=prompt, size=_size_from_str(size_str),
+                prompt=prompt, size=fb_size,
                 reference_images=list(reference_images), model_hint=model_hint,
             )
-            img = self.router.generate(req, out_dir=attempt_out, config=config)
+            # 兜底出图也加重试+退避：dmxapi 间歇性连接中断时，单次 router.generate 抛 APIConnectionError
+            # 会直接炸掉整轮（乃至整 sample）。这里重试扛过网关抖动，与 agent.invoke 的重试对齐。
+            img = None
+            last_exc: Exception | None = None
+            for _attempt in range(4):
+                try:
+                    img = self.router.generate(req, out_dir=attempt_out, config=config)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    last_exc = e
+                    if _attempt < 3:
+                        print(f"[generator] 兜底出图异常({type(e).__name__})，重试 {_attempt + 1}/3",
+                              flush=True)
+                        time.sleep(2.0)
+            if img is None:
+                assert last_exc is not None
+                raise last_exc
             ext = img.image_path.suffix or ".png"
             dest = attempt_out / f"three_view{ext}"
             if img.image_path != dest:
@@ -207,7 +236,9 @@ class Generator:
             text += (
                 f"\n\n【上轮 Critic 失败项（需改进）】\n{fails}{cont}\n"
                 "请先 query_experience / query_general_experience 查经验，再针对性改进 prompt，"
-                "调 generate_image 出图，最后结构化输出 prompt + delta_note。"
+                "调 generate_image 出图，最后结构化输出 prompt + delta_note。\n"
+                "**delta_note 必填**：逐条写出本轮针对每个失败项（引用其 id，如 C3/S1）做了"
+                "什么具体的正向改动——这是经验闭环判定『改动是否有效』的依据，缺失会让整条经验链断掉。"
             )
         else:
             text += (

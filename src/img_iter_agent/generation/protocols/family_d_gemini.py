@@ -20,14 +20,17 @@ from ..image_io import guess_mime, save_image_payload
 
 FAMILY = ModelFamily.D_GEMINI
 
-# Lite 模型硬限 1K
-_LITE_LIMIT = "1K"
-
 
 def _image_config(size: SizeSpec) -> dict:
-    """SizeSpec → imageConfig（aspectRatio + imageSize）。Lite 硬限 1K。"""
+    """SizeSpec → imageConfig（aspectRatio + imageSize）。
+
+    imageSize 按请求 tier 传（如 "2K"）——不再硬编 "1K"。
+    （gemini-3.1-flash-**lite**-image 服务端限 1K；non-lite 的 gemini-3.1-flash-image 支持 2K。）
+    aspectRatio 优先 size.ratio，其次按像素近似，否则 1:1。
+    """
     ratio = size.ratio or _ratio_from_pixels(size.pixels)
-    return {"aspectRatio": ratio, "imageSize": _LITE_LIMIT}
+    image_size = size.tier or "2K"
+    return {"aspectRatio": ratio, "imageSize": image_size}
 
 
 def _ratio_from_pixels(pixels: tuple[int, int] | None) -> str:
