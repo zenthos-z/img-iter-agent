@@ -30,6 +30,7 @@ data/runs/*
 !data/runs/.gitkeep
 data/analyses/*
 !data/analyses/.gitkeep
+data/experience/*
 
 # Large models / checkpoints (never commit)
 *.safetensors
