@@ -29,15 +29,21 @@ class GeneratorOutput(BaseModel):
 
 
 class CriticDimensionOutput(BaseModel):
-    """单个维度的评分（agent 原始产出，不含 restoration）。"""
+    """单个维度的评分（agent 原始产出，不含 restoration）。
+
+    字段一律非 Optional + 显式类型：Gemini 的 functionDeclaration schema 校验要求每个
+    property 都带 `type`，而 `X | None` 会生成无顶层 type 的 anyOf → 被严格后端 400 拒
+    （"schema didn't specify the schema type field"，dmxapi 会路由到不同严格度的后端故偶发）。
+    binary 维度用 items（value 留默认 0.0）；continuous 维度用 value + reason。
+    """
 
     dim: str = Field(description="维度名")
     scoring_type: Literal["binary", "continuous"] = Field(description="该维度的评分类型")
     # binary：逐项判定（通过率 = passed 数 / 总数，由代码算 value）
-    items: list[CriticItemJudgment] | None = Field(default=None, description="二分维度的逐项判定")
+    items: list[CriticItemJudgment] = Field(default_factory=list, description="二分维度的逐项判定")
     # continuous：0-1 分 + 理由
-    value: float | None = Field(default=None, ge=0.0, le=1.0, description="连续维度的 0-1 分")
-    reason: str | None = Field(default=None, description="连续维度的评分理由")
+    value: float = Field(default=0.0, ge=0.0, le=1.0, description="连续维度的 0-1 分")
+    reason: str = Field(default="", description="连续维度的评分理由")
 
 
 class CriticAgentOutput(BaseModel):

@@ -30,6 +30,7 @@ from ..memory.schema import (
     DimensionScore,
 )
 from ._agent_output import CriticAgentOutput
+from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 from .tools.critic_tools import make_critic_tools
 
@@ -114,23 +115,21 @@ class Critic:
         target = inp.sample.target_path
         generated = inp.generated_images
 
-        user_content = self._build_user_content(target, generated, inp.weights)
+        user_content = self._build_user_content(target, generated, spec)
         tools = make_critic_tools(bench=self.bench, spec=spec)
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
             skills=[self.skills_dir] if self.skills_dir else None,
             response_format=CriticAgentOutput, checkpointer=None, name="critic",
+            middleware=narrow_tools_middleware(),
         )
 
-        try:
-            result = agent.invoke(
-                {"messages": [HumanMessage(content=user_content)]},
-                config=_merge_recursion(config, 40),
-            )
-            out: CriticAgentOutput | None = result.get("structured_response")
-        except Exception:  # noqa: BLE001  agent 跑飞不能让闭环崩 → 安全默认
-            out = None
+        result, _ok = invoke_with_retry(
+            agent, {"messages": [HumanMessage(content=user_content)]},
+            config=_merge_recursion(config, AGENT_RECURSION_LIMIT), label="critic",
+        )
+        out: CriticAgentOutput | None = (result.get("structured_response") if result else None)
 
         dim_scores = self._to_dimension_scores(out)
         restoration = recompute_restoration(dim_scores, inp.weights)
@@ -144,17 +143,46 @@ class Critic:
     # --- 辅助 ---
 
     def _build_user_content(
-        self, target: Path, generated: list[Path], weights: dict[str, float],
+        self, target: Path, generated: list[Path], spec,
     ) -> list[dict] | str:
-        """初始 HumanMessage：喂图说明 + 维度清单 + 评分指令 + 生成图与 target(image_url)。"""
-        dim_lines = []
+        """初始 HumanMessage：喂图说明 + 每维度**逐项 checklist** + 评分指令 + 生成图与 target(image_url)。
+
+        关键：把每个二分维度的 checklist 项（id+判定+anchor）直接列出来，强制 agent 逐项判，
+        返回与项数相等、id 逐项对应的 items——否则 agent 会偷懒只给一个聚合判断（导致 passed/1=满分级虚高）。
+        """
+        dim_lines: list[str] = []
         for d in self.bench.score_dimensions:
-            kind = "二分(逐项通过/不通过 + 理由)" if d.scoring_type == "binary" else "连续(0-1 分 + 理由)"
-            dim_lines.append(f"- {d.dim}（{kind}）：{d.desc or ''}")
+            cl = (spec.checklist or {}).get(d.dim)
+            if d.scoring_type == "binary":
+                items = list(cl) if isinstance(cl, list) else []
+                # 兼容 content_spec 缺该维度时回落到 manifest 的 check_items（"CX 描述"串）
+                if not items:
+                    items = [
+                                        type("CI", (), {"id": s.split()[0], "check": s.split(None, 1)[-1],
+                                                         "anchor": None})()
+                                        for s in (d.check_items or [])
+                    ] if d.check_items else []
+                item_lines = "\n".join(
+                    f"    - {getattr(it, 'id', '?')}: {getattr(it, 'check', '')}"
+                    + (f"（{it.anchor}）" if getattr(it, 'anchor', None) else "")
+                    for it in items
+                ) or "    (未定义 checklist 项)"
+                dim_lines.append(
+                    f"- {d.dim}（二分，逐项 ✓/✗ + 理由）：{d.desc or ''}\n"
+                    f"  必须为下面**每一项**返回一条 item（id 严格对应）：\n{item_lines}"
+                )
+            else:
+                pts = getattr(cl, "points", None) or []
+                ptstr = "; ".join(pts) if pts else "(无)"
+                dim_lines.append(
+                    f"- {d.dim}（连续，0-1 分 + 理由）：{d.desc or ''}。评分要点：{ptstr}"
+                )
         task = (
             "对照参考图(target)，对生成图按下列维度逐一打分（所有维度都是 生成图 vs target 的还原对比）。\n"
-            "二分维度：对每个 checklist 项给 passed(true/false) + 一句理由（可用 query_rubric 查判定项）；"
-            "连续维度：给 0-1 的 value + 一句 reason。拿不准倾向低分。\n"
+            "二分维度：为列出的**每一项** checklist 返回一条 {id, passed, reason}——"
+            "items 数量必须等于列出的项数、id 逐项对应，**不得合并、不得省略**（通过率=通过项/总项，少一项分数就错）。"
+            "连续维度：给 0-1 的 value + 一句 reason。\n"
+            "**严格**：拿不准、有瑕疵、与 target 不完全一致时，倾向判不通过/给低分；只有确无问题才判通过。\n"
             "维度清单：\n" + "\n".join(dim_lines) + "\n\n请结构化输出每个维度的评分。"
         )
         text = _images_block(target, generated) + "\n\n" + task

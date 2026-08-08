@@ -66,15 +66,17 @@ class Summarizer:
         # 嵌套在 LangGraph summarizer 节点 run 之下（LangSmith 可观测）。
         ls_extra: Any = {"config": config} if config is not None else {}
 
-        # 1) 验证上轮的 pending 结论：用本轮 verdict 作为"后"证据判定 status
-        if prev_verdict is not None and prev_delta_note:
+        # 1) 验证上轮的 pending 结论：用本轮 verdict 作为"后"证据判定 status。
+        #    只要上轮 verdict 在就能判（前后分差/项翻转是客观证据）——不依赖 prev_delta_note
+        #    是否被 generator 填写（deepseek 常空，不能让空 delta_note 饿死经验闭环）。
+        if prev_verdict is not None:
             self._verify_pending(kb, prev_verdict=prev_verdict, cur_verdict=verdict,
                                  cur_round=round, prev_delta_note=prev_delta_note,
                                  langsmith_extra=ls_extra)
 
-        # 2) 登记本轮的改动为新 pending 结论（待下轮 Critic 验证）
-        if outcome.delta_note:
-            self._register_round_changes(kb, outcome=outcome, verdict=verdict, round=round)
+        # 2) 登记本轮的失败维度为新 pending 结论（待下轮 Critic 验证）。
+        #    不再以 delta_note 为门槛——delta_note 空时，change 从 Critic 的失败项理由派生。
+        self._register_round_changes(kb, outcome=outcome, verdict=verdict, round=round)
 
         # 3) 可选 LLM 归纳：用 effective/ineffective 上下文提炼可复用经验
         if self.llm is not None and kb.conclusions:
@@ -103,7 +105,7 @@ class Summarizer:
     @traceable(name="summarizer.verify_pending", run_type="chain")
     def _verify_pending(
         self, kb: knowledge.KnowledgeBase, *, prev_verdict: CriticVerdict,
-        cur_verdict: CriticVerdict, cur_round: int, prev_delta_note: str,
+        cur_verdict: CriticVerdict, cur_round: int, prev_delta_note: str | None = None,
     ) -> list[dict]:
         """验证上轮 pending 结论：对比 prev→cur Critic 判定，更新 status + critic_evidence。
 
@@ -140,8 +142,11 @@ class Summarizer:
         target_dims = failed_dims or low_continuous or {"general"}
         for dim in target_dims:
             finding = self._finding_for_dim(verdict, dim)
+            # change：优先用 generator 的 delta_note（具体改动叙述）；空则从 Critic 失败项派生
+            # （保证空 delta_note 时经验闭环仍登记结论，不被饿死）。
+            change = outcome.delta_note or finding or f"{dim} 改进"
             knowledge.upsert_conclusion(
-                kb, dim=dim, finding=finding, change=outcome.delta_note,
+                kb, dim=dim, finding=finding, change=change,
                 tags=[outcome.test_variable or "prompt"], created_round=round,
             )
 
