@@ -6,7 +6,39 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# 人工提示词（generator / critic；临时 vs 持久化，见 plans/wise-dreaming-shell.md）
+# ---------------------------------------------------------------------------
+
+
+class HintOut(BaseModel):
+    """一条人工提示词（对外展示）。"""
+
+    id: str
+    agent: Literal["generator", "critic"]
+    text: str
+    scope: Literal["loop", "sample"]
+
+
+class HintIn(BaseModel):
+    """启动 loop 时随请求带入的人工提示词。"""
+
+    agent: Literal["generator", "critic"]
+    text: str
+    scope: Literal["loop", "sample"] = "loop"
+
+
+class HintCreateRequest(BaseModel):
+    """运行中新增一条人工提示词。"""
+
+    agent: Literal["generator", "critic"]
+    text: str
+    scope: Literal["loop", "sample"] = "loop"
+
 
 # ---------------------------------------------------------------------------
 # 总览（屏①）
@@ -45,6 +77,7 @@ class BenchOverview(BaseModel):
     bench_id: str
     description: str | None = None
     samples: list[SampleOverview] = Field(default_factory=list)
+    general_experience_count: int = 0  # 跨 loop 通用经验条数（总览入口 badge；0=无）
 
 
 class OverviewResponse(BaseModel):
@@ -61,7 +94,12 @@ class DimensionScoreOut(BaseModel):
     scoring_type: str
     value: float
     raw: str | None = None
-    failed_items: list[dict] = Field(default_factory=list)  # {id, reason}
+    # 二分维度逐项判定（全量，含通过项）：{id, passed, reason}。
+    # Critic 对每个 checklist 项都给理由（哪怕 passed=True），前端逐项展示 ✓/✗ + reason，
+    # 避免「全过的维度零说明」——旧版只透出 failed_items，通过项的理由被吞掉。
+    items: list[dict] = Field(default_factory=list)
+    # 兼容旧字段：仅失败项 {id, reason}（现为 items 的 passed=False 子集）。
+    failed_items: list[dict] = Field(default_factory=list)
 
 
 class VerdictOut(BaseModel):
@@ -133,6 +171,7 @@ class LoopDetail(BaseModel):
     conclusions: list[ConclusionOut] = Field(default_factory=list)  # 经验知识库
     target_image: str | None = None  # benchmark target 图路径
     target_md: str | None = None  # target 说明
+    hints: list[HintOut] = Field(default_factory=list)  # 当前生效的人工提示词（loop+sample 合并）
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +207,70 @@ class CalibrationStatusOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 通用经验（跨 loop 蒸馏）
+# ---------------------------------------------------------------------------
+
+
+class DistilledLessonOut(BaseModel):
+    """一条跨 loop 蒸馏出的通用经验（前端展示用）。"""
+
+    id: str = ""
+    dim: str
+    insight: str
+    dos: list[str] = Field(default_factory=list)
+    donts: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    category: str = ""
+    status: str = "active"
+    applies_when: str = "always"
+    successor_id: str = ""
+    retire_reason: str = ""
+
+
+class GeneralExperienceOut(BaseModel):
+    """某 bench 的跨 loop 通用经验（general.json 对外模型，自描述）。"""
+
+    bench_id: str
+    summary: str = ""
+    lessons: list[DistilledLessonOut] = Field(default_factory=list)
+    source_runs: list[str] = Field(default_factory=list)
+    updated_at: str | None = None
+    scene: str = ""
+    dimensions: list[str] = Field(default_factory=list)
+    bench_description: str = ""
+    categories: list[str] = Field(default_factory=list)
+
+
+class LessonEdit(BaseModel):
+    """人工编辑一条 lesson 的可改字段（PATCH）。None 字段保持不变。"""
+
+    insight: str | None = None
+    dos: list[str] | None = None
+    donts: list[str] | None = None
+    category: str | None = None
+    applies_when: str | None = None
+    confidence: float | None = None
+
+
+class LessonRefute(BaseModel):
+    """人工标无效（refute）一条 lesson 的理由。"""
+
+    reason: str = ""
+
+
+class DistillStatusOut(BaseModel):
+    """蒸馏任务状态（前端轮询）。"""
+
+    bench_id: str
+    state: str  # idle / running / done / error / no_runs
+    message: str | None = None
+    n_lessons: int | None = None
+    updated_at: str | None = None
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # loop 控制
 # ---------------------------------------------------------------------------
 
@@ -180,6 +283,7 @@ class LoopStartRequest(BaseModel):
     model: str | None = None  # 为空用 settings 默认
     note: str | None = None
     rounds: int | None = None  # 自动连跑轮数；None/1=单轮跑首停审批，>1=后台连跑不等审批
+    hints: list[HintIn] | None = None  # 启动时附加的人工提示词（按各自 scope 落盘）
 
 
 class LoopControlRequest(BaseModel):

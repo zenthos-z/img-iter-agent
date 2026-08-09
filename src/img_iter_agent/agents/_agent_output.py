@@ -22,6 +22,10 @@ class GeneratorOutput(BaseModel):
     """Generator agent 的最终交付：本轮用的 prompt + 改动说明。"""
 
     prompt: str = Field(description="本轮最终采用的生图 prompt（应与调用 generate_image 时一致）")
+    meaning: str = Field(
+        default="",
+        description="一句话图片含义解释：这张图如何用视觉隐喻表达文章主题/概念（风格神韵迁移场景必填，其他场景可空）",
+    )
     delta_note: str = Field(
         default="",
         description="本轮相对上轮改了什么（针对哪些失败项做了什么；引用经验库的结论）",

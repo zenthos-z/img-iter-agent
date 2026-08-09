@@ -88,6 +88,82 @@ def test_build_overview_aggregates_by_sample(tmp_path):
     assert sample.pending == 3  # 未提交排序
 
 
+def test_build_overview_reflects_live_runner_phase(tmp_path):
+    """总览必须合并 loop_runner 内存态：后台正跑的 loop 在 overview 里 status=running。
+
+    regression：曾只按盘上 meta.finished_at 推断（→ unknown），导致前端「运行中」页
+    过滤不到任何 loop、整页空白。
+    """
+    from img_iter_agent.web.services.loop_runner import LoopHandle, get_runner
+
+    loop_id = "furniture_product_whitebg-s001"
+    _make_loop(tmp_path, loop_id, "s001", n_rounds=1)
+    s = _settings(tmp_path)
+
+    runner = get_runner()
+    handle = LoopHandle(loop_id=loop_id, phase="running", round=2)
+    runner._handles[loop_id] = handle
+    try:
+        def loop_status() -> str:
+            ov = build_overview(s)
+            bench = next(b for b in ov.benches if b.bench_id == "furniture_product_whitebg")
+            sample = next(sm for sm in bench.samples if sm.sample_id == "s001")
+            return sample.loops[0].status
+
+        # 无内存态时盘上未结束 → unknown（baseline）
+        runner._handles.pop(loop_id, None)
+        assert loop_status() == "unknown"
+        runner._handles[loop_id] = handle
+
+        for phase in ("running", "awaiting_review", "error"):
+            handle.phase = phase
+            assert loop_status() == phase, f"phase={phase} 未反映到总览"
+    finally:
+        runner._handles.pop(loop_id, None)
+
+
+def test_build_overview_detects_external_pid_running(tmp_path):
+    """CLI/批量脚本起的 loop 走另一进程（web 内存 LoopRunner 不知道）。
+
+    用 run_dir/running.pid 跨进程标记：写一个存活 pid → build_overview 判 running；
+    进程死了（残留孤儿文件）→ 判 unknown。run_loop_session 的 try/finally 负责写/清。
+    """
+    import os
+
+    from img_iter_agent.data.runstore import run_is_alive
+
+    loop_id = "furniture_product_whitebg-s001"
+    _make_loop(tmp_path, loop_id, "s001", n_rounds=1)
+    s = _settings(tmp_path)
+    run_dir = s.run_dir(loop_id)
+
+    def loop_status() -> str:
+        ov = build_overview(s)
+        bench = next(b for b in ov.benches if b.bench_id == "furniture_product_whitebg")
+        sample = next(sm for sm in bench.samples if sm.sample_id == "s001")
+        return sample.loops[0].status
+
+    # 无 pid 文件 → unknown（baseline）
+    assert loop_status() == "unknown"
+    assert run_is_alive(run_dir) is False
+
+    # 写存活 pid（当前测试进程）→ running
+    pid_file = run_dir / "running.pid"
+    pid_file.write_text(json.dumps({"pid": os.getpid(), "ts": "now"}), encoding="utf-8")
+    try:
+        assert run_is_alive(run_dir) is True
+        assert loop_status() == "running"
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+    # 死 pid → run_is_alive 兜底判 False（残留孤儿文件不卡「运行中」）
+    pid_file.write_text(json.dumps({"pid": 999999}), encoding="utf-8")
+    try:
+        assert run_is_alive(run_dir) is False
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+
 def test_loop_detail_has_traces_and_verdict(tmp_path):
     """loop 详情读出 trace 列表，verdict 含 6 维，conclusions 可读。"""
     _make_loop(tmp_path, "furniture_product_whitebg-s001", "s001", n_rounds=2)
@@ -98,6 +174,11 @@ def test_loop_detail_has_traces_and_verdict(tmp_path):
     t0 = detail.traces[0]
     assert t0.verdict is not None
     assert len(t0.verdict.dimensions) == 6
+    # 二分维度的逐项判定（含通过项 + reason）必须全量透出，不能只留 failed_items。
+    # 旧 bug：consistency 的 C1 passed=True 被 _verdict_to_out 过滤掉，前端「全过维度零说明」。
+    consistency = next(d for d in t0.verdict.dimensions if d.dim == "consistency")
+    assert consistency.items == [{"id": "C1", "passed": True, "reason": "ok"}]
+    assert consistency.failed_items == []  # 全过 → 无失败项，但 items 仍带通过项理由
     assert t0.delta_note is None  # 首轮无改动
     assert detail.traces[1].delta_note == "round 2 delta"  # 后续轮有改动
     assert detail.conclusions is not None  # 经验字段存在（可能空）

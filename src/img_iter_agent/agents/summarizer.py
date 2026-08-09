@@ -103,6 +103,10 @@ class Summarizer:
 
         lesson_ref = str(knowledge.save_conclusions(run_dir, kb).relative_to(run_dir))
 
+        # 步骤2: discover_standards — 从本 loop critic findings 提炼反复偏差 → 提议标准
+        if self.chat_model is not None:
+            self._discover_standards(run_dir, kb)
+
         # 追加 index 条目
         entry = index.make_entry(
             attempt_id=outcome.attempt_id,
@@ -217,6 +221,45 @@ class Summarizer:
                 continue
             c.lesson = f"{c.lesson}\n建议: {text}" if c.lesson else text
         return summary
+
+    @traceable(name="summarizer.discover_standards", run_type="chain")
+    def _discover_standards(self, run_dir: Path, kb: knowledge.KnowledgeBase) -> str | None:
+        """从本 loop Critic findings(reasons) 提炼反复出现、checklist 未显式覆盖的偏差模式 → 提议标准。
+
+        写入 run_dir/proposed_standards.json，供 generator 下轮注入（自主发现盲区 + 反哺）。
+        这是「agent 自己设标准、少人参与」的机制：critic 自主对照参考发现的偏差，
+        被提炼成持久标准，generator 提前避免。
+        """
+        import json, re
+        findings = [c.finding for c in kb.conclusions if c.finding]
+        if len(findings) < 2:
+            return None
+        facts = "\n".join(f"- {f}" for f in findings)
+        prompt = (
+            "下面是本 loop Critic 反复发现的问题(reasons)：\n" + facts +
+            "\n请提炼出【反复出现、且当前 checklist 未显式覆盖的偏差模式】，转成简洁的『提议标准』——"
+            "每条一句话，是生成模型该遵守的规则(如『禁止写实指节/指甲/解剖暗示，须纯线条抽象』)。"
+            "只提炼真正的盲区(checklist 已覆盖的不重复)。输出 JSON list[str]，无则 []。"
+        )
+        try:
+            resp = self.chat_model.invoke([HumanMessage(content=prompt)])  # type: ignore[union-attr]
+            content = resp.content
+            text = content if isinstance(content, str) else str(content)
+        except Exception:  # noqa: BLE001  LLM 失败不炸闭环
+            return None
+        m = re.search(r"\[[\s\S]*\]", text)
+        if not m:
+            return None
+        try:
+            proposed = json.loads(m.group(0))
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(proposed, list) or not proposed:
+            return None
+        proposed = [str(x).strip() for x in proposed if str(x).strip()][:10]
+        (run_dir / "proposed_standards.json").write_text(
+            json.dumps(proposed, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f"proposed {len(proposed)} standards"
 
     @staticmethod
     def _fact_line(kb: knowledge.KnowledgeBase, c) -> str:

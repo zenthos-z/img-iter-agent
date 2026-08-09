@@ -18,6 +18,15 @@ from langgraph.types import Command
 
 from ...config import get_settings
 from ...data.benchmark import load_benchmark
+from ...data.human_hints import (
+    load_effective_hints,
+    load_loop_hints,
+    load_sample_hints,
+    new_hint_id,
+    remove_sample_hint,
+    save_loop_hints,
+    save_sample_hints,
+)
 from ...data.runstore import RunStore
 from ...pipeline.runner import (
     build_loop_context,
@@ -44,6 +53,7 @@ class LoopHandle:
     cfg: dict | None = field(default=None, repr=False)
     store: RunStore | None = field(default=None, repr=False)
     loop_root: object | None = field(default=None, repr=False)  # LangSmith loop trace root（web 跨请求 1-loop-1-trace）
+    hints: list = field(default_factory=list)  # 当前生效的人工提示词（loop+sample 合并视图，运行中可改）
 
 
 class LoopRunner:
@@ -67,6 +77,7 @@ class LoopRunner:
         model: str | None = None,
         note: str | None = None,
         rounds: int | None = None,
+        hints: list[dict] | None = None,
     ) -> str:
         """对一道题（sample×model）启动/继续 loop。返回 loop_id。
 
@@ -75,6 +86,9 @@ class LoopRunner:
 
         rounds：自动连跑轮数。None/1=首轮跑到等审批就停（等人工 resume）；
         >1=后台连跑，每轮到 interrupt 自动 resume，跑满后置 finished。
+
+        hints：启动时附加的人工提示词，每条 {agent, text, scope}。按 scope 追加落盘
+        （sample→该考题共享文件，loop→本 loop meta），再刷新 handle.hints 为合并视图。
         """
         settings = get_settings()
         lb = load_benchmark(bench_id, settings=settings)
@@ -88,7 +102,7 @@ class LoopRunner:
             # 已有 loop：续跑下一轮（不新建）
             store = RunStore.open(loop_id, settings=settings)
             return self._continue_existing(
-                loop_id, store, lb, sample_id, rounds_remaining, auto_mode
+                loop_id, store, lb, sample_id, rounds_remaining, auto_mode, hints, settings
             )
 
         # 新建 loop
@@ -102,6 +116,8 @@ class LoopRunner:
             loop_id=loop_id, phase="running",
             rounds_remaining=rounds_remaining, auto_mode=auto_mode,
         )
+        # 启动 hints 按 scope 追加落盘 + 加载 effective 合并视图进 handle.hints
+        self._apply_start_hints(handle, store, settings, bench_id, sample_id, hints)
         with self._lock:
             self._handles[loop_id] = handle
         self._submit(handle, self._run_first_round(settings, lb, store, sample_id))
@@ -115,26 +131,36 @@ class LoopRunner:
     def _continue_existing(
         self, loop_id: str, store: RunStore, lb, sample_id: str,
         rounds_remaining: int = 0, auto_mode: bool = False,
+        hints: list[dict] | None = None, settings=None,
     ) -> str:
-        """在已有 loop 上续跑：跑下一轮（resume）到下一个 interrupt。"""
-        settings = get_settings()
-        handle = LoopHandle(
-            loop_id=loop_id, phase="running",
-            rounds_remaining=rounds_remaining, auto_mode=auto_mode,
-        )
+        """在已有 loop 上续跑：跑下一轮（resume）到下一个 interrupt。
+
+        handle 优先复用内存中已有 graph 实例（old.app）；无则新建（进程重启等）。
+        无论哪条路径，都先 _apply_start_hints 追加启动 hints + 刷新 handle.hints。
+        """
+        settings = settings or get_settings()
         with self._lock:
-            # 复用或新建 handle
             old = self._handles.get(loop_id)
             if old and old.app is not None:
                 handle = old  # 已有 graph 实例，直接 resume
                 handle.phase = "running"
                 handle.rounds_remaining = rounds_remaining
                 handle.auto_mode = auto_mode
-                self._submit(handle, self._run_resume(handle, "continue"))
-                return loop_id
-            self._handles[loop_id] = handle
-        # 无 graph 实例（进程重启等）：重建 graph + resume 续跑
-        self._submit(handle, self._run_first_round(settings, lb, store, sample_id, resume_existing=True))
+                reuse = True
+            else:
+                handle = LoopHandle(
+                    loop_id=loop_id, phase="running",
+                    rounds_remaining=rounds_remaining, auto_mode=auto_mode,
+                )
+                self._handles[loop_id] = handle
+                reuse = False
+        # 启动 hints 追加落盘 + 刷新 handle.hints（IO 在锁外）
+        self._apply_start_hints(handle, store, settings, lb.bench.bench_id, sample_id, hints)
+        if reuse:
+            self._submit(handle, self._run_resume(handle, "continue"))
+        else:
+            # 无 graph 实例（进程重启等）：重建 graph + resume 续跑
+            self._submit(handle, self._run_first_round(settings, lb, store, sample_id, resume_existing=True))
         return loop_id
 
     # --- 继续 / 停止 ---
@@ -151,6 +177,100 @@ class LoopRunner:
         handle.phase = "running"
         handle.interrupt_payload = None
         self._submit(handle, self._run_resume(handle, decision))
+        return True
+
+    # --- 人工提示词（hints）管理 ---
+
+    def _apply_start_hints(self, handle, store, settings, bench_id, sample_id, hints):
+        """启动时把传入的 hints 按 scope 追加落盘，再刷新 handle.hints 为 effective 合并视图。
+
+        - scope=sample：追加到该考题共享文件（跨 loop 生效）。
+        - scope=loop：追加到本 loop meta.extras（仅本 loop）。
+        无 hints 时仍刷新 handle.hints（加载已落盘的 sample/loop 持久提示词）。
+        """
+        if hints:
+            sample_new = [h for h in hints if h.get("scope") == "sample"]
+            loop_new = [h for h in hints if h.get("scope") == "loop"]
+            if sample_new:
+                save_sample_hints(
+                    settings.data_root, bench_id, sample_id,
+                    load_sample_hints(settings.data_root, bench_id, sample_id) + sample_new,
+                )
+            if loop_new:
+                save_loop_hints(store, load_loop_hints(store) + loop_new)
+        handle.hints = load_effective_hints(settings.data_root, store, bench_id, sample_id)
+
+    @staticmethod
+    def _resolve_bench_sample(loop_id: str, store: RunStore) -> tuple[str, str]:
+        """从 store.meta.bench_id + loop_id 推 (bench_id, sample_id)。loop_id = `<bench>-<sample>`。"""
+        bench_id = store.meta.bench_id if store.meta else ""
+        if bench_id and loop_id.startswith(bench_id + "-"):
+            sample_id = loop_id[len(bench_id) + 1:]
+        else:
+            bench_id, _, sample_id = loop_id.partition("-")
+        return bench_id, sample_id
+
+    def get_hints(self, loop_id: str) -> list[dict] | None:
+        """当前生效 hints 合并视图。
+
+        handle 在内存→返回 handle.hints（权威）；否则从存储读（兼容 run_loop_auto 等
+        外部进程启动的 loop——web 内存无其 handle，但 sample/loop 存储仍在）。
+        """
+        handle = self.get(loop_id)
+        if handle is not None:
+            return list(handle.hints)
+        try:
+            settings = get_settings()
+            store = RunStore.open(loop_id, settings=settings)
+            bench_id, sample_id = self._resolve_bench_sample(loop_id, store)
+            return load_effective_hints(settings.data_root, store, bench_id, sample_id)
+        except Exception:  # noqa: BLE001  loop 不存在/读取失败→空
+            return []
+
+    def add_hint(self, loop_id: str, agent: str, text: str, scope: str) -> dict | None:
+        """新增一条 hint：按 scope 落盘 + 刷新内存 handle.hints。返回新建的 hint，失败返回 None。"""
+        settings = get_settings()
+        try:
+            store = RunStore.open(loop_id, settings=settings)
+        except Exception:  # noqa: BLE001
+            return None
+        if store.meta is None:  # loop 不存在（meta.json 缺）→ 不写
+            return None
+        bench_id, sample_id = self._resolve_bench_sample(loop_id, store)
+        hint = {"id": new_hint_id(), "agent": agent, "text": text, "scope": scope}
+        if scope == "sample":
+            save_sample_hints(
+                settings.data_root, bench_id, sample_id,
+                load_sample_hints(settings.data_root, bench_id, sample_id) + [hint],
+            )
+        else:
+            save_loop_hints(store, load_loop_hints(store) + [hint])
+        handle = self.get(loop_id)
+        if handle is not None:
+            handle.hints = load_effective_hints(settings.data_root, store, bench_id, sample_id)
+        return hint
+
+    def remove_hint(self, loop_id: str, hint_id: str) -> bool:
+        """删一条 hint：从对应 scope 存储移除 + 刷新内存 handle.hints。"""
+        settings = get_settings()
+        try:
+            store = RunStore.open(loop_id, settings=settings)
+        except Exception:  # noqa: BLE001
+            return False
+        bench_id, sample_id = self._resolve_bench_sample(loop_id, store)
+        handle = self.get(loop_id)
+        current = list(handle.hints) if handle is not None else load_effective_hints(
+            settings.data_root, store, bench_id, sample_id
+        )
+        target = next((h for h in current if h.get("id") == hint_id), None)
+        if target is None:
+            return False
+        if target.get("scope") == "sample":
+            remove_sample_hint(settings.data_root, bench_id, sample_id, hint_id)
+        else:
+            save_loop_hints(store, [h for h in load_loop_hints(store) if h.get("id") != hint_id])
+        if handle is not None:
+            handle.hints = load_effective_hints(settings.data_root, store, bench_id, sample_id)
         return True
 
     # --- 实际执行任务（在线程池里跑）---
@@ -253,9 +373,16 @@ class LoopRunner:
 
     @staticmethod
     def _cfg_with_round(handle: LoopHandle, round_n: int, phase: str) -> dict:
-        """在标准 config 上叠加 round/phase，让 LangSmith 里每一轮 trace 可辨认（按 round/phase 过滤、列表加 metadata/tags 列）。"""
+        """在标准 config 上叠加 round/phase + 当前人工提示词。
+
+        - metadata/tags：让 LangSmith 里每一轮 trace 可辨认（按 round/phase 过滤）。
+        - configurable.human_hints：把 handle.hints（最新合并视图）注入，供 generator/critic
+          node 每轮读取。新建 configurable dict（不 mutate base），用 handle.hints 覆盖
+          build_loop_context 启动时注入的快照——从而「运行中改提示词，下一轮立即生效」。
+        """
         base = handle.cfg or {"configurable": {"thread_id": handle.loop_id}}
         cfg = dict(base)
+        cfg["configurable"] = {**(base.get("configurable") or {}), "human_hints": list(handle.hints)}
         cfg["metadata"] = {**(base.get("metadata") or {}), "round": round_n, "phase": phase}
         cfg["tags"] = list(base.get("tags") or []) + [f"round:{round_n}", f"phase:{phase}"]
         return cfg

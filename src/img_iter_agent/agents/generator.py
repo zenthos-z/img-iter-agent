@@ -48,7 +48,9 @@ _DEFAULT_GENERATOR_SYS = (
     "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分。\n"
     "4. **只调一次** generate_image(prompt=..., size=...) 出图；成功后立即结构化输出 "
     "prompt + delta_note（本轮相对上轮改了什么）。不要重复出图、不要再调其它工具。\n"
-    "你的可用工具只有：generate_image / query_experience / query_general_experience。"
+    "你的可用工具只有：generate_image / query_experience / query_general_experience。\n"
+    "system prompt 末尾的「通用经验索引」= 该系列跨 loop 蒸馏的类目速览；每轮 user message 会按上下文"
+    "带 ≤4 条最相关详情（直接遵循）；更多按类目调 query_general_experience(category) 取。"
 )
 
 
@@ -57,6 +59,7 @@ class PriorFeedback(BaseModel):
 
     failed_items: list[CriticItemJudgment] = Field(default_factory=list)
     continuous_notes: list[str] = Field(default_factory=list)  # 连续维度的低分理由
+    failed_dims: list[str] = Field(default_factory=list)  # 上轮失败的维度名（通用经验 select 用）
 
 
 class GenOutcome(BaseModel):
@@ -74,6 +77,7 @@ class GenOutcome(BaseModel):
     model_family: str
     improved_from_feedback: bool = False  # 本轮 prompt 是否基于上轮反馈改进
     delta_note: str | None = None  # 本轮相对上轮的改动说明（供经验闭环沉淀）
+    meaning: str | None = None  # 一句话图片含义解释（风格神韵迁移场景；供 Critic 判概念表达）
 
 
 def _new_attempt_id(round: int) -> str:
@@ -100,6 +104,30 @@ class Generator:
         # 跨 loop 通用经验库定位（query_general_experience 工具用）；None 时该工具回「未配置」。
         self.data_root = data_root
         self.bench_id = bench_id
+        # 策略性输入（v2）：system prompt 只常驻精简索引（避免库膨胀→注意力分散）；
+        # 详情按上下文 select 进每轮 user message。self._experience 供 _build_user_content 取。
+        self._experience = None
+        self.system_prompt = self._with_general_experience(self.system_prompt)
+
+    def _with_general_experience(self, prompt: str) -> str:
+        """system prompt 末尾拼接【精简索引】（每 category 一行，恒定 ~6 行），并存 self._experience。
+
+        不再全量 inline——避免经验库膨胀稀释注意力。详情由 _build_user_content 按上下文 select 注入。
+        无经验（首跑/空库）时原样返回。
+        """
+        if not self.data_root or not self.bench_id:
+            return prompt
+        try:
+            from ..memory.experience import load_general_experience, render_experience_index
+
+            exp = load_general_experience(self.data_root, self.bench_id)
+            self._experience = exp
+            idx = render_experience_index(exp)
+            if not idx:
+                return prompt
+            return prompt.rstrip() + "\n\n" + idx
+        except Exception:  # noqa: BLE001
+            return prompt
 
     def generate_round(
         self,
@@ -113,6 +141,7 @@ class Generator:
         escalated_warnings: list[str] | None = None,
         model_hint: ModelFamily | None = None,
         config: RunnableConfig | None = None,
+        extra_hints: list[str] | None = None,
     ) -> GenOutcome:
         """跑一轮：deepagent 构造/改进 prompt 并出图。
 
@@ -123,10 +152,16 @@ class Generator:
         task = spec.task
         size_str = (task.output.get("size") if task and task.output else None) or "2K"
 
-        # 参考：image_edit 模式用 target 作风格锚
+        # 参考：image_edit/multiview 用 target 作风格锚；style_transfer 注入参考集多图供 agent 抽象风格共性
         reference_images: list[Path] = []
         gen_mode = "text_to_image"
-        if task and task.mode in ("image_edit", "multiview") and sample.target_path.exists():
+        if task and task.mode == "style_transfer":
+            # 风格神韵迁移：Generator 看参考集(多张)抽象风格共性、文生图原创；
+            # reference_images 只注入 agent user content 供其"看"，generate_image 工具为纯文生图，不进生图 API。
+            refs = [sample.sample_dir / a for a in (task.input_assets or [])]
+            reference_images = [p for p in refs if p.exists()]
+            gen_mode = "text_to_image"
+        elif task and task.mode in ("image_edit", "multiview") and sample.target_path.exists():
             reference_images = [sample.target_path]
             gen_mode = "image_edit"
 
@@ -150,7 +185,7 @@ class Generator:
 
         user_content = self._build_user_content(
             sample, round, prior_feedback, reference_images,
-            escalated_warnings=escalated_warnings,
+            escalated_warnings=escalated_warnings, extra_hints=extra_hints,
         )
         invoke_cfg = self._merge_recursion(config, AGENT_RECURSION_LIMIT)
 
@@ -162,6 +197,7 @@ class Generator:
 
         prompt = (out.prompt or "").strip() or self._base_prompt_text(sample)
         delta_note = (out.delta_note or "").strip() or None
+        meaning = (out.meaning or "").strip() or None
 
         # 出图：agent 调了 generate_image → sink 有 ref；否则用 prompt 现场出图（兜底）
         if sink.get("ref"):
@@ -212,6 +248,7 @@ class Generator:
             gen_mode=gen_mode,
             prompt=prompt,
             delta_note=delta_note,
+            meaning=meaning,
             size=size_str,
             reference_image_refs=[str(p.resolve()) for p in reference_images],
             output_image_refs=output_refs,
@@ -227,6 +264,7 @@ class Generator:
         prior_feedback: PriorFeedback | None, reference_images: list[Path],
         *,
         escalated_warnings: list[str] | None = None,
+        extra_hints: list[str] | None = None,
     ) -> list[dict] | str:
         """构造初始 HumanMessage 内容：指令+约束(+上轮失败项)+经验闭环警告+参考图(image_url)。"""
         instr = (sample.spec.task.instruction if sample.spec.task else None) or "生成产品白底三视图素材图"
@@ -264,6 +302,27 @@ class Generator:
                 "(b) 对⚠️升级维度换根本性方向（换 test_variable 如 reference_images/size，或上报人工），"
                 "不要再微调同一 prompt 思路。"
             )
+
+        # 风格神韵迁移专属：要求 generator 产出一句话图片含义（供 Critic 判概念表达 + 最终图文方案文字）
+        if sample.spec.task and sample.spec.task.mode == "style_transfer":
+            text += (
+                "\n\n【风格神韵迁移 · 必填 meaning】"
+                "除 prompt + delta_note 外，**必须**用 meaning 字段输出一句话（≤40 字）图片含义解释："
+                "这张图如何用视觉隐喻表达给定文章主题的概念。它是产出的一部分，也会被 Critic 用来判断概念表达。"
+            )
+
+        # 策略性输入：按本轮上下文选 ≤4 条通用经验详情注入（R1 起步 / R>1 失败命中），避免全量稀释注意力
+        if self._experience and self._experience.lessons:
+            from ..memory.experience import render_lessons_detail, select_lessons
+
+            fdims = (prior_feedback.failed_dims if (round > 1 and prior_feedback) else None) or []
+            sel = select_lessons(self._experience, round=round, failed_dims=fdims, k=4)
+            if sel:
+                text += "\n\n【本轮相关通用经验（按上下文选定，直接遵循）】\n" + render_lessons_detail(sel)
+
+        # 人工补充要求（运行时人工介入；每轮都加入，与 escalated_warnings 同级强制）
+        if extra_hints:
+            text += "\n\n【人工补充要求（必须遵守）】\n" + "\n".join(f"- {h}" for h in extra_hints)
 
         if not reference_images:
             return text

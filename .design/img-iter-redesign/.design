@@ -1,0 +1,437 @@
+{
+  "data": [
+    {
+      "id": "page-overview",
+      "type": "page",
+      "title": "总览",
+      "version": 1,
+      "createdAt": 1786180200000,
+      "canvasData": {
+        "x": 200,
+        "y": 36,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-61cb257c",
+          "measuredAt": 1786181459003
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 881
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/overview.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-new-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-score-s001",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "btn-score-s002",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "loop-chip-s001",
+            "targetPageId": "page-loop"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-overview-compact",
+      "type": "page",
+      "title": "总览 · 紧凑模式",
+      "version": 1,
+      "createdAt": 1786285289000,
+      "canvasData": {
+        "x": 780,
+        "y": 36,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-5bf9ff1a",
+          "measuredAt": 1786286233625
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 881
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/overview-compact.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-new-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-score-s001-compact",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "btn-score-s002-compact",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "loop-chip-s001-compact",
+            "targetPageId": "page-loop-compact"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-running",
+      "type": "page",
+      "title": "运行中",
+      "version": 1,
+      "createdAt": 1786180200001,
+      "canvasData": {
+        "x": 780,
+        "y": 461,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-ee3e19dd",
+          "measuredAt": 1786181459003
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 1005
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/running.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-review-s003",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-error-s004",
+            "targetPageId": "page-loop"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-scoring",
+      "type": "page",
+      "title": "人工排序",
+      "version": 1,
+      "createdAt": 1786180200002,
+      "canvasData": {
+        "x": 200,
+        "y": 754,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-cd494f8f",
+          "measuredAt": 1786181725422
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 799
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/scoring.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-back-overview",
+            "targetPageId": "page-overview"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-config",
+      "type": "page",
+      "title": "Agent 设置",
+      "version": 1,
+      "createdAt": 1786180200003,
+      "canvasData": {
+        "x": 200,
+        "y": 1131,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1399,
+          "sourceHash": "fnv1a-d645a6e6",
+          "measuredAt": 1786183262500
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1399,
+          "height": 881
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/config.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-loop",
+      "type": "page",
+      "title": "loop 详情",
+      "version": 1,
+      "createdAt": 1786180200004,
+      "canvasData": {
+        "x": 200,
+        "y": 1508,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1046,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-a18040f4",
+          "measuredAt": 1786286233625
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 1046
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/loop.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-goto-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "btn-continue-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-stop-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-review-continue",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-review-stop",
+            "targetPageId": "page-loop"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-loop-compact",
+      "type": "page",
+      "title": "loop 详情 · 紧凑模式",
+      "version": 1,
+      "createdAt": 1786285289001,
+      "canvasData": {
+        "x": 780,
+        "y": 1508,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1046,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-79ae6fcf",
+          "measuredAt": 1786286233625
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1440,
+          "height": 1046
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/loop-compact.html",
+        "interactions": [
+          {
+            "domId": "nav-brand",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-overview",
+            "targetPageId": "page-overview"
+          },
+          {
+            "domId": "nav-running",
+            "targetPageId": "page-running"
+          },
+          {
+            "domId": "nav-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "nav-config",
+            "targetPageId": "page-config"
+          },
+          {
+            "domId": "btn-goto-scoring",
+            "targetPageId": "page-scoring"
+          },
+          {
+            "domId": "btn-continue-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-stop-loop",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-review-continue",
+            "targetPageId": "page-loop"
+          },
+          {
+            "domId": "btn-review-stop",
+            "targetPageId": "page-loop"
+          }
+        ]
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": false,
+    "deviceType": "desktop",
+    "visualEditorEnabled": false,
+    "showEdge": false
+  }
+}

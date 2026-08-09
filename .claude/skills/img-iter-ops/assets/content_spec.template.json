@@ -1,0 +1,57 @@
+{
+  "sample_id": "<sNNN>",
+  "product": "<产品名（中文，如：折叠便携躺椅）>",
+  "category": "<品类，如 chair / table / lounger / sofa>",
+
+  "task": {
+    "mode": "image_edit",
+    "input_assets": ["target.jpg"],
+    "instruction": "<一句话：以该图为参考产品，生成【一张】白底素材图，并排排版同一产品的三视角（正/侧/立体），三视角必须同一产品、同色、同比例，纯白背景。一次生成一张完整排版图。>",
+    "output": {
+      "layout": "three_view_single_image",
+      "views": ["front", "side", "perspective"],
+      "background": "white",
+      "size": "2K"
+    }
+  },
+
+  "constraints": {
+    "must_keep": ["<必须保留的结构特征，如：折叠框架结构/关节斜撑>"],
+    "may_change": ["背景(纯白)", "光影"],
+    "must_avoid": ["<必须避免的失真，如：结构变形为其他物品、织物变塑料、三视角不一致>"]
+  },
+
+  "checklist": {
+    "consistency": [
+      {"id": "C1", "check": "图中三个视角是同一产品（同一实例）"},
+      {"id": "C2", "check": "三个视角色调一致"},
+      {"id": "C3", "check": "侧视长度=正视长度（比例一致，无透视压缩）"},
+      {"id": "C4", "check": "三个视角高度/角度比例一致"}
+    ],
+    "product_structure": [
+      {"id": "S1", "check": "关键结构保留（对照参考图）", "anchor": "对照 target"},
+      {"id": "S2", "check": "无部件穿模/重叠"},
+      {"id": "S3", "check": "无部件缺失"},
+      {"id": "S4", "check": "仍是正确形态（未退化成其他物品，对照参考）", "anchor": "对照 target"}
+    ],
+    "material_texture": {
+      "_scoring": "continuous: LLM 对这些点整体给 0-1 还原度分（有偏差，排序校准吸收）",
+      "points": ["<材质特征1，如：金属框架质感>", "<材质特征2，如：织物编织纹理>"]
+    },
+    "color_accuracy": {
+      "_scoring": "continuous: LLM 对这些点整体给 0-1 准确度分（有偏差，排序校准吸收）",
+      "points": ["<颜色特征1，如：框架浅米色>", "<颜色特征2，如：织物深灰未偏色>"]
+    },
+    "artifact_defect": [
+      {"id": "A1", "check": "金属件无变形"},
+      {"id": "A2", "check": "应对称处左右对称"},
+      {"id": "A3", "check": "无模糊/拼接痕"},
+      {"id": "A4", "check": "家具接地有阴影（不悬浮）"}
+    ],
+    "commercial_focus": [
+      {"id": "B1", "check": "主体居中突出"},
+      {"id": "B2", "check": "白底干净"},
+      {"id": "B3", "check": "构图留白充足（符合电商单图规范）"}
+    ]
+  }
+}

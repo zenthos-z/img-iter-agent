@@ -1,0 +1,117 @@
+{
+  "bench_id": "anthropic_og_style",
+  "version": "2.0.0",
+  "scene": "Anthropic OG 封面风格 · 多文章概念表达 benchmark（考风格精髓 + 概念表达 + 方法泛化性）",
+  "description": "全新场景：6 篇文章 × 风格神韵迁移。Generator 看参考集(7 张)抽象风格共性，凭『一篇文章的核心概念』原创一张同神韵、motif 不复制参考的封面，并产出一句话图片含义(meaning)。Critic 按三柱打分：神韵(0.40)/原创(0.40)/概念表达(0.20)。6 篇分两组：2 篇【参考对照】(og 在参考集，有官方 motif 作 ground truth 对照)、4 篇【非案例考题】(og 不在参考集，纯考泛化与概念原创表达)。泛化性 = benchmark 级跨 sample 考察：general.json 沉淀跨文章通用的『风格→概念』表达方法，后跑 sample 首轮是否优于冷启动。神韵 5 要素为 v1 候选，随经验闭环演化(见策略文档§6)。",
+
+  "scene_type": "style_transfer",
+  "scoring_method": "hybrid_with_rank_calibration",
+  "scoring_note": "三柱：神韵(系统提炼5要素)/原创(motif非复制+原创度)/概念表达(图+meaning表达文章核心概念)。还原度=Σ(wᵢ×feature)，权重和=1.000。",
+
+  "generalization_protocol": {
+    "design": "6 sample 分两组测泛化性",
+    "groups": {
+      "reference_control": ["s002", "s003"],
+      "novel_test": ["s001", "s004", "s005", "s006"]
+    },
+    "reference_control_note": "og 封面在参考集 → 有官方 motif 作 ground truth，验证系统能否逼近官方表达",
+    "novel_test_note": "og 封面不在参考集 → 无官方答案，纯考系统用学到的『风格→概念』方法原创表达新概念",
+    "metrics": [
+      "跨 sample 经验迁移：后跑 sample 首轮还原度 vs 先跑（冷启动对比，看 general.json 是否真沉淀了通用方法）",
+      "概念表达泛化：concept_expression 在 6 篇不同概念域上的表现稳定性",
+      "参考对照 vs 非案例：两组还原度差距（理论参考对照应略高，差距小说明方法泛化好）"
+    ]
+  },
+
+  "score_dimensions": [
+    {"pillar": "spirit", "dim": "spirit_hand_form", "title": "抽象主体造型 + 结构正确性",
+     "desc": "主体(手或物件)抽象极简造型；构图由概念决定；结构合理(抽象允许夸张但无结构错误——抽象≠无逻辑)",
+     "weight_init": 0.100, "ref_needed": true, "scoring_type": "binary",
+     "check_items": ["spirit_hand_form-1 主体造型抽象极简(粗黑墨线+几何化，非写实解剖)", "spirit_hand_form-2 构图服务于概念(手有无/位置/姿势/物件由概念决定；参考集有多样手姿势+无手变体)", "spirit_hand_form-3 结构合理(抽象允许夸张，但无多指/关节错乱/无规律扭曲)"]},
+
+    {"pillar": "spirit", "dim": "spirit_ink_line", "title": "墨线质感",
+     "desc": "黑线模拟毛笔/软头马克笔：起笔略粗收笔略细，自然顿挫但流畅连贯；禁机械直线",
+     "weight_init": 0.088, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-墨线质感"},
+
+    {"pillar": "spirit", "dim": "spirit_geometric_object", "title": "几何化物件简化",
+     "desc": "实体物件提炼为 2–4 个基础几何形，去纹理/阴影，仅轮廓与必要连接",
+     "weight_init": 0.080, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-几何化物件"},
+
+    {"pillar": "spirit", "dim": "spirit_negative_space", "title": "负空间节奏",
+     "desc": "70%+ 单色背景，主体集中右上/中右，形成『左下动手、右上构型』的不对称平衡",
+     "weight_init": 0.072, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-负空间节奏"},
+
+    {"pillar": "spirit", "dim": "spirit_symbolic_interaction", "title": "象征性互动",
+     "desc": "手与物件的关系是隐喻性动作(托举思想/编织连接/轻触开启)，动作即概念表达",
+     "weight_init": 0.060, "ref_needed": true, "scoring_type": "binary",
+     "check_items": ["spirit_symbolic_interaction-1 手与物件存在直接接触点(线相交或端点触碰)", "spirit_symbolic_interaction-2 互动具单向引导性(手→物 或 物→手)", "spirit_symbolic_interaction-3 无双手、无工具中介(镊子/钳子等)"]},
+
+    {"pillar": "originality", "dim": "originality_motif", "title": "motif 非复制(否决倾向)",
+     "desc": "生成图主体动作/motif 不得明显雷同于任一参考图的 motif(见 reference_motifs)。参考对照类(sample s002/s003)额外不得直接复制本文章官方 og 的 motif",
+     "weight_init": 0.240, "ref_needed": true, "scoring_type": "binary",
+     "check_items": ["originality_motif-1 主体 motif 与 7 个参考 motif 均非明显雷同", "originality_motif-2 未直接复制某个参考的手+物组合", "originality_motif-3 物件类型与几何组合与参考集有明显区分"]},
+
+    {"pillar": "originality", "dim": "originality_degree", "title": "原创程度",
+     "desc": "motif 构思的新颖度——是否在参考集 motif 空间之外提出新的隐喻动作",
+     "weight_init": 0.160, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#原创-原创程度"},
+
+    {"pillar": "concept", "dim": "concept_expression", "title": "概念表达",
+     "desc": "图 + Generator 的 meaning 解释是否清晰表达了给定文章的【核心概念】(不只是泛主题，而是具体概念)；是本次升级的核心考察点",
+     "weight_init": 0.120, "ref_needed": false, "scoring_type": "binary",
+     "check_items": ["concept_expression-1 图的视觉隐喻与 meaning 一致(图确实表达了它声称的概念)", "concept_expression-2 图+meaning 共同清晰表达文章核心概念(非泛主题、非随机手物组合)"]},
+
+    {"pillar": "concept", "dim": "concept_clarity", "title": "概念表达清晰度",
+     "desc": "概念隐喻的清晰度——观者能否看出图与文章核心概念的关联",
+     "weight_init": 0.080, "ref_needed": false, "scoring_type": "continuous", "rubric_ref": "rubric.md#概念-清晰度"}
+  ],
+
+  "comparative_dims": ["spirit_hand_form", "spirit_ink_line", "spirit_geometric_object", "spirit_negative_space", "spirit_symbolic_interaction", "originality_motif", "originality_degree"],
+  "absolute_dims": ["concept_expression", "concept_clarity"],
+
+  "task": {
+    "type": "style_transfer_single",
+    "layout": "single_cover",
+    "input_contract": "Generator 收『参考集(7 张) + 文章核心概念(article_topic) + 风格 brief(辅助)』；学参考集风格共性、禁复制任一 motif。产出 = 图 + 一句话 meaning。",
+    "output": "单张封面插画 + meaning(一句话含义解释)"
+  },
+
+  "samples": [
+    {"sample_id": "s001", "role": "novel_test", "article_slug": "global-workspace", "article_title": "A global workspace in language models",
+     "concept": "Claude 内部涌现的全局工作空间(J-space)：一个沉默的、不输出文字的内部思考空间",
+     "product": "global-workspace 概念封面", "category": "illustration_cover",
+     "target": "samples/s001/target.jpg", "target_note": "参考集 contact sheet；本文 og(cdn 真实封面)不在参考集",
+     "difficulty_note": "非案例：无官方 motif，纯考原创概念表达。抽象概念『内部思考空间』转视觉隐喻有难度。"},
+
+    {"sample_id": "s002", "role": "reference_control", "article_slug": "teaching-claude-why", "article_title": "Teaching Claude why",
+     "concept": "教 Claude 理解『为什么』——通过安全训练降低智能体失准(agentic misalignment)，让模型不再为达目的不择手段",
+     "official_motif": "hand-knot: 手捏黑线在八边形白底上形成三重绳结(本文官方 og，在参考集内，作 ground truth 对照)",
+     "product": "teaching-claude-why 概念封面", "category": "illustration_cover",
+     "target": "samples/s002/target.jpg", "target_note": "参考集 contact sheet；本文官方 og=hand-knot(在参考集)，可对照系统表达是否逼近官方",
+     "difficulty_note": "参考对照：有官方 motif(hand-knot)作 ground truth。但 originality 维度要求不复制官方 motif，考『同概念的新表达』。"},
+
+    {"sample_id": "s003", "role": "reference_control", "article_slug": "discovering-cryptographic-weaknesses", "article_title": "Discovering cryptographic weaknesses with Claude",
+     "concept": "用 Claude 发现密码学算法的弱点(攻击 HAWK 后量子签名、缩减轮次 AES)，揭示 AI 攻破加密的能力边界",
+     "official_motif": "object-laptop: 蓝框笔电屏中黑线钥匙孔(本文官方 og，在参考集内；注意此为『无手』变体)",
+     "product": "discovering-cryptographic-weaknesses 概念封面", "category": "illustration_cover",
+     "target": "samples/s003/target.jpg", "target_note": "参考集 contact sheet；本文官方 og=object-laptop(无手变体，在参考集)",
+     "difficulty_note": "参考对照：官方 motif 是无手变体，可测系统能否不拘泥于『手』、用纯物件表达安全/破译概念。"},
+
+    {"sample_id": "s004", "role": "novel_test", "article_slug": "project-deal", "article_title": "Project Deal",
+     "concept": "Claude 运营的二手市场实验：替同事买卖、议价、博弈，测 agent 的经济行为与谈判能力",
+     "product": "project-deal 概念封面", "category": "illustration_cover",
+     "target": "samples/s004/target.jpg", "target_note": "参考集 contact sheet；本文 og(cdn)不在参考集",
+     "difficulty_note": "非案例：『交易/博弈』概念转视觉隐喻，且要避开参考里『手+纸/珠/砖』类物件组合。"},
+
+    {"sample_id": "s005", "role": "novel_test", "article_slug": "claude-plays-robotics", "article_title": "Claude plays robotics",
+     "concept": "测试语言模型能否控制机器人——能力能否从数字迁移到物理世界(感知场景、控制关节、操作物体)",
+     "product": "claude-plays-robotics 概念封面", "category": "illustration_cover",
+     "target": "samples/s005/target.jpg", "target_note": "参考集 contact sheet；本文 og(cdn)不在参考集",
+     "difficulty_note": "非案例：『数字→物理迁移/控制』概念，视觉隐喻需原创(注意参考里已无机器人 motif，空间大)。"},
+
+    {"sample_id": "s006", "role": "novel_test", "article_slug": "81k-interviews", "article_title": "What 81,000 people want from AI",
+     "concept": "8 万人想从 AI 得到什么——大规模质性调研，描绘人们使用 AI 的 hopes/fears 与『AI 走向良好』的愿景",
+     "product": "81k-interviews 概念封面", "category": "illustration_cover",
+     "target": "samples/s006/target.jpg", "target_note": "参考集 contact sheet；本文 og(cdn)不在参考集",
+     "difficulty_note": "非案例：『万人诉求/集体愿景』概念，转单手+物隐喻有难度(易流于抽象)。"}
+  ]
+}

@@ -27,6 +27,7 @@ from ..agents.generator import Generator
 from ..agents.summarizer import Summarizer
 from ..config import Settings, get_settings
 from ..data.benchmark import LoadedBenchmark
+from ..data.human_hints import load_effective_hints
 from ..data.runstore import RunStore
 from ..generation.client import DmxapiClient
 from ..generation.router import Router
@@ -176,6 +177,11 @@ def build_loop_context(
     )
     model = store.meta.model if store.meta else (loop_model or "")
     cfg = make_loop_config(store.run_dir.name, lb.bench.bench_id, sample_id, model)
+    # 启动时加载持久化人工提示词（sample 文件 + loop meta）注入 config——让 CLI / run_loop_auto
+    # 路径也带上持久 hints；web runner 的 _cfg_with_round 会用 handle.hints 覆盖此快照（运行中实时改）。
+    cfg["configurable"]["human_hints"] = load_effective_hints(
+        settings.data_root, store, lb.bench.bench_id, sample_id
+    )
     return LoopContext(app, cfg, checkpointer if persist else None)
 
 
@@ -199,34 +205,41 @@ def run_loop_session(
     assert store.meta is not None
     fixed_model = store.meta.model
     loop_id = store.run_dir.name
-    print(f"[run] {bench_id}/{sample_id} | model={fixed_model} | run_id={store.meta.run_id}")
-    state: dict = app.invoke(
-        {"round": 0, "model": fixed_model, "bench_id": bench_id,
-         "sample_id": sample_id, "run_id": loop_id},
-        config=cfg,
-    )
-    round_done = 0
-    for i in range(rounds):
-        verdict = state.get("_verdict")
-        r = state.get("round", 0)
-        rest = verdict.restoration if verdict else None
-        print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
-        print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
-        if prompt_decision is not None:
-            try:
-                decision = prompt_decision(r, verdict).strip() or "continue"
-            except EOFError:
-                decision = "stop"
-        else:
-            decision = "continue"
-        state = app.invoke(Command(resume=decision), config=cfg)
-        round_done = i + 1
-        if state.get("decision") == "stop":
-            print("[run] 已停止。")
-            break
-    store.finish(note=f"跑完 {round_done} 轮")
-    print(f"[run] 完成。trajectory: {store.trajectory_path}")
-    return 0
+    # 跨进程「正在跑」标记：CLI/批量脚本起 loop 时在另一进程，web 内存 LoopRunner
+    # 不知道它；写 running.pid 让 web「运行中」页能识别（finally 必清，SIGKILL 由
+    # run_is_alive 的存活探测兜底）。
+    store.mark_running()
+    try:
+        print(f"[run] {bench_id}/{sample_id} | model={fixed_model} | run_id={store.meta.run_id}")
+        state: dict = app.invoke(
+            {"round": 0, "model": fixed_model, "bench_id": bench_id,
+             "sample_id": sample_id, "run_id": loop_id},
+            config=cfg,
+        )
+        round_done = 0
+        for i in range(rounds):
+            verdict = state.get("_verdict")
+            r = state.get("round", 0)
+            rest = verdict.restoration if verdict else None
+            print(f"\n[round {r}] 还原度={rest:.4f} | 经验见 lessons/conclusions.json")
+            print("  回复 continue 继续下一轮 / stop 停止 / 或输入调整方向:")
+            if prompt_decision is not None:
+                try:
+                    decision = prompt_decision(r, verdict).strip() or "continue"
+                except EOFError:
+                    decision = "stop"
+            else:
+                decision = "continue"
+            state = app.invoke(Command(resume=decision), config=cfg)
+            round_done = i + 1
+            if state.get("decision") == "stop":
+                print("[run] 已停止。")
+                break
+        store.finish(note=f"跑完 {round_done} 轮")
+        print(f"[run] 完成。trajectory: {store.trajectory_path}")
+        return 0
+    finally:
+        store.clear_running()
 
 
 __all__ = [

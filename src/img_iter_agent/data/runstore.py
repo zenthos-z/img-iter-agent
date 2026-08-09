@@ -18,6 +18,7 @@ git 忽略 runs/* 内容（只留 .gitkeep）—— run 是系统产出，不进
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -154,6 +155,34 @@ class RunStore:
         self.meta.extras["last_error"] = msg
         self._write_meta(self.meta)
 
+    # --- 运行态 pid 文件（跨进程）---
+    # CLI/批量脚本起 loop 时在另一进程，web 的内存 LoopRunner 不知道它的存在。
+    # 用 run_dir/running.pid 做跨进程「正在跑」标记，web 据此把它们识别为 running。
+    @property
+    def running_pid_path(self) -> Path:
+        return self.run_dir / "running.pid"
+
+    def mark_running(self) -> None:
+        """写 pid 文件标记本 loop 正在跑（进程退出时由 clear_running 清掉）。
+
+        pid 配时间戳；存活判定见 run_is_alive（含 SIGKILL 后 pid 文件残留的兜底）。
+        """
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.running_pid_path.write_text(
+            json.dumps(
+                {"pid": os.getpid(), "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def clear_running(self) -> None:
+        """结束（正常 / 异常）时清 pid 文件。幂等。"""
+        try:
+            self.running_pid_path.unlink()
+        except FileNotFoundError:
+            pass
+
     # --- index.json（记忆索引骨架；完整查询见 memory/index.py，Step 4）---
     def init_index(self) -> None:
         if not self.index_path.exists():
@@ -171,4 +200,28 @@ class RunStore:
         )
 
 
-__all__ = ["RunMeta", "RunStore"]
+def run_is_alive(run_dir: Path) -> bool:
+    """run_dir/running.pid 存在且其 pid 进程仍存活 → True。
+
+    用于 web 识别「由 CLI / 批量脚本起、web 内存 LoopRunner 不知道」的 loop。
+    进程已死（含被 SIGKILL、finally 没跑到留下的孤儿 pid 文件）→ 判定未运行，
+    避免崩溃的 loop 永远卡在「运行中」。
+    """
+    p = Path(run_dir) / "running.pid"
+    if not p.exists():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        pid = int(data["pid"]) if isinstance(data, dict) else int(data)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return False
+    try:
+        os.kill(pid, 0)  # sig=0：只探测存活，不发信号
+    except ProcessLookupError:
+        return False  # 进程已死 → 残留文件，视为未运行
+    except PermissionError:
+        return True  # 别的用户/无权限探测的进程，认为存活
+    return True
+
+
+__all__ = ["RunMeta", "RunStore", "run_is_alive"]

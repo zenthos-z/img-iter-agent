@@ -18,7 +18,7 @@ from langchain_core.tools import BaseTool, tool
 from ...data.benchmark import Sample
 from ...generation.base import GenRequest, ModelFamily, SizeSpec
 from ...generation.router import Router
-from ...memory.experience import load_general_experience
+from ...memory.experience import load_general_experience, render_experience_skill_md
 from ...memory.knowledge import load_conclusions
 
 
@@ -136,28 +136,29 @@ def make_query_experience_tool(*, run_dir: Path) -> BaseTool:
 
 def make_query_general_experience_tool(data_root: Path | None, bench_id: str | None) -> BaseTool:
     @tool
-    def query_general_experience(dim: str = "") -> str:
+    def query_general_experience(dim: str = "", category: str = "") -> str:
         """查询【跨 loop 通用经验库】（多 run 蒸馏出的 dos/donts，跨题复用）。
 
         比 query_experience 更通用：从许多 loop 综合出的先验知识，本题首次跑也用得上。
+        只返回 active 经验（refuted/superseded/archived 不消费）。
         Args:
-            dim: 可选，只看某维度（或 'general'）；留空看全部。
-        无通用经验时返回提示（可先 run 多个 sample 并 `img-iter summarize` 生成）。
+            dim: 可选，只看某维度（如 'consistency'）。
+            category: 可选，只看某粗类（如 '材质色彩'，对应 system prompt 索引里的类目）。
+        无匹配经验时返回提示（可在总览点「重新蒸馏」生成）。
         """
         if data_root is None or bench_id is None:
             return "（跨 loop 经验未配置：无 data_root/bench_id）"
         exp = load_general_experience(data_root, bench_id)
-        lessons = [l for l in exp.lessons if (not dim or l.dim == dim)] if dim else exp.lessons
+        lessons = [l for l in exp.lessons if l.status == "active"]
+        if dim:
+            lessons = [l for l in lessons if l.dim == dim]
+        if category:
+            lessons = [l for l in lessons if (l.category or "(未分类)") == category]
         if not lessons:
-            return "（暂无跨 loop 通用经验；可先 run 多个 sample 并 `img-iter summarize` 生成）"
-        lines = [f"summary: {exp.summary or '(无)'}"]
-        for l in lessons:
-            dos = "; ".join(l.dos) or "(无)"
-            donts = "; ".join(l.donts) or "(无)"
-            lines.append(
-                f"- [{l.dim}] {l.insight} (conf={l.confidence:.2f}) dos: {dos} | donts: {donts}"
-            )
-        return "\n".join(lines)
+            return "（暂无匹配的跨 loop 通用经验；可在总览点「重新蒸馏」生成）"
+        return render_experience_skill_md(
+            exp.model_copy(update={"lessons": lessons}), frontmatter=False
+        ).strip()
 
     return query_general_experience
 
@@ -177,9 +178,11 @@ def make_generator_tools(
 
     query_experience = 本 loop 单题经验；query_general_experience = 跨 loop 通用经验（先验）。
     """
-    # 参考：image_edit 模式用 target 作风格锚
+    # 参考：image_edit/multiview 用 target 作风格锚；style_transfer 不传参考给生图 API
+    # （参考只通过 _build_user_content 给 agent 看，避免固定参考锚定生图 → 同质化）
     reference_images: list[Path] = []
-    if sample.target_path.exists():
+    mode = sample.spec.task.mode if sample.spec.task else None
+    if mode in ("image_edit", "multiview") and sample.target_path.exists():
         reference_images = [sample.target_path]
     # 三视图单图 → 宽幅，避免 1:1 把三个视图挤变形（比例失真）
     layout = (sample.spec.task.output.get("layout")

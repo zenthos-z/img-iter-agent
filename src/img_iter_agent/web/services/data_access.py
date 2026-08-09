@@ -11,12 +11,15 @@ from pathlib import Path
 
 from ...config import Settings, get_settings
 from ...data.benchmark import load_benchmark
-from ...data.runstore import RunStore
+from ...data.runstore import RunStore, run_is_alive
 from ...data.trajectory import TrajectoryReader
 from ...memory.schema import AttemptRecord, CriticVerdict
 from ..models import (
     BenchOverview,
     DimensionScoreOut,
+    DistilledLessonOut,
+    GeneralExperienceOut,
+    LessonEdit,
     LoopDetail,
     LoopSummary,
     OverviewResponse,
@@ -67,17 +70,20 @@ def load_human_ranks(settings: Settings, sample_id: str) -> dict[str, float]:
 def _verdict_to_out(verdict: CriticVerdict) -> VerdictOut:
     dims: list[DimensionScoreOut] = []
     for d in verdict.dimensions:
-        failed = (
-            [{"id": it.id, "reason": it.reason} for it in (d.items or []) if not it.passed]
+        # 二分维度：透出全量逐项判定（含通过项 + reason），前端逐项 ✓/✗ 展示。
+        items = (
+            [{"id": it.id, "passed": it.passed, "reason": it.reason} for it in (d.items or [])]
             if d.scoring_type == "binary"
             else []
         )
+        failed = [it for it in items if not it["passed"]]
         dims.append(
             DimensionScoreOut(
                 dim=d.dim,
                 scoring_type=d.scoring_type,
                 value=float(d.value),
                 raw=d.raw,
+                items=items,
                 failed_items=failed,
             )
         )
@@ -157,8 +163,133 @@ def _loop_bench_id(run_dir: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 通用经验（跨 loop 蒸馏）
+# ---------------------------------------------------------------------------
+
+
+def build_general_experience(
+    bench_id: str, *, settings: Settings | None = None
+) -> GeneralExperienceOut:
+    """读某 bench 的跨 loop 通用经验（general.json）→ API 模型。无则空。"""
+    from ...memory.experience import load_general_experience
+
+    settings = settings or get_settings()
+    exp = load_general_experience(settings.data_root, bench_id)
+    return GeneralExperienceOut(
+        bench_id=exp.bench_id,
+        summary=exp.summary,
+        lessons=[DistilledLessonOut(**ls.model_dump()) for ls in exp.lessons],
+        source_runs=list(exp.source_runs),
+        updated_at=exp.updated_at or None,
+        scene=exp.scene,
+        dimensions=list(exp.dimensions),
+        bench_description=exp.bench_description,
+        categories=list(exp.categories),
+    )
+
+
+def mutate_lesson(
+    bench_id: str,
+    lesson_id: str,
+    *,
+    edit: LessonEdit | None = None,
+    refute_reason: str | None = None,
+    archive: bool = False,
+    settings: Settings | None = None,
+) -> GeneralExperienceOut | None:
+    """人工改/标无效/归档一条 lesson：load → 按 id 改 → save（自动重渲染 SKILL.md）。
+
+    edit 优先；其次 refute_reason（→refuted）；再次 archive（→archived）。找不到 id 返回 None。
+    """
+    from ...memory.experience import load_general_experience, save_general_experience
+
+    settings = settings or get_settings()
+    exp = load_general_experience(settings.data_root, bench_id)
+    target = next((l for l in exp.lessons if l.id == lesson_id), None)
+    if target is None:
+        return None
+    if edit is not None:
+        if edit.insight is not None:
+            target.insight = edit.insight
+        if edit.dos is not None:
+            target.dos = list(edit.dos)
+        if edit.donts is not None:
+            target.donts = list(edit.donts)
+        if edit.category is not None:
+            target.category = edit.category
+        if edit.applies_when in ("construction", "fix", "always"):
+            target.applies_when = edit.applies_when
+        if edit.confidence is not None:
+            target.confidence = max(0.0, min(1.0, float(edit.confidence)))
+        target.status = "active"  # 编辑视为重新启用
+        target.retire_reason = ""
+        target.successor_id = ""
+    if refute_reason is not None:
+        target.status = "refuted"
+        target.retire_reason = refute_reason or "人工标无效"
+    elif archive:
+        target.status = "archived"
+        if not target.retire_reason:
+            target.retire_reason = "人工归档"
+    save_general_experience(settings.data_root, bench_id, exp)
+    return build_general_experience(bench_id, settings=settings)
+
+
+# ---------------------------------------------------------------------------
 # 总览（屏①）
 # ---------------------------------------------------------------------------
+
+
+def _detect_running_loop_ids() -> set[str]:
+    """best-effort 扫描活着的 run_loop_auto.py 进程，反解出正在跑的 loop_id 集合。
+
+    兜底用：CLI/批量脚本起 loop 在另一进程，run 目录可能没有 running.pid（如起于本机制
+    之前）。只要进程还在跑，就能从命令行参数反解 loop_id。任何异常都返回空集（绝不影响总览）。
+    loop_id 拼法复刻 .claude/skills/img-iter-ops/scripts/run_loop_auto.py：--loop-id 优先，
+    否则 <bench>-<sample>-<tag 或 'auto'>。
+    """
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-ax", "-ww", "-o", "command="],
+            capture_output=True, text=True, timeout=3,
+        ).stdout
+    except Exception:  # noqa: BLE001  ps 不可用/超时 → 跳过，靠 pid 文件
+        return set()
+
+    ids: set[str] = set()
+    for line in out.splitlines():
+        if "run_loop_auto.py" not in line:
+            continue
+        toks = line.split()
+        bench = sample = tag = loop_id = None
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            val = toks[i + 1] if i + 1 < len(toks) else None
+            if t == "--bench" and val:
+                bench = val
+                i += 2
+                continue
+            if t == "--sample" and val:
+                sample = val
+                i += 2
+                continue
+            if t == "--tag" and val:
+                tag = val
+                i += 2
+                continue
+            if t == "--loop-id" and val:
+                loop_id = val
+                i += 2
+                continue
+            i += 1
+        if loop_id:
+            ids.add(loop_id)
+        elif bench and sample and not sample.startswith("$"):  # 跳过未展开的 $s（shell 文本）
+            ids.add(f"{bench}-{sample}-{tag or 'auto'}")
+    return ids
 
 
 def build_overview(settings: Settings | None = None) -> OverviewResponse:
@@ -201,6 +332,16 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
     # 预读 bench 描述
     bench_desc_cache: dict[str, str | None] = {}
 
+    # 实时 loop 运行态：loop_runner 单例的内存 handle.phase。合并到每个 loop 的 status，
+    # 否则后台正跑的 loop 在总览里只会是 unknown → 前端「运行中」页过滤不到（空白）。
+    # （延迟导入避开循环依赖，与本函数内其它延迟导入风格一致。）
+    from .loop_runner import get_runner
+
+    runner = get_runner()
+    # 外部进程（CLI/批量脚本）正在跑的 loop_id 集合：ps 扫描兜底（含修复前已起跑、目录
+    # 无 running.pid 的 loop）。run_is_alive(pid 文件存活) 在下面 per-loop 再判一次。
+    live_ext = _detect_running_loop_ids()
+
     for ld in loop_dirs:
         bench_id = _loop_bench_id(ld)
         if not bench_id:
@@ -218,6 +359,27 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
         last = restorations[-1] if restorations else None
         thumbnail = traces[-1].output_image_refs[0] if traces and traces[-1].output_image_refs else None
 
+        # status 合并优先级：
+        #   1) web LoopRunner 内存态（web 自己起/续的 loop，含 awaiting_review 等暂停态）
+        #   2) 外部进程在跑：ps 扫到 run_loop_auto.py 反解出该 loop_id，或 run_dir/running.pid
+        #      存活（CLI/批量起，web 内存不知道；ps 兜底也覆盖修复前已起跑、目录无 pid 文件的 loop）
+        #   3) 盘上 meta.finished_at → finished
+        #   4) 否则 unknown
+        handle = runner.get(ld.name)
+        if handle is not None and handle.phase in (
+            "running",
+            "awaiting_review",
+            "error",
+            "finished",
+        ):
+            status = handle.phase
+        elif ld.name in live_ext or run_is_alive(ld):
+            status = "running"
+        elif meta and meta.finished_at:
+            status = "finished"
+        else:
+            status = "unknown"
+
         has_checkpoint = (ld / "checkpoints.sqlite").exists()
 
         loop_sum = LoopSummary(
@@ -230,7 +392,7 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
             n_traces=len(traces),
             best_restoration=best,
             last_restoration=last,
-            status="finished" if (meta and meta.finished_at) else "unknown",
+            status=status,
             has_checkpoint=has_checkpoint,
             thumbnail=thumbnail,
         )
@@ -256,6 +418,14 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
 
     # 每个 sample 的聚合统计 + 待打分数
     for bench in benches.values():
+        # 跨 loop 通用经验条数（总览入口 badge；只数 active——实际被消费的）
+        try:
+            from ...memory.experience import load_general_experience
+
+            gen = load_general_experience(settings.data_root, bench.bench_id)
+            bench.general_experience_count = sum(1 for l in gen.lessons if l.status == "active")
+        except Exception:  # noqa: BLE001
+            bench.general_experience_count = 0
         for sample in bench.samples:
             n = sum(l.n_traces for l in sample.loops)
             sample.n_traces = n
@@ -335,6 +505,9 @@ def build_loop_detail(
     if status_extra:  # loop_runner 的实时状态覆盖
         status = status_extra.get("status", status)
         round_now = status_extra.get("round", round_now)
+    elif status == "unknown" and run_is_alive(run_dir):
+        # 非 web 起的 loop（CLI/批量脚本，无内存 handle）但进程仍在跑 → running
+        status = "running"
 
     return LoopDetail(
         loop_id=loop_id,

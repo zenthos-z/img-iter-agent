@@ -1,15 +1,10 @@
-"""构造 deepagents 所需的真正 BaseChatModel。
+"""构造 deepagents 所需的 BaseChatModel。
 
-Generator/Critic 改造成 tool-using agent（`create_deep_agent`）后，需要一个支持
-`bind_tools` / `with_structured_output` 的 LangChain `BaseChatModel`——旧的
-`OpenAiCompatLlm.complete()`（进文本出文本）不够用。
-
-这里用 `langchain_openai.ChatOpenAI` 指向 dmxapi 的 OpenAI 兼容端点（`{dmxapi_host}/v1`，
-与 `OpenAiCompatLlm` 同一个端点）。ChatOpenAI 是原生 langchain Runnable，LangSmith 自动
-把每次调用上报为 `run_type="llm"` run（无需 `langsmith.wrap_openai`），且嵌套在调用方的
-`RunnableConfig` 父 run 之下。
-
-`*_protocol` 字段目前忽略（dmxapi 走 OpenAI 兼容端点最通用；与 `OpenAiCompatLlm` 行为一致）。
+deepagent（`create_deep_agent`）的 `model=` 需要一个支持 `bind_tools` /
+`with_structured_output` 的 LangChain `BaseChatModel`。这里用 `langchain_openai.ChatOpenAI`
+指向 dmxapi 的 OpenAI 兼容端点（`{dmxapi_host}/v1`）。ChatOpenAI 是原生 langchain Runnable，
+LangSmith 自动把每次调用上报为 `run_type="llm"` run（无需 `langsmith.wrap_openai`），且嵌套在
+调用方的 `RunnableConfig` 父 run 之下。
 """
 
 from __future__ import annotations

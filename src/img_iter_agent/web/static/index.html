@@ -3,30 +3,70 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>img-iter-agent 打分台</title>
-<link rel="stylesheet" href="/assets/app.css">
+<title>img-iter-agent · 打分台</title>
+<link rel="stylesheet" href="/assets/app.css?v=20250809c">
 </head>
 <body>
-<header class="topbar">
-  <a class="brand" href="#/">img-iter-agent · 打分台</a>
-  <nav>
-    <a href="#/">总览</a>
-    <a href="#/config">Agent 设置</a>
-  </nav>
-</header>
-<main id="app"></main>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="主导航">
+    <a class="brand" href="#/">
+      <span class="brand-dot"></span>
+      img-iter-agent
+    </a>
+    <nav class="nav-section" aria-label="主要视图">
+      <div class="nav-section-title">工作台</div>
+      <a class="nav-item" href="#/" data-nav="overview">
+        <span>总览</span>
+        <span class="count" id="nav-pending-count" hidden>0</span>
+      </a>
+      <a class="nav-item" href="#/running" data-nav="running">
+        <span>运行中</span>
+        <span class="count" id="nav-running-count" hidden>0</span>
+      </a>
+      <a class="nav-item" href="#/scoring" data-nav="scoring">人工排序</a>
+    </nav>
+    <nav class="nav-section" aria-label="配置">
+      <div class="nav-section-title">系统</div>
+      <a class="nav-item" href="#/config" data-nav="config">Agent 设置</a>
+    </nav>
+    <div class="sidebar-foot">
+      <a class="nav-item" href="https://github.com" target="_blank" rel="noopener">帮助文档</a>
+    </div>
+  </aside>
 
-<!-- 单个 trace 详情 modal -->
-<div id="trace-modal" class="modal hidden">
+  <div class="main">
+    <header class="topbar" id="topbar">
+      <h1 id="page-title">总览</h1>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+    <main class="page-content" id="app"></main>
+  </div>
+</div>
+
+<!-- 新 loop 弹窗 -->
+<div id="modal" class="modal hidden">
   <div class="modal-backdrop" data-close></div>
-  <div class="modal-body" id="trace-modal-body"></div>
+  <div class="modal-body" id="modal-body"></div>
 </div>
 
 <!-- 图片 lightbox -->
 <div id="lightbox" class="lightbox hidden" data-close>
-  <img id="lightbox-img" alt="">
+  <div class="lightbox-backdrop" data-close></div>
+  <div class="lightbox-stage" id="lightbox-stage">
+    <img id="lightbox-img" alt="" draggable="false">
+  </div>
+  <div class="lightbox-controls">
+    <button class="lightbox-btn" id="lb-zoom-out" title="缩小">−</button>
+    <button class="lightbox-btn wide" id="lb-zoom-reset" title="适应屏幕">适应</button>
+    <button class="lightbox-btn" id="lb-zoom-in" title="放大">＋</button>
+    <button class="lightbox-btn" id="lb-close" title="关闭 (Esc)">✕</button>
+  </div>
+  <div class="lightbox-hint">滚轮缩放 · 拖拽平移 · 点击背景关闭</div>
 </div>
 
-<script src="/assets/app.js"></script>
+<!-- Toast 容器 -->
+<div class="toast-stack" id="toast-stack"></div>
+
+<script src="/assets/app.js?v=20250809c"></script>
 </body>
 </html>

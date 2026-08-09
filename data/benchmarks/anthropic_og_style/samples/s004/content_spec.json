@@ -1,0 +1,152 @@
+{
+  "sample_id": "s004",
+  "product": "project-deal 概念封面",
+  "category": "illustration_cover",
+  "_element_evolution": {
+    "status": "v1_candidate",
+    "note": "spirit_* 为系统提炼的冷启动候选；v3 已把判定从具体参数改为定性风格特征(响应'构图由概念决定')，仍随经验闭环演化(策略文档§6)。"
+  },
+  "task": {
+    "mode": "style_transfer",
+    "input_assets": [
+      "reference_style/hand-abacus.png",
+      "reference_style/hand-bricks.png",
+      "reference_style/hand-flower.png",
+      "reference_style/hand-knobs.png",
+      "reference_style/hand-knot.png",
+      "reference_style/hand-shapearrow.png",
+      "reference_style/object-laptop.png"
+    ],
+    "instruction": "【任务】依据文章《Project Deal》的核心概念——Claude 运营的二手市场实验：替同事买卖、议价、博弈，测 agent 的经济行为与谈判能力，用这套极简手绘插画语言原创一张封面。\n\n【参考集】你将看到 7 张同风格的参考图（input_assets）。学它们的**风格共性**（极简手绘、单色低饱和背景、大面积留白、粗黑墨线、抽象几何化造型、隐喻性表达），**不要复制任何一个的具体 motif**（见 forbidden_motifs）。注意参考集本身就有多种手姿势 + 一个无手纯物件变体(object-laptop)——说明这套风格允许 diverse 构图。\n\n【关键：构图由概念决定，不被模板框死】\n- 主体可以是抽象手与几何物的互动，**也可以是无手纯物件**——由哪个更契合文章概念决定。\n- 手的位置/姿势/指数量、物件类型与数量、背景色、留白多少，**全部由你根据文章概念自由决定**，没有固定模板。\n- 唯一目标：用这套极简手绘语言，把文章核心概念表达得精准、有隐喻、有神韵。\n\n【风格神韵（保留约束）】\n单色低饱和背景（灰青绿/柔粉/浅紫灰/中蓝任选）、大面积留白、粗黑墨线（手工粗细变化）、抽象几何化造型、整体宁静轻盈。禁止：文字、阴影、渐变多色、写实皮肤/指甲纹理。\n\n【结构正确性（重要）】抽象与夸张允许，但**保持结构合理**：手指数正常(≤5)、关节逻辑合理、部件不多余不缺失、无无规律错乱。**抽象≠无逻辑**——畸形/多指/错乱结构会被判失败。\n\n【产出】除生图外，必须用 meaning 字段输出一句话（≤40 字）图片含义解释：这张图如何用视觉隐喻表达上述文章概念。",
+    "output": {
+      "layout": "single_cover",
+      "background": "single_low_saturation_color",
+      "size": "2K"
+    },
+    "article_topic": "Claude 运营的二手市场实验：替同事买卖、议价、博弈，测 agent 的经济行为与谈判能力"
+  },
+  "constraints": {
+    "must_keep": [
+      "极简手绘语言(单色背景/大面积留白/粗黑墨线/抽象几何造型)",
+      "隐喻性表达文章概念",
+      "主体造型抽象化(非写实)"
+    ],
+    "may_change": [
+      "手的有无/位置/姿势/指数",
+      "物件类型/数量/几何组合",
+      "背景色(4色任选)",
+      "留白比例/构图布局"
+    ],
+    "must_avoid": [
+      "复制任一参考 motif(见 forbidden_motifs)",
+      "写实解剖/皮肤/指甲纹理",
+      "阴影/高光/透视/渐变多色",
+      "文字/图标/品牌 Logo/装饰边框",
+      "矢量均匀描边",
+      "结构性错误(多指/关节错乱/无规律扭曲/部件多余缺失——抽象允许夸张但须结构合理)"
+    ],
+    "forbidden_motifs": [
+      "hand-abacus: 手托竖纸+三行黑珠串(每行三珠)",
+      "hand-bricks: 手将白纸斜插入三层砖块缝隙",
+      "hand-flower: 手托八边形白花、花茎穿掌心",
+      "hand-knobs: 手指触两枚水平八边形旋钮",
+      "hand-knot: 手捏黑线在八边形白底上形成三重绳结",
+      "hand-shapearrow: 手拉黑线接几何组(三角+八边形+方形)、线带箭头",
+      "object-laptop: 蓝框笔电屏中黑线钥匙孔(无手变体)"
+    ]
+  },
+  "checklist": {
+    "spirit_hand_form": [
+      {
+        "id": "spirit_hand_form-1",
+        "check": "主体造型为抽象极简风格：粗黑墨线勾勒 + 几何化简化，非写实解剖/纹理"
+      },
+      {
+        "id": "spirit_hand_form-2",
+        "check": "构图服务于文章概念——手的有无/位置/姿势、物件类型数量均无模板要求(参考集本身有多样手姿势 + 无手变体)"
+      },
+      {
+        "id": "spirit_hand_form-3",
+        "check": "结构合理(抽象允许夸张，但无结构错误)：手指数正常≤5、关节逻辑合理、部件不多余不缺失、无无规律错乱——抽象≠无逻辑"
+      }
+    ],
+    "spirit_ink_line": {
+      "_scoring": "continuous: 墨线质感神韵",
+      "points": [
+        "粗黑墨线，有手工粗细变化(非矢量均匀线)",
+        "线条连贯构成主体轮廓",
+        "仅轮廓线，无闭合填黑"
+      ]
+    },
+    "spirit_geometric_object": {
+      "_scoring": "continuous: 几何化造型神韵",
+      "points": [
+        "物件/几何元素为极简几何化(去纹理/阴影/透视)",
+        "填充米白/奶油白(非纯白)",
+        "主体造型抽象统一"
+      ]
+    },
+    "spirit_negative_space": {
+      "_scoring": "continuous: 留白神韵",
+      "points": [
+        "大面积留白，构图通透不拥挤",
+        "主体集中，背景单色干净",
+        "无多余装饰(文字/图标/边框)"
+      ]
+    },
+    "spirit_symbolic_interaction": [
+      {
+        "id": "spirit_symbolic_interaction-1",
+        "check": "主体间存在隐喻性关系表达概念(手物互动 或 纯物件构图本身承载隐喻)"
+      },
+      {
+        "id": "spirit_symbolic_interaction-2",
+        "check": "构图具方向性/语义，非随机堆砌"
+      }
+    ],
+    "originality_motif": [
+      {
+        "id": "originality_motif-1",
+        "check": "主体 motif 与 7 个参考 motif 均非明显雷同",
+        "anchor": "对照 reference_motifs"
+      },
+      {
+        "id": "originality_motif-2",
+        "check": "未直接复制某个参考的手+物组合",
+        "anchor": "对照 reference_motifs"
+      },
+      {
+        "id": "originality_motif-3",
+        "check": "构图思路与参考集有明显区分",
+        "anchor": "对照 reference_motifs"
+      }
+    ],
+    "originality_degree": {
+      "_scoring": "continuous: motif 构思在参考空间之外的新颖度",
+      "points": [
+        "motif 构思是否提出参考集之外的新隐喻",
+        "主体关系/构图的差异程度",
+        "整体与参考的区分度"
+      ]
+    },
+    "concept_expression": [
+      {
+        "id": "concept_expression-1",
+        "check": "图的视觉隐喻与 Generator 的 meaning 一致(图确实表达了它声称的概念)",
+        "anchor": "对照 meaning"
+      },
+      {
+        "id": "concept_expression-2",
+        "check": "图+meaning 共同清晰表达文章核心概念『Claude 运营的二手市场实验：替同事买卖、议价、博弈，测 agent 的经济行为与谈判能力』(非泛主题)",
+        "anchor": "对照文章概念：Project Deal"
+      }
+    ],
+    "concept_clarity": {
+      "_scoring": "continuous: 概念隐喻清晰度",
+      "points": [
+        "隐喻与文章核心概念(Project Deal)的契合度",
+        "构图表达概念的清晰度"
+      ]
+    }
+  }
+}

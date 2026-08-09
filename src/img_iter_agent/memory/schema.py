@@ -128,6 +128,7 @@ class ContentSpecTask(BaseModel):
     input_assets: list[str] = Field(default_factory=list)
     instruction: str | None = None
     output: dict = Field(default_factory=dict)  # views/background/size 等（自由格式，按需读）
+    article_topic: str | None = None  # 风格迁移场景：文章核心概念（诊断/展示用；评判从 checklist 读）
 
 
 class ContentSpec(BaseModel):
@@ -143,6 +144,7 @@ class ContentSpec(BaseModel):
     product: str | None = None
     category: str | None = None
     task: ContentSpecTask | None = None
+    constraints: dict = Field(default_factory=dict)  # must_keep/may_change/must_avoid/forbidden_motifs（generator 注入用）
     checklist: dict[str, ChecklistValue] = Field(default_factory=dict)
     anchor_for: list[str] = Field(default_factory=list)
 
@@ -254,6 +256,7 @@ class AttemptRecord(BaseModel):
     # 多策略基建：配合 test_variable 一起记录"该策略本轮具体改了什么"。
     # 当前只有 prompt 策略会填；未来 reference_images/size 策略扩展时也走这里。
     delta_note: str | None = None
+    meaning: str | None = None  # 一句话图片含义解释（风格神韵迁移；Generator 产出，供 Critic 判概念表达）
 
     # --- 经验链接 ---
     # 指向该 sample 的经验知识库（lessons/conclusions.json），统一一份而非单轮 MD。

@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>loop 详情 · 紧凑模式</title>
+    <style id="theme-vars">
+:root {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #fafafa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --success: #16a34a;
+  --success-subtle: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-text: #15803d;
+  --warn: #d97706;
+  --warn-subtle: #fffbeb;
+  --warn-border: #fde68a;
+  --warn-text: #b45309;
+  --radius: 0.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 1px 0 rgba(0, 0, 0, 0.03);
+  --shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 20px -6px rgba(0, 0, 0, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
+  --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  --sidebar-width: 220px;
+}
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --radius-sm: var(--radius-sm);
+    --radius-md: var(--radius-md);
+    --radius-lg: var(--radius-lg);
+  }
+  @layer base {
+    body { background: var(--background); color: var(--foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--background); }
+      .text-background { color: var(--background); }
+      .border-background { border-color: var(--background); }
+      .ring-background { --tw-ring-color: var(--background); }
+      .bg-foreground { background-color: var(--foreground); }
+      .text-foreground { color: var(--foreground); }
+      .border-foreground { border-color: var(--foreground); }
+      .ring-foreground { --tw-ring-color: var(--foreground); }
+      .bg-card { background-color: var(--card); }
+      .text-card { color: var(--card); }
+      .border-card { border-color: var(--card); }
+      .ring-card { --tw-ring-color: var(--card); }
+      .bg-card-foreground { background-color: var(--card-foreground); }
+      .text-card-foreground { color: var(--card-foreground); }
+      .border-card-foreground { border-color: var(--card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--card-foreground); }
+      .bg-popover { background-color: var(--popover); }
+      .text-popover { color: var(--popover); }
+      .border-popover { border-color: var(--popover); }
+      .ring-popover { --tw-ring-color: var(--popover); }
+      .bg-popover-foreground { background-color: var(--popover-foreground); }
+      .text-popover-foreground { color: var(--popover-foreground); }
+      .border-popover-foreground { border-color: var(--popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--popover-foreground); }
+      .bg-primary { background-color: var(--primary); }
+      .text-primary { color: var(--primary); }
+      .border-primary { border-color: var(--primary); }
+      .ring-primary { --tw-ring-color: var(--primary); }
+      .bg-primary-foreground { background-color: var(--primary-foreground); }
+      .text-primary-foreground { color: var(--primary-foreground); }
+      .border-primary-foreground { border-color: var(--primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--primary-foreground); }
+      .bg-secondary { background-color: var(--secondary); }
+      .text-secondary { color: var(--secondary); }
+      .border-secondary { border-color: var(--secondary); }
+      .ring-secondary { --tw-ring-color: var(--secondary); }
+      .bg-secondary-foreground { background-color: var(--secondary-foreground); }
+      .text-secondary-foreground { color: var(--secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--secondary-foreground); }
+      .bg-muted { background-color: var(--muted); }
+      .text-muted { color: var(--muted); }
+      .border-muted { border-color: var(--muted); }
+      .ring-muted { --tw-ring-color: var(--muted); }
+      .bg-muted-foreground { background-color: var(--muted-foreground); }
+      .text-muted-foreground { color: var(--muted-foreground); }
+      .border-muted-foreground { border-color: var(--muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--muted-foreground); }
+      .bg-accent { background-color: var(--accent); }
+      .text-accent { color: var(--accent); }
+      .border-accent { border-color: var(--accent); }
+      .ring-accent { --tw-ring-color: var(--accent); }
+      .bg-accent-foreground { background-color: var(--accent-foreground); }
+      .text-accent-foreground { color: var(--accent-foreground); }
+      .border-accent-foreground { border-color: var(--accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--accent-foreground); }
+      .bg-destructive { background-color: var(--destructive); }
+      .text-destructive { color: var(--destructive); }
+      .border-destructive { border-color: var(--destructive); }
+      .ring-destructive { --tw-ring-color: var(--destructive); }
+      .bg-destructive-foreground { background-color: var(--destructive-foreground); }
+      .text-destructive-foreground { color: var(--destructive-foreground); }
+      .border-destructive-foreground { border-color: var(--destructive-foreground); }
+      .ring-destructive-foreground { --tw-ring-color: var(--destructive-foreground); }
+      .bg-border { background-color: var(--border); }
+      .text-border { color: var(--border); }
+      .border-border { border-color: var(--border); }
+      .ring-border { --tw-ring-color: var(--border); }
+      .bg-input { background-color: var(--input); }
+      .text-input { color: var(--input); }
+      .border-input { border-color: var(--input); }
+      .ring-input { --tw-ring-color: var(--input); }
+      .bg-ring { background-color: var(--ring); }
+      .text-ring { color: var(--ring); }
+      .border-ring { border-color: var(--ring); }
+      .ring-ring { --tw-ring-color: var(--ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+<div class="app-shell">
+  <aside class="sidebar" aria-label="主导航">
+    <a class="brand" href="overview.html" data-dom-id="nav-brand"><span class="brand-dot"></span>img-iter-agent</a>
+    <nav class="nav-section" aria-label="主要视图">
+      <div class="nav-section-title">工作台</div>
+      <a class="nav-item" href="overview.html" data-dom-id="nav-overview"><span>总览</span><span class="count">3</span></a>
+      <a class="nav-item" href="running.html" data-dom-id="nav-running">运行中</a>
+      <a class="nav-item" href="scoring.html" data-dom-id="nav-scoring">人工排序</a>
+    </nav>
+    <nav class="nav-section" aria-label="配置">
+      <div class="nav-section-title">系统</div>
+      <a class="nav-item" href="config.html" data-dom-id="nav-config">Agent 设置</a>
+    </nav>
+    <div class="sidebar-foot"><a class="nav-item" href="#">帮助文档</a></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1>loop-2025-s001</h1>
+        <div class="loop-subtitle"><span class="dot running"></span>运行中 · s001 木质扶手椅 · furniture_product_whitebg</div>
+      </div>
+      <div class="topbar-actions">
+        <a class="btn btn-secondary" href="scoring.html" data-dom-id="btn-goto-scoring">去人工排序</a>
+        <button class="btn btn-primary" data-dom-id="btn-continue-loop">继续跑</button>
+        <button class="btn btn-danger" data-dom-id="btn-stop-loop">停止 loop</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+      <div class="compact-layout">
+        <section class="hero-image card" aria-label="当前最佳">
+          <div class="image-preview" role="img" aria-label="当前最佳图片预览"></div>
+          <div class="hero-meta">
+            <div class="hero-title">
+              <span class="status-pill"><span class="dot running"></span>运行中</span>
+              <div>
+                <h2>当前最佳</h2>
+                <div class="hero-sample">s001 木质扶手椅 · <span class="mono" id="hero-iter">#5</span></div>
+              </div>
+            </div>
+            <div class="hero-stat">
+              <span>得分</span>
+              <strong id="hero-score">0.82</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="card bench-section" aria-label="迭代历史">
+          <div class="bench-header">
+            <h2>迭代历史</h2>
+            <span class="badge badge-primary">第 5 轮</span>
+          </div>
+          <div class="trace-strip no-scrollbar" role="list" aria-label="trace 缩略图">
+            <div class="trace-item current selected" data-trace="5" tabindex="0" role="button" aria-label="查看第 5 轮详情">
+              <span class="trace-thumb"></span>
+              <span class="trace-idx">#5</span>
+              <span class="trace-score">0.82</span>
+              <span class="trace-tag best">最佳</span>
+            </div>
+            <div class="trace-item" data-trace="4" tabindex="0" role="button" aria-label="查看第 4 轮详情">
+              <span class="trace-thumb"></span>
+              <span class="trace-idx">#4</span>
+              <span class="trace-score">0.79</span>
+            </div>
+            <div class="trace-item" data-trace="3" tabindex="0" role="button" aria-label="查看第 3 轮详情">
+              <span class="trace-thumb"></span>
+              <span class="trace-idx">#3</span>
+              <span class="trace-score">0.76</span>
+            </div>
+            <div class="trace-item" data-trace="2" tabindex="0" role="button" aria-label="查看第 2 轮详情">
+              <span class="trace-thumb"></span>
+              <span class="trace-idx">#2</span>
+              <span class="trace-score">0.71</span>
+            </div>
+            <div class="trace-item" data-trace="1" tabindex="0" role="button" aria-label="查看第 1 轮详情">
+              <span class="trace-thumb"></span>
+              <span class="trace-idx">#1</span>
+              <span class="trace-score">0.68</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-padded review-card">
+          <h2>本轮评审</h2>
+          <p>AI 评判认为本轮输出在构图稳定性和材质一致性上优于上一轮，建议继续优化。</p>
+          <div class="review-actions">
+            <button class="btn btn-secondary btn-sm" data-dom-id="btn-review-continue">继续优化</button>
+            <button class="btn btn-primary btn-sm" data-dom-id="btn-review-stop">停止并采用</button>
+          </div>
+        </section>
+
+        <details class="bench-section card">
+          <summary class="bench-header">
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <h2>Prompt 日志</h2>
+            <span class="expand-btn"><span class="expand-label">展开</span></span>
+          </summary>
+          <div class="log-list">
+            <pre id="prompt-log">木质扶手椅，白色背景，产品摄影，柔和漫射光，简洁构图，高细节，8k</pre>
+          </div>
+        </details>
+
+        <details class="bench-section card">
+          <summary class="bench-header">
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <h2>迭代对比</h2>
+            <span class="expand-btn"><span class="expand-label">展开</span></span>
+          </summary>
+          <div class="compare-bar">
+            <select id="compare-base" class="select-sm"></select>
+            <span class="muted">vs</span>
+            <select id="compare-target" class="select-sm"></select>
+          </div>
+          <div class="compare-body">
+            <div class="compare-col">
+              <div class="compare-title" id="compare-base-title">#4 Prompt</div>
+              <div class="compare-prompt" id="compare-base-prompt"></div>
+            </div>
+            <div class="compare-col">
+              <div class="compare-title" id="compare-target-title">#5 Prompt</div>
+              <div class="compare-prompt" id="compare-target-prompt"></div>
+            </div>
+          </div>
+          <div class="diff-view" id="diff-view"></div>
+          <div class="diff-summary" id="diff-summary"></div>
+        </details>
+
+        <details class="bench-section card">
+          <summary class="bench-header">
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <h2>Critic 维度详情</h2>
+            <div class="eval-header-inline">
+              <span class="eval-iter" id="eval-iter">#5</span>
+              <span class="eval-score" id="eval-score">0.82</span>
+            </div>
+          </summary>
+          <div class="eval-dims" id="eval-dims"></div>
+          <div class="eval-comment" id="eval-comment"></div>
+        </details>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+(function () {
+  const traceData = {
+    1: {
+      prompt: '木质扶手椅，白色背景，产品摄影，高细节',
+      score: 0.68,
+      dims: [
+        { name: '主体准确度', v: 0.32, desc: '扶手椅主体可辨，但边缘存在轻微锯齿，木纹细节不足。', delta: 0, deltaDesc: '初始轮次，无环比数据。' },
+        { name: '背景', v: 0.18, desc: '背景偏灰，未完全纯白，底部有轻微阴影残留。', delta: 0, deltaDesc: '初始轮次，无环比数据。' },
+        { name: '光线', v: 0.10, desc: '光线平淡，缺少明暗层次，主体立体感弱。', delta: 0, deltaDesc: '初始轮次，无环比数据。' },
+        { name: '构图', v: 0.08, desc: '构图略偏左，主体未完全居中，视觉重心不稳。', delta: 0, deltaDesc: '初始轮次，无环比数据。' }
+      ],
+      comment: '第 1 轮为基线输出，主体与背景均有明显优化空间。'
+    },
+    2: {
+      prompt: '木质扶手椅，纯白背景，产品摄影，正面 45 度角，高细节',
+      score: 0.71,
+      dims: [
+        { name: '主体准确度', v: 0.35, desc: '主体轮廓更清晰，但扶手末端仍有轻微虚化。', delta: +0.03, deltaDesc: '增加 45 度角描述后，主体可辨识度提升。' },
+        { name: '背景', v: 0.20, desc: '纯白背景得到改善，边缘残留阴影减少。', delta: +0.02, deltaDesc: '背景颜色描述更精确，抠图瑕疵减少。' },
+        { name: '光线', v: 0.10, desc: '光线仍显平淡，缺少方向性。', delta: 0, deltaDesc: '光线相关 prompt 未变化，表现持平。' },
+        { name: '构图', v: 0.06, desc: '45 度角让构图更稳定，但主体仍略偏。', delta: -0.02, deltaDesc: '角度引入后画面重心后移，需进一步校准居中。' }
+      ],
+      comment: '加入角度描述后构图改善，但扶手细节和光线仍需优化。'
+    },
+    3: {
+      prompt: '木质扶手椅，纯白背景，产品摄影，正面 45 度角，柔和阴影，高细节',
+      score: 0.76,
+      dims: [
+        { name: '主体准确度', v: 0.38, desc: '木质纹理开始显现，扶手曲线更自然。', delta: +0.03, deltaDesc: '阴影增加了表面纹理信息，主体准确度提升。' },
+        { name: '背景', v: 0.22, desc: '背景干净，阴影过渡自然，无硬边残留。', delta: +0.02, deltaDesc: '柔和阴影让背景与主体分离更自然。' },
+        { name: '光线', v: 0.12, desc: '出现柔和阴影，光线层次开始丰富。', delta: +0.02, deltaDesc: '加入柔和阴影后，光线立体感增强。' },
+        { name: '构图', v: 0.04, desc: '构图趋于稳定，但主体略微偏大。', delta: -0.02, deltaDesc: '阴影增加了画面深度，视觉上主体占比略大。' }
+      ],
+      comment: '柔和阴影提升了立体感，整体得分稳步上升。'
+    },
+    4: {
+      prompt: '木质扶手椅，白色背景，产品摄影，柔和漫射光，简洁构图，高细节',
+      score: 0.79,
+      dims: [
+        { name: '主体准确度', v: 0.40, desc: '木纹与扶手细节进一步提升，边缘锯齿基本消除。', delta: +0.02, deltaDesc: '漫射光减少了硬阴影干扰，主体细节更易辨识。' },
+        { name: '背景', v: 0.24, desc: '背景纯白且一致，无阴影与色差。', delta: +0.02, deltaDesc: '简洁构图让背景更干净。' },
+        { name: '光线', v: 0.11, desc: '漫射光柔和均匀，但高光区域略显平淡。', delta: -0.01, deltaDesc: '从柔和阴影转向漫射光，立体感略有下降。' },
+        { name: '构图', v: 0.04, desc: '简洁构图使画面重心稳定，主体比例适中。', delta: 0, deltaDesc: '构图描述生效，表现持平。' }
+      ],
+      comment: '光线和构图更稳定，但缺少对分辨率的强调，细节上限受限。'
+    },
+    5: {
+      prompt: '木质扶手椅，白色背景，产品摄影，柔和漫射光，简洁构图，高细节，8k',
+      score: 0.82,
+      dims: [
+        { name: '主体准确度', v: 0.42, desc: '8k 描述显著提升细节密度，木纹、扶手接缝清晰可见。', delta: +0.02, deltaDesc: '分辨率提示让模型输出更高频细节。' },
+        { name: '背景', v: 0.25, desc: '背景在高分辨率下仍保持纯白一致，无瑕疵。', delta: +0.01, deltaDesc: '背景稳定性进一步提升。' },
+        { name: '光线', v: 0.10, desc: '漫射光在高分辨率下表现细腻，高光过渡自然。', delta: -0.01, deltaDesc: '细节提升让光线层次更细腻，但亮度略降。' },
+        { name: '构图', v: 0.05, desc: '构图稳定，主体居中，视觉重心平衡。', delta: +0.01, deltaDesc: '高分辨率下构图细节更可信。' }
+      ],
+      comment: '加入 8k 后细节密度达到最佳，是当前 loop 的最优输出。'
+    }
+  };
+
+  const list = document.querySelector('.trace-strip');
+  const heroScore = document.getElementById('hero-score');
+  const heroIter = document.getElementById('hero-iter');
+  const promptLog = document.getElementById('prompt-log');
+  const evalIter = document.getElementById('eval-iter');
+  const evalScore = document.getElementById('eval-score');
+  const evalDims = document.getElementById('eval-dims');
+  const evalComment = document.getElementById('eval-comment');
+  const baseSel = document.getElementById('compare-base');
+  const targetSel = document.getElementById('compare-target');
+  const baseTitle = document.getElementById('compare-base-title');
+  const targetTitle = document.getElementById('compare-target-title');
+  const basePromptEl = document.getElementById('compare-base-prompt');
+  const targetPromptEl = document.getElementById('compare-target-prompt');
+  const diffView = document.getElementById('diff-view');
+  const diffSummary = document.getElementById('diff-summary');
+
+  function renderEval(iter) {
+    const d = traceData[iter];
+    if (!d) return;
+    if (promptLog) promptLog.textContent = d.prompt;
+    if (heroScore) heroScore.textContent = d.score.toFixed(2);
+    if (heroIter) heroIter.textContent = '#' + iter;
+    if (evalIter) evalIter.textContent = '#' + iter;
+    if (evalScore) evalScore.textContent = d.score.toFixed(2);
+    if (evalDims) {
+      evalDims.innerHTML = d.dims.map(dim => {
+        const pct = Math.round(dim.v / d.score * 100);
+        const deltaSign = dim.delta > 0 ? '+' : '';
+        const deltaClass = dim.delta > 0 ? 'delta-up' : dim.delta < 0 ? 'delta-down' : 'delta-flat';
+        const deltaText = dim.delta === 0 && iter === 1 ? '—' : deltaSign + dim.delta.toFixed(2);
+        return '<div class="eval-dim">' +
+          '<div class="dim-head">' +
+            '<span class="dim-name">' + dim.name + '</span>' +
+            '<span class="dim-delta ' + deltaClass + '">' + deltaText + '</span>' +
+            '<span class="dim-v">' + dim.v.toFixed(2) + '</span>' +
+          '</div>' +
+          '<div class="dim-bar"><span class="dim-fill" style="width:' + pct + '%"></span></div>' +
+          '<div class="dim-desc">' + escapeHtml(dim.desc) + '</div>' +
+          '<div class="dim-delta-desc">' + escapeHtml(dim.deltaDesc) + '</div>' +
+        '</div>';
+      }).join('');
+    }
+    if (evalComment) evalComment.textContent = d.comment;
+  }
+
+  function selectIter(iter) {
+    list.querySelectorAll('.trace-item').forEach(li => {
+      li.classList.toggle('selected', li.dataset.trace === String(iter));
+      li.classList.toggle('current', li.dataset.trace === String(iter));
+    });
+    renderEval(iter);
+    if (targetSel) {
+      targetSel.value = String(iter);
+      renderDiff();
+    }
+  }
+
+  list.querySelectorAll('.trace-item').forEach(li => {
+    li.addEventListener('click', () => selectIter(li.dataset.trace));
+    li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectIter(li.dataset.trace); } });
+  });
+
+  function populateSelects() {
+    const keys = Object.keys(traceData);
+    [baseSel, targetSel].forEach((sel, idx) => {
+      if (!sel) return;
+      sel.innerHTML = keys.map(k => '<option value="' + k + '">#' + k + '</option>').join('');
+      sel.value = keys[keys.length - 2 + idx] || keys[keys.length - 1];
+    });
+  }
+
+  function tokenize(s) {
+    return s.split(/(\s+|[，。、；：！？,.;:!?])/).filter(t => t && !/^\s+$/.test(t));
+  }
+
+  function lcs(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    const ops = [];
+    let i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+        ops.unshift({ type: 'same', val: a[i - 1] });
+        i--; j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        ops.unshift({ type: 'add', val: b[j - 1] });
+        j--;
+      } else {
+        ops.unshift({ type: 'del', val: a[i - 1] });
+        i--;
+      }
+    }
+    return ops;
+  }
+
+  function renderDiff() {
+    const base = traceData[baseSel.value];
+    const target = traceData[targetSel.value];
+    if (!base || !target) return;
+    if (baseTitle) baseTitle.textContent = '#'+ baseSel.value + ' Prompt';
+    if (targetTitle) targetTitle.textContent = '#'+ targetSel.value + ' Prompt';
+    if (basePromptEl) basePromptEl.textContent = base.prompt;
+    if (targetPromptEl) targetPromptEl.textContent = target.prompt;
+    const ops = lcs(tokenize(base.prompt), tokenize(target.prompt));
+    if (diffView) {
+      diffView.innerHTML = ops.map(op => {
+        const cls = op.type === 'same' ? 'diff-same' : op.type === 'add' ? 'diff-add' : 'diff-del';
+        const prefix = op.type === 'add' ? '+' : op.type === 'del' ? '-' : '';
+        return '<span class="' + cls + '">' + prefix + escapeHtml(op.val) + '</span>';
+      }).join('');
+    }
+    const added = ops.filter(o => o.type === 'add').length;
+    const removed = ops.filter(o => o.type === 'del').length;
+    if (diffSummary) {
+      let text = '';
+      if (added && removed) text = '差异：新增 ' + added + ' 处，删除 ' + removed + ' 处';
+      else if (added) text = '差异：新增 ' + added + ' 处';
+      else if (removed) text = '差异：删除 ' + removed + ' 处';
+      else text = '两次迭代的 prompt 完全一致';
+      diffSummary.textContent = text;
+    }
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  if (baseSel) baseSel.addEventListener('change', renderDiff);
+  if (targetSel) targetSel.addEventListener('change', renderDiff);
+
+  document.querySelectorAll('details.bench-section').forEach(function(details) {
+    const label = details.querySelector('.expand-label');
+    if (!label) return;
+    const update = function() { label.textContent = details.open ? '收起' : '展开'; };
+    details.addEventListener('toggle', update);
+    update();
+  });
+
+  populateSelects();
+  selectIter(5);
+  renderDiff();
+})();
+lucide.createIcons();
+</script>
+
+<style id="page-css">
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--foreground); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.app-shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 14px;
+  background: var(--background);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 6px 10px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--foreground); }
+.brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
+.nav-section { display: flex; flex-direction: column; gap: 4px; }
+.nav-section-title { padding: 8px 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-foreground); }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--radius); color: var(--muted-foreground); font-size: 13px; font-weight: 500; transition: background .15s ease, color .15s ease; }
+.nav-item:hover { background: var(--muted); color: var(--foreground); text-decoration: none; }
+.nav-item.active { background: var(--primary); color: var(--primary-foreground); }
+.nav-item .count { margin-left: auto; padding: 2px 7px; border-radius: 999px; background: var(--secondary); color: var(--foreground); font-size: 11px; font-weight: 600; }
+.nav-item.active .count { background: rgba(255,255,255,0.2); color: var(--primary-foreground); }
+.sidebar-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--background); }
+.topbar h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-actions { margin-left: auto; display: flex; gap: 10px; }
+.page-content { flex: 1; padding: 24px 28px 48px; overflow-x: hidden; }
+h2 { font-size: 12px; margin: 0; color: var(--muted-foreground); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.muted { color: var(--muted-foreground); }
+.mono { font-family: var(--font-mono); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: var(--radius); padding: 8px 14px; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease; white-space: nowrap; }
+.btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); box-shadow: var(--shadow-sm); }
+.btn-primary:hover:not(:disabled) { filter: brightness(0.96); }
+.btn-secondary { background: var(--background); color: var(--foreground); border-color: var(--border); }
+.btn-secondary:hover:not(:disabled) { background: var(--muted); }
+.btn-ghost { background: transparent; color: var(--muted-foreground); }
+.btn-ghost:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+.btn-danger { background: var(--destructive); color: var(--destructive-foreground); }
+.btn-danger:hover:not(:disabled) { filter: brightness(0.94); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
+.card-padded { padding: 16px; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+.dot.running { background: var(--success); box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15); }
+.dot.awaiting_review { background: var(--warn); box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15); }
+.dot.error { background: var(--destructive); }
+.dot.finished { background: var(--muted-foreground); }
+.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--muted); color: var(--foreground); }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground); }
+.badge-success { color: var(--success-text); border-color: var(--success-border); background: var(--success-subtle); }
+.badge-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.bench-section { margin-bottom: 16px; }
+.bench-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; user-select: none; }
+.bench-header h2 { margin: 0; }
+.chevron { width: 16px; height: 16px; transition: transform .2s ease; color: var(--muted-foreground); flex-shrink: 0; }
+.bench-section[open] .chevron { transform: rotate(90deg); }
+.expand-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground); font-size: 12px; font-weight: 600; flex-shrink: 0; margin-left: auto; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+.expand-btn:hover { background: var(--muted); color: var(--foreground); }
+.bench-section[open] .expand-btn { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
+/* Compact image-first layout */
+.compact-layout { max-width: 1100px; margin: 0 auto; }
+.hero-image { overflow: hidden; }
+.image-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 58vh;
+  background:
+    repeating-conic-gradient(var(--muted) 0% 25%, transparent 0% 50%) 50% / 20px 20px,
+    linear-gradient(135deg, #f4f4f5 0%, #e4e4e7 100%);
+  border-bottom: 1px solid var(--border);
+}
+.hero-meta { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; flex-wrap: wrap; }
+.hero-title { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.hero-title h2 { margin-bottom: 4px; }
+.hero-sample { font-size: 13px; color: var(--muted-foreground); }
+.hero-stat { text-align: right; }
+.hero-stat span { display: block; font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px; }
+.hero-stat strong { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+
+/* Horizontal trace strip */
+.trace-strip { display: flex; gap: 10px; padding: 12px 16px 16px; overflow-x: auto; }
+.trace-item { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 84px; padding: 8px 6px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--background); cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .12s ease; }
+.trace-item:hover { background: var(--muted); border-color: var(--border-strong); }
+.trace-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.trace-item.selected { border-color: var(--primary); background: var(--muted); }
+.trace-item.current { box-shadow: inset 0 0 0 1px var(--primary); }
+.trace-thumb { width: 64px; height: 64px; border-radius: var(--radius-sm); background: var(--muted); }
+.trace-idx { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
+.trace-score { font-family: var(--font-mono); font-size: 12px; font-weight: 700; opacity: 0; transform: translateY(2px); transition: opacity .15s ease, transform .15s ease; }
+.trace-item:hover .trace-score,
+.trace-item.selected .trace-score { opacity: 1; transform: translateY(0); }
+.trace-tag { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); }
+.trace-tag:not(.best) { display: none; }
+
+.review-card { border-left: 3px solid var(--warn); }
+.review-card h2 { margin-bottom: 10px; }
+.review-card p { margin: 0 0 14px; font-size: 13px; line-height: 1.55; color: var(--foreground); }
+.review-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.log-list { padding: 0 16px 16px; }
+.log-list pre { margin: 0; padding: 12px; border-radius: var(--radius-sm); background: var(--muted); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+
+.compare-bar { display: flex; align-items: center; gap: 8px; padding: 0 16px 12px; }
+.select-sm { padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--background); font-size: 13px; color: var(--foreground); }
+.compare-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 16px 16px; border-bottom: 1px solid var(--border); }
+.compare-title { font-size: 11px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+.compare-prompt { padding: 12px; border-radius: var(--radius-sm); background: var(--muted); font-size: 13px; line-height: 1.6; min-height: 60px; }
+.diff-view { padding: 14px 16px; font-size: 13px; line-height: 1.7; }
+.diff-same { color: var(--foreground); }
+.diff-add { background: var(--success-subtle); color: var(--success-text); border-radius: 3px; padding: 1px 3px; }
+.diff-del { background: rgba(220, 38, 38, 0.08); color: var(--destructive); text-decoration: line-through; border-radius: 3px; padding: 1px 3px; }
+.diff-summary { padding: 0 16px 16px; font-size: 12px; color: var(--muted-foreground); }
+
+.eval-header-inline { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.eval-iter { font-family: var(--font-mono); font-size: 13px; color: var(--muted-foreground); }
+.eval-score { font-size: 18px; font-weight: 700; }
+.eval-dims { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 0 16px 16px; }
+.eval-comment { margin: 0 16px 16px; padding: 12px; border-radius: var(--radius-sm); background: var(--muted); font-size: 13px; line-height: 1.6; }
+.eval-dim { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--background); }
+.dim-head { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; font-size: 13px; }
+.dim-head .dim-name { font-weight: 600; color: var(--foreground); }
+.dim-head .dim-v { font-family: var(--font-mono); font-weight: 700; }
+.dim-delta { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border-radius: 999px; }
+.delta-up { background: var(--success-subtle); color: var(--success-text); }
+.delta-down { background: rgba(220, 38, 38, 0.08); color: var(--destructive); }
+.delta-flat { background: var(--muted); color: var(--muted-foreground); }
+.eval-dim .dim-bar { height: 8px; background: var(--muted); border-radius: 4px; overflow: hidden; }
+.eval-dim .dim-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width .3s ease; }
+.dim-desc { font-size: 12px; line-height: 1.55; color: var(--foreground); }
+.dim-delta-desc { font-size: 11px; color: var(--muted-foreground); }
+
+.loop-subtitle { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--muted-foreground); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron, .trace-item, .trace-score, .btn, .nav-item, .expand-btn, .eval-dim .dim-fill { transition: none; }
+}
+@media (max-width: 900px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; height: auto; position: relative; border-right: none; border-bottom: 1px solid var(--border); padding: 12px; flex-direction: row; overflow-x: auto; }
+  .nav-section { flex-direction: row; }
+  .nav-section-title { display: none; }
+  .sidebar-foot { display: none; }
+  .topbar { flex-wrap: wrap; }
+  .topbar-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
+  .hero-meta { flex-direction: column; align-items: flex-start; }
+  .hero-stat { text-align: left; }
+  .eval-dims { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .page-content { padding: 16px; }
+  .topbar { padding: 14px 16px; }
+  .compare-body { grid-template-columns: 1fr; }
+  .trace-strip { gap: 8px; padding: 12px; }
+  .trace-item { width: 76px; }
+  .trace-thumb { width: 56px; height: 56px; }
+}
+</style>
+</body>
+</html>

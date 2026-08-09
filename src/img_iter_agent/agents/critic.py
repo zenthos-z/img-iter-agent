@@ -49,6 +49,7 @@ class CriticInput:
     sample: Sample
     generated_images: list[Path] = field(default_factory=list)  # 三视图等生成图
     weights: dict[str, float] = field(default_factory=dict)  # 当前生效权重
+    meaning: str | None = None  # Generator 的一句话图片含义解释（风格迁移场景；判概念表达时参考）
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,10 @@ class Critic:
         self.system_prompt = system_prompt or load_system_prompt("critic", _DEFAULT_CRITIC_SYS)
         self.skills_dir = str(skills_dir) if skills_dir else None
 
-    def evaluate(self, inp: CriticInput, *, config: RunnableConfig | None = None) -> CriticVerdict:
+    def evaluate(
+        self, inp: CriticInput, *, config: RunnableConfig | None = None,
+        extra_hints: list[str] | None = None,
+    ) -> CriticVerdict:
         """对一个 trace 打分，产出 CriticVerdict。
 
         所有维度都对照 target 评判。生成图 + target 以 image_url 注入初始 HumanMessage。
@@ -115,7 +119,9 @@ class Critic:
         target = inp.sample.target_path
         generated = inp.generated_images
 
-        user_content = self._build_user_content(target, generated, spec)
+        user_content = self._build_user_content(
+            target, generated, spec, meaning=inp.meaning, extra_hints=extra_hints,
+        )
         tools = make_critic_tools(bench=self.bench, spec=spec)
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
@@ -143,7 +149,8 @@ class Critic:
     # --- 辅助 ---
 
     def _build_user_content(
-        self, target: Path, generated: list[Path], spec,
+        self, target: Path, generated: list[Path], spec, meaning: str | None = None,
+        extra_hints: list[str] | None = None,
     ) -> list[dict] | str:
         """初始 HumanMessage：喂图说明 + 每维度**逐项 checklist** + 评分指令 + 生成图与 target(image_url)。
 
@@ -185,6 +192,22 @@ class Critic:
             "**严格**：拿不准、有瑕疵、与 target 不完全一致时，倾向判不通过/给低分；只有确无问题才判通过。\n"
             "维度清单：\n" + "\n".join(dim_lines) + "\n\n请结构化输出每个维度的评分。"
         )
+        # 人工补充评分准则（运行时人工介入；与 checklist 同等效力，必须执行）
+        if extra_hints:
+            task += (
+                "\n\n【额外评分准则（人工补充，与 checklist 同等效力，必须执行）】\n"
+                + "\n".join(f"- {h}" for h in extra_hints)
+            )
+        if meaning:
+            task = f"【Generator 的图片含义解释（它声称这张图想表达的概念）】{meaning}\n\n" + task
+        if spec.task and spec.task.mode == "style_transfer":
+            task = (
+                "【风格神韵迁移 · 自主对照参考集判一致性（最高优先级）】\n"
+                "严格对照参考集(target)：生成图任何与参考集风格不一致的细节——"
+                "写实的解剖/纹理(指甲/指纹/关节纹/皮肤)、参考集里没有的元素、写实阴影/高光——"
+                "即使下列 checklist 未明确写出，也**必须在对应 spirit_* 维度判不通过 / 给低分**，并在 reason 写明你发现的偏差。\n"
+                "你要主动发现 checklist 之外的偏差(参考集是纯线条抽象、零解剖细节；生成图出现任何写实细节就是不一致)，不要只盯列出的项。\n\n"
+            ) + task
         text = _images_block(target, generated) + "\n\n" + task
         images = list(generated) + ([target] if target.exists() else [])
         return _build_multimodal_content(text, images)

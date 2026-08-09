@@ -17,6 +17,9 @@ from .routers import (
     config as config_router,
 )
 from .routers import (
+    experience as experience_router,
+)
+from .routers import (
     loops as loops_router,
 )
 from .routers import (
@@ -37,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(loops_router.router, prefix="/api", tags=["loops"])
     app.include_router(scoring_router.router, prefix="/api", tags=["scoring"])
     app.include_router(config_router.router, prefix="/api", tags=["config"])
+    app.include_router(experience_router.router, prefix="/api", tags=["experience"])
 
     # 图片代理：处理 reference(绝对路径) vs output(相对 run 目录) 的差异
     @app.get("/api/static/img")

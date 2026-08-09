@@ -1,0 +1,35 @@
+{
+  "skill_name": "img-iter-ops",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我对 s003 新起一个 loop 跑 6 轮，看看经验闭环效果",
+      "expected_output": "用 run_loop_auto.py --bench furniture_product_whitebg --sample s003 --rounds 6 --tag <某tag>，全新 loop_id 防污染；跑完提示用 diagnose_loop.py 诊断。强调不能用默认 loop_id 续跑。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我放了张新椅子的产品图在 samples/s004/target.jpg，想做成考题加进 furniture_product_whitebg 这个 benchmark",
+      "expected_output": "生成 samples/s004/content_spec.json（按 6 维度 checklist 模板，针对该椅子起草可二分判定的 check 项），把 s004 加进 manifest.json 的 samples 列表（填 product/category/difficulty_note），可选写 target.md。提醒 A4 阴影项、must_avoid 写易翻车点。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "上次跑的 furniture_product_whitebg-s003-exp6 效果怎么样，经验沉淀生效没",
+      "expected_output": "用 diagnose_loop.py furniture_product_whitebg-s003-exp6 诊断，输出还原度曲线 + A/B/C 三环判定 + 关键点高亮，给出是否建议人工介入的结论。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "把 s001 s002 s003 三个题各跑 6 轮对比一下",
+      "expected_output": "用 batch_loops.py --samples s001 s002 s003 --rounds 6 --tag <tag>，串行全新 loop_id，跑完汇总各 loop 还原度（首/末/峰），提示逐个 diagnose。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "跑过这么多 loop 了，能不能把经验汇总成通用的 dos 和 donts",
+      "expected_output": "用 python -m img_iter_agent.cli summarize --bench <bench> 蒸馏 data/experience/<bench>/general.json；说明这是跨 loop 经验、Generator 的跨题先验；提醒 general.json 前端不显示的已知缺口，以及避免把测试 loop 混入蒸馏输入。",
+      "files": []
+    }
+  ]
+}

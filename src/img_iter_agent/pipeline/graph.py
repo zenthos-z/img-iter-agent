@@ -82,12 +82,19 @@ def build_graph(
             from ..agents.generator import PriorFeedback
             failed = []
             cont_notes = []
+            failed_dims = []
             for d in prev_verdict.dimensions:
                 if d.scoring_type == "binary":
-                    failed += [it for it in (d.items or []) if not it.passed]
+                    dim_failed = [it for it in (d.items or []) if not it.passed]
+                    failed += dim_failed
+                    if dim_failed:
+                        failed_dims.append(d.dim)
                 elif d.value < 0.7 and d.raw:  # 连续维度低分(<0.7)且带理由
                     cont_notes.append(f"{d.dim}: {d.raw}")
-            prior_feedback = PriorFeedback(failed_items=failed, continuous_notes=cont_notes)
+                    failed_dims.append(d.dim)
+            prior_feedback = PriorFeedback(
+                failed_items=failed, continuous_notes=cont_notes, failed_dims=failed_dims,
+            )
             # 经验闭环累积反馈（C）：从 conclusions 算升级/复发维度 → 警告直接塞 user message（强制看见）
             from ..memory import knowledge as _kbmod
             _kb = _kbmod.load_conclusions(run_dir, sample_id=sample_id)
@@ -103,18 +110,31 @@ def build_graph(
                     escalated_warnings.append(
                         f"[{dim}] 已连续失败 {streak} 轮，本轮避免重复上轮失败思路"
                     )
+            # 步骤2: 注入 discover_standards 提炼的「自主发现的标准盲区」，让 generator 提前避免
+            import json as _json
+            _ps = run_dir / "proposed_standards.json"
+            if _ps.exists():
+                try:
+                    for _std in _json.loads(_ps.read_text(encoding="utf-8")):
+                        escalated_warnings.append(f"📌 [自主发现的标准盲区·本轮必须避免] {_std}")
+                except Exception:  # noqa: BLE001
+                    pass
             # baseline 指向上轮 attempt（index 里还原度最高的）
             from ..memory.index import recall
             prior = recall(run_dir, limit=1)
             if prior:
                 baseline_ref = prior[0].get("attempt_id")
 
+        # 人工提示词：从 config 读，按 agent 过滤（仅 generator 的）
+        _hints = ((config.get("configurable") or {}).get("human_hints")) or []
+        _gen_hints = [h["text"] for h in _hints if h.get("agent") == "generator" and h.get("text")]
         outcome = generator.generate_round(
             sample=sample, out_dir=run_dir / "out", run_dir=run_dir,
             round=round_n, baseline_ref=baseline_ref,
             prior_feedback=prior_feedback,
             escalated_warnings=escalated_warnings or None,
             model_hint=model_hint, config=config,
+            extra_hints=_gen_hints or None,
         )
         return {
             "round": round_n,
@@ -127,9 +147,13 @@ def build_graph(
         weights = load_weights(bench.bench, run_dir=run_dir, sample_id=sample_id)
         # 生成的图绝对路径
         gen_imgs = [run_dir / r for r in outcome.output_image_refs]
+        # 人工提示词：从 config 读，按 agent 过滤（仅 critic 的）
+        _hints = ((config.get("configurable") or {}).get("human_hints")) or []
+        _critic_hints = [h["text"] for h in _hints if h.get("agent") == "critic" and h.get("text")]
         verdict = critic.evaluate(CriticInput(
             sample=sample, generated_images=gen_imgs, weights=weights,
-        ), config=config)
+            meaning=outcome.meaning,
+        ), config=config, extra_hints=_critic_hints or None)
         return {"_verdict": verdict, "verdicts": [verdict]}
 
     def summarizer_node(state: RunState, config: RunnableConfig) -> dict:
@@ -154,6 +178,7 @@ def build_graph(
             prompt=outcome.prompt, reference_image_refs=list(outcome.reference_image_refs),
             size=outcome.size, output_image_refs=list(outcome.output_image_refs),
             verdict=verdict, lesson_ref=lesson_ref, delta_note=outcome.delta_note,
+            meaning=outcome.meaning,
         )
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)
         return {"attempts": [rec]}

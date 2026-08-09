@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>img-iter-agent · 人工排序</title>
+    <style id="theme-vars">
+:root {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #fafafa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --success: #16a34a;
+  --success-subtle: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-text: #15803d;
+  --warn: #d97706;
+  --warn-subtle: #fffbeb;
+  --warn-border: #fde68a;
+  --warn-text: #b45309;
+  --radius: 0.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 1px 0 rgba(0, 0, 0, 0.03);
+  --shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 20px -6px rgba(0, 0, 0, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
+  --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  --sidebar-width: 220px;
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --radius-sm: var(--radius-sm);
+    --radius-md: var(--radius-md);
+    --radius-lg: var(--radius-lg);
+  }
+  @layer base {
+    body { background: var(--background); color: var(--foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--background); }
+      .text-background { color: var(--background); }
+      .border-background { border-color: var(--background); }
+      .ring-background { --tw-ring-color: var(--background); }
+      .bg-foreground { background-color: var(--foreground); }
+      .text-foreground { color: var(--foreground); }
+      .border-foreground { border-color: var(--foreground); }
+      .ring-foreground { --tw-ring-color: var(--foreground); }
+      .bg-card { background-color: var(--card); }
+      .text-card { color: var(--card); }
+      .border-card { border-color: var(--card); }
+      .ring-card { --tw-ring-color: var(--card); }
+      .bg-card-foreground { background-color: var(--card-foreground); }
+      .text-card-foreground { color: var(--card-foreground); }
+      .border-card-foreground { border-color: var(--card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--card-foreground); }
+      .bg-popover { background-color: var(--popover); }
+      .text-popover { color: var(--popover); }
+      .border-popover { border-color: var(--popover); }
+      .ring-popover { --tw-ring-color: var(--popover); }
+      .bg-popover-foreground { background-color: var(--popover-foreground); }
+      .text-popover-foreground { color: var(--popover-foreground); }
+      .border-popover-foreground { border-color: var(--popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--popover-foreground); }
+      .bg-primary { background-color: var(--primary); }
+      .text-primary { color: var(--primary); }
+      .border-primary { border-color: var(--primary); }
+      .ring-primary { --tw-ring-color: var(--primary); }
+      .bg-primary-foreground { background-color: var(--primary-foreground); }
+      .text-primary-foreground { color: var(--primary-foreground); }
+      .border-primary-foreground { border-color: var(--primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--primary-foreground); }
+      .bg-secondary { background-color: var(--secondary); }
+      .text-secondary { color: var(--secondary); }
+      .border-secondary { border-color: var(--secondary); }
+      .ring-secondary { --tw-ring-color: var(--secondary); }
+      .bg-secondary-foreground { background-color: var(--secondary-foreground); }
+      .text-secondary-foreground { color: var(--secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--secondary-foreground); }
+      .bg-muted { background-color: var(--muted); }
+      .text-muted { color: var(--muted); }
+      .border-muted { border-color: var(--muted); }
+      .ring-muted { --tw-ring-color: var(--muted); }
+      .bg-muted-foreground { background-color: var(--muted-foreground); }
+      .text-muted-foreground { color: var(--muted-foreground); }
+      .border-muted-foreground { border-color: var(--muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--muted-foreground); }
+      .bg-accent { background-color: var(--accent); }
+      .text-accent { color: var(--accent); }
+      .border-accent { border-color: var(--accent); }
+      .ring-accent { --tw-ring-color: var(--accent); }
+      .bg-accent-foreground { background-color: var(--accent-foreground); }
+      .text-accent-foreground { color: var(--accent-foreground); }
+      .border-accent-foreground { border-color: var(--accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--accent-foreground); }
+      .bg-destructive { background-color: var(--destructive); }
+      .text-destructive { color: var(--destructive); }
+      .border-destructive { border-color: var(--destructive); }
+      .ring-destructive { --tw-ring-color: var(--destructive); }
+      .bg-destructive-foreground { background-color: var(--destructive-foreground); }
+      .text-destructive-foreground { color: var(--destructive-foreground); }
+      .border-destructive-foreground { border-color: var(--destructive-foreground); }
+      .ring-destructive-foreground { --tw-ring-color: var(--destructive-foreground); }
+      .bg-border { background-color: var(--border); }
+      .text-border { color: var(--border); }
+      .border-border { border-color: var(--border); }
+      .ring-border { --tw-ring-color: var(--border); }
+      .bg-input { background-color: var(--input); }
+      .text-input { color: var(--input); }
+      .border-input { border-color: var(--input); }
+      .ring-input { --tw-ring-color: var(--input); }
+      .bg-ring { background-color: var(--ring); }
+      .text-ring { color: var(--ring); }
+      .border-ring { border-color: var(--ring); }
+      .ring-ring { --tw-ring-color: var(--ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="主导航">
+    <a class="brand" href="overview.html" data-dom-id="nav-brand"><span class="brand-dot"></span>img-iter-agent</a>
+    <nav class="nav-section" aria-label="主要视图">
+      <div class="nav-section-title">工作台</div>
+      <a class="nav-item" href="overview.html" data-dom-id="nav-overview"><span>总览</span><span class="count">3</span></a>
+      <a class="nav-item" href="running.html" data-dom-id="nav-running">运行中</a>
+      <a class="nav-item active" href="scoring.html" data-dom-id="nav-scoring">人工排序</a>
+    </nav>
+    <nav class="nav-section" aria-label="配置">
+      <div class="nav-section-title">系统</div>
+      <a class="nav-item" href="config.html" data-dom-id="nav-config">Agent 设置</a>
+    </nav>
+    <div class="sidebar-foot"><a class="nav-item" href="#">帮助文档</a></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <h1>人工排序</h1>
+      <div class="topbar-actions">
+        <a class="btn btn-secondary btn-sm" href="overview.html" data-dom-id="btn-back-overview">返回总览</a>
+      </div>
+    </header>
+    <main class="page-content">
+      <nav class="breadcrumb">
+        <a href="overview.html">总览</a><span>/</span><span>furniture_product_whitebg</span><span>/</span><span>s001</span>
+      </nav>
+
+      <div class="scoring-layout">
+        <aside class="scoring-sidebar">
+          <div class="card card-padded target-card">
+            <h3>目标 sample</h3>
+            <div class="trace-img" style="background:#e4e4e7"></div>
+            <div class="target-desc">
+              木质扶手椅，浅橡木饰面，米色亚麻坐垫，白底产品图。要求正面 45 度角，柔和阴影，无多余道具，突出木质纹理与扶手曲线。
+            </div>
+          </div>
+        </aside>
+
+        <section>
+          <div class="scoring-toolbar">
+            <h2 style="margin:0">拖拽排序（上 = 好）</h2>
+            <label class="checkbox-row"><input type="checkbox" data-dom-id="chk-blind"> 盲排</label>
+            <button class="btn btn-ghost btn-sm" data-dom-id="btn-reset-ranks">重置为 AI 顺序</button>
+            <button class="btn btn-ghost btn-sm" data-dom-id="btn-undo-rank" disabled>撤销</button>
+            <button class="btn btn-primary" data-dom-id="btn-submit-ranks">提交排序</button>
+          </div>
+
+          <ul class="rank-list">
+            <li class="rank-item" draggable="true" data-dom-id="rank-item-0">
+              <span class="grip">⠿</span>
+              <span class="rank-num">#1</span>
+              <div class="rank-thumb" style="background:#d4d4d8"></div>
+              <span class="rank-meta">
+                <span class="src">loop-2025-s001 · 第 3 轮</span><br>AI 还原度 0.91 · 历史人工排序: 1
+              </span>
+            </li>
+            <li class="rank-item" draggable="true" data-dom-id="rank-item-1">
+              <span class="grip">⠿</span>
+              <span class="rank-num">#2</span>
+              <div class="rank-thumb" style="background:#e4e4e7"></div>
+              <span class="rank-meta">
+                <span class="src">loop-2025-s001 · 第 2 轮</span><br>AI 还原度 0.82
+              </span>
+            </li>
+            <li class="rank-item" draggable="true" data-dom-id="rank-item-2">
+              <span class="grip">⠿</span>
+              <span class="rank-num">#3</span>
+              <div class="rank-thumb" style="background:#f4f4f5"></div>
+              <span class="rank-meta">
+                <span class="src">loop-2025-s001-b · 第 1 轮</span><br>AI 还原度 0.76
+              </span>
+            </li>
+          </ul>
+
+          <div class="calib-box" data-dom-id="calib-result">
+            <h2>校准结果</h2>
+            <div class="muted mb-3">排序吻合度 <strong>87%</strong> · 3 对 · 3 trace</div>
+            <div class="weight-bar">
+              <span class="dim-name">subject_accuracy</span>
+              <span class="bar"><span class="fill" style="width:42%"></span></span>
+              <span class="v">0.42 ▲</span>
+            </div>
+            <div class="weight-bar">
+              <span class="dim-name">background</span>
+              <span class="bar"><span class="fill" style="width:28%"></span></span>
+              <span class="v">0.28 ·</span>
+            </div>
+            <div class="weight-bar">
+              <span class="dim-name">lighting</span>
+              <span class="bar"><span class="fill" style="width:18%"></span></span>
+              <span class="v">0.18 ▼</span>
+            </div>
+            <div class="muted mt-3" style="font-size:12px">下一轮 Critic 会应用这套权重。</div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const list = document.querySelector('.rank-list');
+      const undoBtn = document.querySelector('[data-dom-id="btn-undo-rank"]');
+      const resetBtn = document.querySelector('[data-dom-id="btn-reset-ranks"]');
+      const blindChk = document.querySelector('[data-dom-id="chk-blind"]');
+      const submitBtn = document.querySelector('[data-dom-id="btn-submit-ranks"]');
+      const items = Array.from(list.children);
+      const originalIds = items.map(li => li.dataset.domId);
+      let history = [];
+
+      function currentIds() {
+        return Array.from(list.children).map(li => li.dataset.domId);
+      }
+
+      function applyOrder(ids) {
+        const map = new Map(Array.from(list.children).map(li => [li.dataset.domId, li]));
+        ids.forEach(id => { const li = map.get(id); if (li) list.appendChild(li); });
+        updateRanks();
+      }
+
+      function record() {
+        history.push(currentIds());
+        if (undoBtn) undoBtn.disabled = false;
+      }
+
+      function updateRanks() {
+        Array.from(list.children).forEach((li, i) => {
+          const num = li.querySelector('.rank-num');
+          if (num) num.textContent = '#' + (i + 1);
+        });
+      }
+
+      function moveItem(li, dir) {
+        record();
+        if (dir === -1 && li.previousElementSibling) {
+          list.insertBefore(li, li.previousElementSibling);
+        } else if (dir === 1 && li.nextElementSibling) {
+          list.insertBefore(li.nextElementSibling, li);
+          list.insertBefore(li, li.nextElementSibling);
+        }
+        updateRanks();
+      }
+
+      items.forEach(li => {
+        const controls = document.createElement('div');
+        controls.className = 'rank-controls';
+        controls.innerHTML = '<button class="btn btn-ghost btn-sm" aria-label="上移" type="button">↑</button><button class="btn btn-ghost btn-sm" aria-label="下移" type="button">↓</button>';
+        li.appendChild(controls);
+        controls.querySelector('[aria-label="上移"]').addEventListener('click', function (e) { e.stopPropagation(); moveItem(li, -1); });
+        controls.querySelector('[aria-label="下移"]').addEventListener('click', function (e) { e.stopPropagation(); moveItem(li, 1); });
+      });
+
+      let dragged = null;
+      list.addEventListener('dragstart', function (e) {
+        if (!e.target.classList.contains('rank-item')) return;
+        dragged = e.target;
+        dragged.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', dragged.dataset.domId);
+      });
+      list.addEventListener('dragend', function (e) {
+        if (!dragged) return;
+        dragged.classList.remove('dragging');
+        Array.from(list.children).forEach(li => li.classList.remove('drag-over'));
+        dragged = null;
+      });
+      list.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        const target = e.target.closest('.rank-item');
+        if (!target || target === dragged) return;
+        Array.from(list.children).forEach(li => li.classList.remove('drag-over'));
+        target.classList.add('drag-over');
+      });
+      list.addEventListener('drop', function (e) {
+        e.preventDefault();
+        const target = e.target.closest('.rank-item');
+        if (!target || target === dragged || !dragged) return;
+        record();
+        const rect = target.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        if (after) {
+          list.insertBefore(dragged, target.nextElementSibling);
+        } else {
+          list.insertBefore(dragged, target);
+        }
+        updateRanks();
+      });
+
+      if (undoBtn) {
+        undoBtn.addEventListener('click', function () {
+          if (!history.length) return;
+          const ids = history.pop();
+          applyOrder(ids);
+          if (!history.length) undoBtn.disabled = true;
+        });
+      }
+
+      if (resetBtn) {
+        resetBtn.addEventListener('click', function () {
+          record();
+          applyOrder(originalIds);
+        });
+      }
+
+      if (blindChk) {
+        blindChk.addEventListener('change', function () {
+          list.classList.toggle('blind', blindChk.checked);
+        });
+      }
+
+      if (submitBtn) {
+        submitBtn.addEventListener('click', function () {
+          const ids = currentIds();
+          submitBtn.textContent = '已提交';
+          submitBtn.disabled = true;
+          setTimeout(function () {
+            submitBtn.textContent = '提交排序';
+            submitBtn.disabled = false;
+          }, 1200);
+        });
+      }
+    });
+    </script>
+
+    <style id="page-css">
+:root {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #fafafa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --success: #16a34a;
+  --success-subtle: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-text: #15803d;
+  --warn: #d97706;
+  --warn-subtle: #fffbeb;
+  --warn-border: #fde68a;
+  --warn-text: #b45309;
+  --radius: 0.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 1px 0 rgba(0, 0, 0, 0.03);
+  --shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 20px -6px rgba(0, 0, 0, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
+  --font-sans: Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  --sidebar-width: 220px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--foreground); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.app-shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 14px;
+  background: var(--background);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 6px 10px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--foreground); }
+.brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
+.nav-section { display: flex; flex-direction: column; gap: 4px; }
+.nav-section-title { padding: 8px 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-foreground); }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--radius); color: var(--muted-foreground); font-size: 13px; font-weight: 500; transition: background .15s ease, color .15s ease; }
+.nav-item:hover { background: var(--muted); color: var(--foreground); text-decoration: none; }
+.nav-item.active { background: var(--primary); color: var(--primary-foreground); }
+.nav-item .count { margin-left: auto; padding: 2px 7px; border-radius: 999px; background: var(--secondary); color: var(--foreground); font-size: 11px; font-weight: 600; }
+.nav-item.active .count { background: rgba(255,255,255,0.2); color: var(--primary-foreground); }
+.sidebar-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--background); }
+.topbar h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-actions { margin-left: auto; display: flex; gap: 10px; }
+.page-content { flex: 1; padding: 24px 28px 48px; overflow-x: hidden; }
+h1 { font-size: 22px; margin: 0 0 16px; font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 12px; margin: 0 0 12px; color: var(--muted-foreground); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+h3 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+.muted { color: var(--muted-foreground); }
+.mono { font-family: var(--font-mono); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: var(--radius); padding: 8px 14px; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease; white-space: nowrap; }
+.btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); box-shadow: var(--shadow-sm); }
+.btn-primary:hover:not(:disabled) { filter: brightness(0.96); }
+.btn-secondary { background: var(--background); color: var(--foreground); border-color: var(--border); }
+.btn-secondary:hover:not(:disabled) { background: var(--muted); }
+.btn-ghost { background: transparent; color: var(--muted-foreground); }
+.btn-ghost:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
+.card-padded { padding: 16px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground); }
+.breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted-foreground); margin-bottom: 16px; }
+.breadcrumb a:hover { text-decoration: underline; }
+.checkbox-row { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--foreground); cursor: pointer; }
+.scoring-layout { display: grid; grid-template-columns: 260px 1fr; gap: 24px; align-items: start; }
+.scoring-sidebar { position: sticky; top: 20px; }
+.target-card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius-sm); background: var(--muted); cursor: zoom-in; }
+.target-desc { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); line-height: 1.6; max-height: 240px; overflow: auto; }
+.scoring-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.rank-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.rank-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); cursor: grab; transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease; }
+.rank-item:hover { border-color: var(--border-strong); }
+.rank-item.dragging { opacity: .35; }
+.rank-item.drag-over { border-color: var(--primary); box-shadow: var(--shadow-md); }
+.rank-num { width: 28px; text-align: center; font-weight: 700; font-family: var(--font-mono); color: var(--muted-foreground); }
+.rank-thumb { width: 72px; height: 45px; object-fit: cover; border-radius: var(--radius-sm); background: var(--muted); cursor: zoom-in; }
+.rank-meta { flex: 1; min-width: 0; font-size: 12px; color: var(--muted-foreground); }
+.rank-meta .src { color: var(--foreground); font-weight: 500; }
+.grip { color: var(--muted-foreground); cursor: grab; padding: 4px; }
+.calib-box { margin-top: 20px; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.weight-bar { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 12px; }
+.weight-bar .dim-name { width: 120px; color: var(--foreground); }
+.weight-bar .bar { flex: 1; height: 8px; background: var(--muted); border-radius: 4px; overflow: hidden; }
+.weight-bar .fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width .3s ease; }
+.weight-bar .v { font-family: var(--font-mono); min-width: 60px; text-align: right; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
+.mb-3 { margin-bottom: 12px; }
+.rank-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.rank-controls button { padding: 4px 8px; min-width: 28px; }
+.rank-list.blind .rank-meta { visibility: hidden; }
+.rank-list.blind .rank-thumb { filter: blur(4px); }
+.rank-item.moving { border-color: var(--primary); box-shadow: var(--shadow-md); }
+
+@media (max-width: 900px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; height: auto; position: relative; border-right: none; border-bottom: 1px solid var(--border); padding: 12px; flex-direction: row; overflow-x: auto; }
+  .nav-section { flex-direction: row; }
+  .nav-section-title { display: none; }
+  .sidebar-foot { display: none; }
+  .scoring-layout { grid-template-columns: 1fr; }
+  .scoring-sidebar { position: relative; top: 0; }
+}
+@media (max-width: 640px) {
+  .page-content { padding: 16px; }
+}
+</style>
+</body>
+</html>

@@ -156,7 +156,8 @@ def test_query_general_experience_reads_cross_loop_store(tmp_path):
 
     tool = make_query_general_experience_tool(data_root, bench_id)
     out = tool.invoke({})
-    assert "加接地阴影" in out and "dos" in out and "0.80" in out
+    # 共享 renderer 输出：insight + dos 段 + donts 内容 + 置信度
+    assert "加接地阴影" in out and "应该这样做" in out and "忽略阴影" in out and "0.80" in out
     # 按 dim 过滤：命中 / 未命中
     assert "加接地阴影" in tool.invoke({"dim": "artifact_defect"})
     assert "暂无" in tool.invoke({"dim": "consistency"})

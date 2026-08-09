@@ -178,15 +178,20 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         from .data.trajectory import TrajectoryReader
         first = next(iter(TrajectoryReader(run_dirs[0] / "trajectory.jsonl").iter_records()), None)
         bench_id = first.bench_id if first else "unknown"
-    bench = load_benchmark(bench_id, settings=settings).bench
+    lb = load_benchmark(bench_id, settings=settings)
 
     chat = build_chat_model(settings, role="summarizer")
+    from .memory.experience import load_general_experience, skill_package_dir
     distiller = ExperienceDistiller(
-        chat, run_dirs=run_dirs, bench=bench,
+        chat, run_dirs=run_dirs, lb=lb, data_root=settings.data_root,
+        previous=load_general_experience(settings.data_root, bench_id),
         skills_dir=_skills_dir("experience-distiller"),
     )
     exp = distiller.distill()
-    path = save_general_experience(settings.data_root, bench.bench_id, exp)
+    path = save_general_experience(settings.data_root, lb.bench.bench_id, exp)
+    skill_dir = skill_package_dir(settings.data_root, lb.bench.bench_id)
+    print(f"[summarize] {len(exp.lessons)} 条通用经验（来自 {len(exp.source_runs)} 个 run）→ {path}")
+    print(f"[summarize] 技能包 → {skill_dir}")
     print(f"[summarize] {len(exp.lessons)} 条通用经验（来自 {len(exp.source_runs)} 个 run）→ {path}")
     print(f"summary: {exp.summary}")
     for i, ls in enumerate(exp.lessons, 1):

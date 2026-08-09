@@ -31,12 +31,14 @@ def _traceable_run_types(tree) -> list[str]:
 
 
 def test_agent_traceables_are_all_chain() -> None:
-    """仍用手写 @traceable 的模块（summarizer/router）必须是 chain。
+    """仍用手写 @traceable 的模块（summarizer/router/experience_distiller）必须是 chain。
 
     Generator/Critic 改造为 deepagent 后，其内部 LLM/工具 run 由 langgraph 图自动上报，
-    不再用手写 @traceable，故不在本扫描范围内。
+    不再用手写 @traceable，故不在本扫描范围内。experience_distiller 作为独立离线 agent，
+    用 @traceable 包出一条完整 trace 根（_distill_traced），同样必须 chain。
     """
     for mod in ("img_iter_agent.agents.summarizer",
+                "img_iter_agent.agents.experience_distiller",
                 "img_iter_agent.generation.router"):
         rts = _traceable_run_types(_parse(mod))
         assert rts, f"{mod} 期望至少一个 @traceable 子步骤"
