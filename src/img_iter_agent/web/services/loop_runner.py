@@ -180,11 +180,8 @@ class LoopRunner:
                 # 实现一个 loop（跨多轮 invoke/resume）一条 trace。round/phase 在 config metadata 辨认轮次。
                 with loop_trace_context(handle.loop_root):
                     if resume_existing:
-                        # 已有 loop：用 checkpoint 续跑下一轮（不重跑首轮）
-                        state = app.invoke(
-                            Command(resume="continue"),
-                            config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
-                        )
+                        # 已有 loop：续跑下一轮（interrupt 态 resume；END/finished 态自动重入跑新轮）
+                        state = self._invoke_round(handle, "continue")
                     else:
                         state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
                 self._post_invoke(handle, state)
@@ -196,10 +193,8 @@ class LoopRunner:
         def task() -> None:
             try:
                 with loop_trace_context(handle.loop_root):
-                    state = handle.app.invoke(
-                        Command(resume=decision),
-                        config=self._cfg_with_round(handle, (handle.round or 0) + 1, "resume"),
-                    )
+                    # interrupt 态 resume；若 loop 已 finished（END），_invoke_round 自动重入跑新轮
+                    state = self._invoke_round(handle, decision)
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"resume 失败: {e}\n{traceback.format_exc()}")
@@ -217,6 +212,44 @@ class LoopRunner:
             loop_model=store.meta.model if store.meta else None,
         )
         return ctx.app, ctx.cfg
+
+    def _invoke_round(self, handle: LoopHandle, decision: str):
+        """推进一轮的 invoke，自动适配线程当前态：
+
+        - interrupt 态（awaiting_review）：``Command(resume=decision)`` 跑下一轮（常规续跑）。
+        - END 态（finished）：``Command(resume)`` 对已结束线程是**空操作**（直接 finished、不出新轮）。
+          改用「不带 round 的 inputs」从 START 重入 —— generator 里 ``round_n = state.round + 1``
+          自增到 N+1，历史 images/verdicts/attempts 经 reducer 累加保留。这样「继续一个已结束的 loop」
+          能真正追加新一轮（回归：tests/test_loop_runner_auto.py::test_continue_finished_loop_runs_next_round）。
+        """
+        app, cfg = handle.app, handle.cfg
+        try:
+            snap = app.get_state(cfg)
+            at_end = tuple(snap.next or ()) == ()
+            cur_round = (snap.values or {}).get("round") or 0
+        except Exception:  # noqa: BLE001  get_state 失败时退化为按 interrupt 态 resume
+            at_end = False
+            cur_round = handle.round or 0
+        cfg_r = self._cfg_with_round(handle, cur_round + 1, "resume")
+        if at_end:
+            return app.invoke(self._continue_inputs(handle), config=cfg_r)
+        return app.invoke(Command(resume=decision), config=cfg_r)
+
+    @staticmethod
+    def _continue_inputs(handle: LoopHandle) -> dict:
+        """END 态追加新一轮的 invoke inputs。
+
+        故意**不带 round**：保留 checkpoint 里的 round（=N），由 generator 自增到 N+1；
+        若传 round:0 会把 round 通道覆盖成 0 → 跑成第 1 轮（重置，丢失轮次）。
+        model/bench_id/sample_id/run_id 仅满足 START→generator 的入参约定（节点实际从闭包取 bench/sample）。
+        """
+        md = (handle.cfg or {}).get("metadata") or {}
+        return {
+            "model": md.get("model", ""),
+            "bench_id": md.get("bench_id", ""),
+            "sample_id": md.get("sample_id", ""),
+            "run_id": handle.loop_id,
+        }
 
     @staticmethod
     def _cfg_with_round(handle: LoopHandle, round_n: int, phase: str) -> dict:
@@ -245,11 +278,9 @@ class LoopRunner:
                     handle.rounds_remaining -= 1
                     handle.phase = "running"
                     self._submit(handle, self._run_resume(handle, "continue"))
-                elif handle.auto_mode:
-                    # 自动模式最后一轮（跑满 N 轮）：resume(stop) 让 graph 走到 END
-                    handle.phase = "running"
-                    self._submit(handle, self._run_resume(handle, "stop"))
                 else:
+                    # 跑满 N 轮（或逐轮模式首轮）：停在 human_review interrupt 等审批。
+                    # 不自动 stop→END——保持 graph 挂在 interrupt，可由用户继续 N+1 轮或手动停止。
                     handle.phase = "awaiting_review"
             elif (snapshot.next or ()) == ():
                 # next 为空 = 到 END，结束 + 收尾 loop trace

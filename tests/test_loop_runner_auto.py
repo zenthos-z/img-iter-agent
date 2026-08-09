@@ -197,3 +197,66 @@ def test_single_round_stops_at_review(setup, monkeypatch):
     traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
     rounds = [json.loads(l) for l in traj.strip().splitlines() if l.strip()]
     assert len(rounds) == 1
+
+
+def test_continue_finished_loop_runs_next_round(setup, monkeypatch):
+    """END/finished 态 loop 继续：resume('continue') 应跑出 N+1 轮，而非空操作 finished。
+
+    覆盖 loop_runner._invoke_round 的 END 重入分支：旧实现对 finished 线程 Command(resume)
+    是空操作（直接 finished、不出新轮），「继续跑下一轮」失效。修复后从 START 重入跑新轮。
+    """
+    settings, lb, bench_id = setup
+    _patch_build_app(monkeypatch, lb, settings)
+    runner = get_runner()
+
+    def _rounds():
+        traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
+        return [json.loads(l)["round"] for l in traj.strip().splitlines() if l.strip()]
+
+    # round1 → awaiting_review
+    loop_id = runner.start(bench_id=bench_id, sample_id="s001", model="fake-model", rounds=1)
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"{h.phase}: {h.last_error}"
+    assert _rounds() == [1]
+
+    # stop → finished（END 态）
+    assert runner.resume(loop_id, "stop") is True
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "finished", f"stop 后期望 finished，实际 {h.phase}"
+
+    # 关键：继续一个已结束的 loop → 必须跑出第 2 轮（而非立即 finished 空操作）
+    assert runner.resume(loop_id, "continue") is True
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"继续 finished 后期望 awaiting_review，实际 {h.phase}: {h.last_error}"
+    assert _rounds() == [1, 2], f"期望跑到第 2 轮，实际 {_rounds()}"
+
+
+def test_start_finished_loop_runs_next_round(setup, monkeypatch):
+    """END/finished 态 loop 用 start() 继续（模拟 server 重启、内存无 handle）：
+    应跑出 N+1 轮。覆盖 _run_first_round(resume_existing=True) → _invoke_round 的 END 重入分支。"""
+    settings, lb, bench_id = setup
+    _patch_build_app(monkeypatch, lb, settings)
+    runner = get_runner()
+
+    def _rounds():
+        traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
+        return [json.loads(l)["round"] for l in traj.strip().splitlines() if l.strip()]
+
+    loop_id = runner.start(bench_id=bench_id, sample_id="s001", model="fake-model", rounds=1)
+    _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    runner.resume(loop_id, "stop")
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "finished"
+    assert _rounds() == [1]
+
+    # 模拟 server 重启：清空内存 handle（run 目录仍在 → start() 走 _continue_existing → resume_existing）
+    runner._handles.clear()
+
+    # 再次 start：应续跑第 2 轮，而非空操作 finished
+    loop_id2 = runner.start(
+        bench_id=bench_id, sample_id="s001", model="fake-model", rounds=1,
+    )
+    assert loop_id2 == loop_id  # 一题一条：同 loop_id
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"start 续跑期望 awaiting_review，实际 {h.phase}: {h.last_error}"
+    assert _rounds() == [1, 2], f"期望跑到第 2 轮，实际 {_rounds()}"

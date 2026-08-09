@@ -22,13 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
 from img_iter_agent.agents.summarizer import Summarizer
-from img_iter_agent.llm.openai_compat import OpenAiCompatLlm
+from img_iter_agent.llm.chat_model import build_chat_model
 from img_iter_agent.config import get_settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.data.runstore import RunStore
 from img_iter_agent.generation.client import DmxapiClient
 from img_iter_agent.generation.router import Router
 from img_iter_agent.pipeline.graph import run_loop
+from img_iter_agent.pipeline.runner import _skills_dir
 
 BENCH = "furniture_product_whitebg"
 
@@ -43,10 +44,16 @@ def run_one_sample(sample_id: str, rounds: int, model: str) -> dict:
                             note=f"批量攒trace {sample_id}")
 
     router = Router(settings=settings, client=DmxapiClient(settings))
-    gen_llm = (OpenAiCompatLlm(settings, model=settings.generator_model)
-               if settings.generator_model else None)
-    generator = Generator(router, llm=gen_llm)
-    critic = Critic(OpenAiCompatLlm(settings, model=settings.critic_model), bench=lb.bench)
+    # deepagent 引擎：chat_model 用 ChatOpenAI 指向 dmxapi（build_chat_model 按 role 取 settings 的 model_id）
+    generator = Generator(
+        router, chat_model=build_chat_model(settings, role="generator"),
+        skills_dir=_skills_dir("generator"),
+        data_root=settings.data_root, bench_id=lb.bench.bench_id,
+    )
+    critic = Critic(
+        build_chat_model(settings, role="critic"),
+        bench=lb.bench, skills_dir=_skills_dir("critic"),
+    )
     summarizer = Summarizer()
 
     # decisions: 第1轮跑到 interrupt 后 continue(进第2轮), 第2轮后 stop
