@@ -39,7 +39,7 @@ from .tools.generator_tools import _size_from_str, make_generator_tools
 # 关键：明确工具清单 + 「参考图已在消息里/不要找文件/每个工具至多一次/出图一次即输出」，
 # 配合 NarrowToolsMiddleware 剥掉 fs 工具，杜绝在空 sandbox 里乱逛导致 GraphRecursionError。
 _DEFAULT_GENERATOR_SYS = (
-    "你是产品白底三视图的生图提示词工程师。每轮按以下精简流程，不要发散：\n"
+    "你是生图提示词工程师。每轮按以下精简流程，不要发散：\n"
     "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项）。"
     "参考产品图已直接附在消息里，**不要去文件系统找图**。\n"
     "2. 至多各调一次：query_general_experience（跨题先验，首题也用得上）、"
@@ -110,6 +110,7 @@ class Generator:
         round: int,
         baseline_ref: str | None = None,
         prior_feedback: PriorFeedback | None = None,
+        escalated_warnings: list[str] | None = None,
         model_hint: ModelFamily | None = None,
         config: RunnableConfig | None = None,
     ) -> GenOutcome:
@@ -147,7 +148,10 @@ class Generator:
             middleware=narrow_tools_middleware(),
         )
 
-        user_content = self._build_user_content(sample, round, prior_feedback, reference_images)
+        user_content = self._build_user_content(
+            sample, round, prior_feedback, reference_images,
+            escalated_warnings=escalated_warnings,
+        )
         invoke_cfg = self._merge_recursion(config, AGENT_RECURSION_LIMIT)
 
         result, _ok = invoke_with_retry(
@@ -221,8 +225,10 @@ class Generator:
     def _build_user_content(
         self, sample: Sample, round: int,
         prior_feedback: PriorFeedback | None, reference_images: list[Path],
+        *,
+        escalated_warnings: list[str] | None = None,
     ) -> list[dict] | str:
-        """构造初始 HumanMessage 内容：指令+约束(+上轮失败项)+参考图(image_url)。"""
+        """构造初始 HumanMessage 内容：指令+约束(+上轮失败项)+经验闭环警告+参考图(image_url)。"""
         instr = (sample.spec.task.instruction if sample.spec.task else None) or "生成产品白底三视图素材图"
         constraints = self._extract_constraints(sample)
         text = instr
@@ -244,6 +250,19 @@ class Generator:
             text += (
                 "\n请把指令精炼成清晰 prompt（首题可先 query_general_experience 取跨题先验），"
                 "调 generate_image 出图，最后结构化输出 prompt + delta_note。"
+            )
+
+        # 经验闭环警告（C）：升级/复发维度直接塞 user message，强制 agent 看见（不依赖其自觉调工具）。
+        # 必达 + trace 可见；升级维度要求换根本思路，复发维度提示勿重复上轮思路。
+        if escalated_warnings:
+            warn = "\n".join(f"- {w}" for w in escalated_warnings)
+            text += (
+                "\n\n【经验闭环警告（必须遵守）】\n"
+                f"{warn}\n"
+                "上述维度已被验证 prompt 微调无效或反复失败。本轮必须："
+                "(a) 优先 query_experience 查已试过的失败思路勿重复；"
+                "(b) 对⚠️升级维度换根本性方向（换 test_variable 如 reference_images/size，或上报人工），"
+                "不要再微调同一 prompt 思路。"
             )
 
         if not reference_images:

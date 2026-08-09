@@ -75,6 +75,7 @@ def build_graph(
         round_n = state.get("round", 0) + 1
         baseline_ref = None
         prior_feedback = None
+        escalated_warnings: list[str] = []  # 经验闭环累积反馈（C）：升级/复发维度警告
         # 若有上轮 verdict，提取失败项作为反馈，供 Generator 改进 prompt
         prev_verdict = state.get("_verdict")
         if round_n > 1 and prev_verdict is not None:
@@ -87,6 +88,21 @@ def build_graph(
                 elif d.value < 0.7 and d.raw:  # 连续维度低分(<0.7)且带理由
                     cont_notes.append(f"{d.dim}: {d.raw}")
             prior_feedback = PriorFeedback(failed_items=failed, continuous_notes=cont_notes)
+            # 经验闭环累积反馈（C）：从 conclusions 算升级/复发维度 → 警告直接塞 user message（强制看见）
+            from ..memory import knowledge as _kbmod
+            _kb = _kbmod.load_conclusions(run_dir, sample_id=sample_id)
+            _escalated = _kb.escalated_dims()
+            for dim in sorted(_escalated):
+                streak = _kb.fail_streaks.get(dim, 0)
+                escalated_warnings.append(
+                    f"⚠️ [{dim}] 已连续失败 {streak} 轮，prompt 微调疑似无效（模型能力上限），"
+                    f"必须换根本思路（换 test_variable 如 reference_images/size，或上报人工）"
+                )
+            for dim, streak in sorted(_kb.fail_streaks.items()):
+                if 0 < streak < _kbmod.ESCALATION_THRESHOLD and dim not in _escalated:
+                    escalated_warnings.append(
+                        f"[{dim}] 已连续失败 {streak} 轮，本轮避免重复上轮失败思路"
+                    )
             # baseline 指向上轮 attempt（index 里还原度最高的）
             from ..memory.index import recall
             prior = recall(run_dir, limit=1)
@@ -96,7 +112,9 @@ def build_graph(
         outcome = generator.generate_round(
             sample=sample, out_dir=run_dir / "out", run_dir=run_dir,
             round=round_n, baseline_ref=baseline_ref,
-            prior_feedback=prior_feedback, model_hint=model_hint, config=config,
+            prior_feedback=prior_feedback,
+            escalated_warnings=escalated_warnings or None,
+            model_hint=model_hint, config=config,
         )
         return {
             "round": round_n,
@@ -150,10 +168,18 @@ def build_graph(
             for d in verdict.dimensions:
                 if d.scoring_type == "binary":
                     failed += [it.id for it in (d.items or []) if not it.passed]
+        # 升级维度（B）：让人在审批时看到哪些 dim 已撞模型上限、连续失败几轮
+        from ..memory import knowledge as _kbmod
+        _kb = _kbmod.load_conclusions(run_dir, sample_id=sample_id)
+        escalated_detail = [
+            {"dim": d, "streak": _kb.fail_streaks.get(d, 0)}
+            for d in sorted(_kb.escalated_dims())
+        ]
         payload = {
             "round": round_n,
             "restoration": round(restoration, 4) if restoration is not None else None,
             "failed_items": failed,
+            "escalated_dims": escalated_detail,
             "images": state.get("images", [])[-3:],
             "prompt": "回复 continue 继续下一轮 / stop 停止 / 或输入调整方向",
         }

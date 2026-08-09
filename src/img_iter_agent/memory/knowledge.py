@@ -37,6 +37,10 @@ class KnowledgeBase(BaseModel):
     loop_id: str = ""
     updated_at: str = ""
     conclusions: list[KnowledgeConclusion] = Field(default_factory=list)
+    # per-dim 连续失败轮数（B 复发检测，落盘）。键=dim，值=截至最近一轮该 dim 连续失败的轮数。
+    # 放 KnowledgeBase 而非每条 conclusion：复发是 per-dim 跨「不同 change」的累计——每轮 change=delta_note
+    # 文本不同 → upsert 新建 conclusion；若存 conclusion 上，同 dim 多条各自 streak=1 看不出连续失败。
+    fail_streaks: dict[str, int] = Field(default_factory=dict)
 
     def by_id(self, cid: str) -> KnowledgeConclusion | None:
         return next((c for c in self.conclusions if c.id == cid), None)
@@ -46,11 +50,22 @@ class KnowledgeBase(BaseModel):
         return [c for c in self.conclusions if c.status == "pending"]
 
     def verified_for_generator(self) -> dict[str, list[KnowledgeConclusion]]:
-        """供 Generator 读：effective（应保持的约束）/ ineffective（应换思路）。"""
+        """供 Generator 读：effective（应保持的约束）/ ineffective（应换思路）/ escalated（已撞模型上限，勿微调）。"""
         return {
             "effective": [c for c in self.conclusions if c.status == "verified_effective"],
             "ineffective": [c for c in self.conclusions if c.status == "ineffective"],
+            "escalated": [c for c in self.conclusions if c.escalated],
         }
+
+    def escalated_dims(self) -> set[str]:
+        """当前已达升级阈值的 dim 集合（连续失败 ≥ ESCALATION_THRESHOLD）。"""
+        return {d for d, s in self.fail_streaks.items() if s >= ESCALATION_THRESHOLD}
+
+
+# 升级阈值：同 dim 连续失败 ≥2 轮 → escalated（提示换根本思路，勿再 prompt 微调）。
+# 依据：trajectory 显示崩后第 2 轮「原样复发」（如 s003 r5→r6）即应升级，让 r7 换思路。
+# 阈值=1 太激进（偶发失败误伤），=3 慢一轮。
+ESCALATION_THRESHOLD = 2
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +215,71 @@ def judge_status(
     return status, evidence, lesson
 
 
+# ---------------------------------------------------------------------------
+# 复发检测 + 升级（B）：per-dim 连续失败计数驱动，与 judge_status 职责分离
+# ---------------------------------------------------------------------------
+
+
+def _dim_failed(verdict: CriticVerdict, dim: str) -> bool:
+    """该 dim 在本轮 verdict 是否算失败（binary 有未过项 OR 连续维度 <0.7）。"""
+    d = next((x for x in verdict.dimensions if x.dim == dim), None)
+    if d is None:
+        return False
+    if d.scoring_type == "binary":
+        return any(not it.passed for it in (d.items or []))
+    return d.value < 0.7
+
+
+def update_fail_streaks(
+    kb: KnowledgeBase, *, cur_verdict: CriticVerdict
+) -> dict[str, str]:
+    """按本轮 verdict 更新 per-dim 连续失败计数（B 核心）。
+
+    语义：dim 本轮失败 → streak += 1；通过 → streak = 0（复位）。
+    返回 {dim: "incremented" | "reset" | "escalated"}：
+      "escalated" = 本轮累加后恰好跨过 ESCALATION_THRESHOLD（升级瞬间，供 summarizer 写 trace）。
+    """
+    changes: dict[str, str] = {}
+    for d in cur_verdict.dimensions:
+        dim = d.dim
+        prev = kb.fail_streaks.get(dim, 0)
+        if _dim_failed(cur_verdict, dim):
+            new_streak = prev + 1
+            kb.fail_streaks[dim] = new_streak
+            changes[dim] = (
+                "escalated" if prev < ESCALATION_THRESHOLD <= new_streak else "incremented"
+            )
+        elif prev > 0:
+            kb.fail_streaks[dim] = 0
+            changes[dim] = "reset"
+    return changes
+
+
+def apply_escalation(kb: KnowledgeBase, *, cur_round: int) -> list[str]:
+    """把升级阈值命中的 dim 标记到对应 conclusion（置 escalated=True）。
+
+    在 update_fail_streaks 之后调用。对每个 escalated dim 的最近一条 conclusion 打标记
+    （status 不动——escalated 是与 status 正交的叠加标注）。返回本轮新标记升级的 dim 列表。
+    """
+    newly: list[str] = []
+    for dim in kb.escalated_dims():
+        cands = [c for c in kb.conclusions if c.dim == dim]
+        if not cands:
+            continue
+        c = cands[-1]
+        if not c.escalated:
+            c.escalated = True
+            newly.append(dim)
+    return newly
+
+
 __all__ = [
+    "ESCALATION_THRESHOLD",
     "KnowledgeBase",
+    "apply_escalation",
     "judge_status",
     "load_conclusions",
     "save_conclusions",
+    "update_fail_streaks",
     "upsert_conclusion",
 ]

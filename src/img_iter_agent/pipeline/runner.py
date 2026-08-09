@@ -166,7 +166,7 @@ def build_loop_context(
     )
     critic_chat = build_chat_model(settings, role="critic")
     critic = Critic(critic_chat, bench=lb.bench, skills_dir=_skills_dir("critic"))
-    summarizer = Summarizer()
+    summarizer = Summarizer(chat_model=build_chat_model(settings, role="summarizer"))
 
     checkpointer = open_checkpointer(store.run_dir) if persist else InMemorySaver()
     app = build_graph(

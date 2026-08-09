@@ -38,16 +38,28 @@ def _size_from_str(s: str) -> SizeSpec:
 
 
 def _format_experience(run_dir: Path, dim: str | None = None) -> str:
-    """读 conclusions.json，格式化已验证有效/无效经验（原 Generator.knowledge_context 的逻辑）。"""
+    """读 conclusions.json，格式化已验证有效/无效/已升级经验。
+
+    escalated 分组（B 复发检测）：该 dim 连续失败已撞模型能力上限，标注连续失败轮数，
+    提示 generator 勿再 prompt 微调、需换根本方向。
+    """
     kb = load_conclusions(run_dir)
     groups = kb.verified_for_generator()
-    effective, ineffective = groups["effective"], groups["ineffective"]
+    effective = groups["effective"]
+    ineffective = groups["ineffective"]
+    escalated = groups.get("escalated", [])
     if dim:
         effective = [c for c in effective if c.dim == dim]
         ineffective = [c for c in ineffective if c.dim == dim]
-    if not effective and not ineffective:
+        escalated = [c for c in escalated if c.dim == dim]
+    if not effective and not ineffective and not escalated:
         return "（暂无已验证经验）"
     lines: list[str] = []
+    if escalated:
+        lines.append("【已升级（连续失败疑似模型上限，勿重复微调，需换根本方向）】")
+        for c in escalated:
+            streak = kb.fail_streaks.get(c.dim, 0)
+            lines.append(f"- [{c.dim}] (连续失败 {streak} 轮) {c.change} → {c.lesson}")
     if effective:
         lines.append("【已验证有效（建议保持）】")
         for c in effective:
@@ -55,7 +67,9 @@ def _format_experience(run_dir: Path, dim: str | None = None) -> str:
     if ineffective:
         lines.append("【已验证无效（勿重复，需换思路）】")
         for c in ineffective:
-            lines.append(f"- [{c.dim}] {c.change} → {c.lesson}")
+            streak = kb.fail_streaks.get(c.dim, 0)
+            tag = f" (连续失败 {streak} 轮)" if streak > 0 else ""
+            lines.append(f"- [{c.dim}]{tag} {c.change} → {c.lesson}")
     return "\n".join(lines)
 
 

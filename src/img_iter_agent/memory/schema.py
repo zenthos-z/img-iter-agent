@@ -302,6 +302,10 @@ class KnowledgeConclusion(BaseModel):
     tags: list[str] = Field(default_factory=list)
     created_round: int  # 首次提出（改动）的轮次
     verified_round: int | None = None  # 验证完成的轮次
+    # 升级标记（B 复发检测）：该 dim 连续失败 ≥ ESCALATION_THRESHOLD 轮时，最近一条结论置 True。
+    # 与 status 正交（status 仍是 effective/ineffective/pending）—— escalated 是叠加的「已撞模型能力上限」标注，
+    # 提示 generator 换根本思路 / 上报人工，而非继续 prompt 微调。
+    escalated: bool = False
 
 
 __all__ = [
