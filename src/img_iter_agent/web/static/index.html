@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>img-iter-agent · 打分台</title>
-<link rel="stylesheet" href="/assets/app.css?v=20250809c">
+<link rel="stylesheet" href="/assets/app.css?v=20250809h">
 </head>
 <body>
 <div class="app-shell">
@@ -30,6 +30,10 @@
       <a class="nav-item" href="#/config" data-nav="config">Agent 设置</a>
     </nav>
     <div class="sidebar-foot">
+      <button class="nav-item compact-toggle" id="compact-toggle" type="button" onclick="toggleCompactMode()">
+        <span>紧凑模式</span>
+        <span class="compact-dot"></span>
+      </button>
       <a class="nav-item" href="https://github.com" target="_blank" rel="noopener">帮助文档</a>
     </div>
   </aside>
@@ -67,6 +71,6 @@
 <!-- Toast 容器 -->
 <div class="toast-stack" id="toast-stack"></div>
 
-<script src="/assets/app.js?v=20250809c"></script>
+<script src="/assets/app.js?v=20250809h"></script>
 </body>
 </html>

@@ -107,7 +107,7 @@ def export_skill_md(bench_id: str) -> PlainTextResponse:
 
 @router.get("/experience/{bench_id}/skill.zip")
 def export_skill_zip(bench_id: str):
-    """导出规范可安装技能包（.skill = 技能目录 zip，根 <slug>/）。
+    """导出规范技能包 zip（技能目录 zip，根 <slug>/）。
 
     外部 agent 工具加载/安装即可复现该 benchmark 的生成能力。
     """
@@ -134,5 +134,5 @@ def export_skill_zip(bench_id: str):
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{slug}.skill"'},
+        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'},
     )

@@ -51,23 +51,36 @@ def main() -> int:
     ap.add_argument("--samples", nargs="+", required=True)
     ap.add_argument("--rounds", type=int, default=6)
     ap.add_argument("--tag", default="batch")
+    ap.add_argument("--model", default=None,
+                    help="生图 model_id（转发给 run_loop_auto，如 gemini-3.1-flash-image）；不传则用默认")
+    ap.add_argument("--concurrency", type=int, default=1,
+                    help="sample 并发度（默认 1=串行；>1 则多个 sample 同时跑，注意网关限流/抖动风险）")
     ap.add_argument("--python", default=".venv/bin/python",
                     help="python 解释器（默认项目根 .venv/bin/python）")
     args = ap.parse_args()
 
     root = project_root()
     py = args.python if Path(args.python).is_absolute() else str(root / args.python)
-    results: list[tuple[str, int, list[float | None]]] = []
-    for s in args.samples:
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run_one(s: str) -> tuple[str, int, list[float | None]]:
         loop_id = f"{args.bench}-{s}-{args.tag}"
-        print(f"\n{'='*60}\n[batch] 开始 {loop_id}（{args.rounds} 轮）\n{'='*60}")
-        rc = subprocess.run(
-            [py, str(RUN_AUTO), "--bench", args.bench, "--sample", s,
-             "--rounds", str(args.rounds), "--tag", args.tag],
-            cwd=str(root),
-        ).returncode
+        print(f"[batch] 启动 {loop_id}（{args.rounds} 轮）", flush=True)
+        cmd = [py, str(RUN_AUTO), "--bench", args.bench, "--sample", s,
+               "--rounds", str(args.rounds), "--tag", args.tag]
+        if args.model:
+            cmd += ["--model", args.model]
+        rc = subprocess.run(cmd, cwd=str(root)).returncode
         rest = read_rest_series(root / "data" / "runs" / loop_id)
-        results.append((loop_id, rc, rest))
+        print(f"[batch] 完成 {loop_id} rc={rc}", flush=True)
+        return (loop_id, rc, rest)
+
+    print(f"[batch] 并发度={args.concurrency} | samples={args.samples} | "
+          f"生图模型={args.model or '默认(seedream)'} | 目标轮数={args.rounds}", flush=True)
+    results: list[tuple[str, int, list[float | None]]] = []
+    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as ex:
+        results = list(ex.map(_run_one, args.samples))
 
     print(f"\n{'='*60}\n[batch] 汇总\n{'='*60}")
     for loop_id, rc, rest in results:

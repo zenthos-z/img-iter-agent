@@ -969,6 +969,154 @@
         "nodeId": "page-overview",
         "htmlSrc": "pages/overview.html"
       }
+    ],
+    "expectedDispatches": [
+      {
+        "nodeId": "page-overview-compact",
+        "pageId": "page-overview-compact",
+        "targetPageId": "page-overview-compact",
+        "htmlSrc": "pages/overview-compact.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/overview-compact.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "f8b15705ef72e2fb103efa9fb16711ab3acaa10b035e1a9630548995cf957117",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:51:18.805Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-loop-compact",
+        "pageId": "page-loop-compact",
+        "targetPageId": "page-loop-compact",
+        "htmlSrc": "pages/loop-compact.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/loop-compact.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "49bab36c911627b3d5acbdfa3e751114e517bdda7f096be0c977a92a56c49e38",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:21.408Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-overview",
+        "pageId": "page-overview",
+        "targetPageId": "page-overview",
+        "htmlSrc": "pages/overview.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "not_required",
+        "changedFiles": [],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "67bbd9f91cf08e03b0ee0c0ed0a17be1e822dd1258ee4be650717cee7b8d7085",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:23.975Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-running",
+        "pageId": "page-running",
+        "targetPageId": "page-running",
+        "htmlSrc": "pages/running.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "not_required",
+        "changedFiles": [],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "579c371f970a5c057ad8608b33df5174db277e0ae1681202d80489e1c48eebed",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:25.826Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-scoring",
+        "pageId": "page-scoring",
+        "targetPageId": "page-scoring",
+        "htmlSrc": "pages/scoring.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "not_required",
+        "changedFiles": [],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "d24fde7299cb70e8e29ae1f054fca43b99ceb10b3b1035b245750b30a5015339",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:27.833Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-config",
+        "pageId": "page-config",
+        "targetPageId": "page-config",
+        "htmlSrc": "pages/config.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "not_required",
+        "changedFiles": [],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "cc0cb90e228bc123a7b94f19b9716d1db27da07c944c53fad8566d9398ba0086",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:29.343Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-loop",
+        "pageId": "page-loop",
+        "targetPageId": "page-loop",
+        "htmlSrc": "pages/loop.html",
+        "packetType": "ExistingEditPagePacket",
+        "status": "not_required",
+        "changedFiles": [],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "42f4344e18b2e0a2d3a78a192fe4d642f354ed9192bf6779ca4c659a4bc7a2d1",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-09T14:52:31.487Z",
+        "source": "record-dispatch-completion.mjs"
+      }
+    ],
+    "mainAgentPostDispatchMutations": [
+      {
+        "path": ".design",
+        "reason": "registered compact page interactions",
+        "owner": "main-agent",
+        "recordedAt": "2026-08-09T14:51:18.805Z",
+        "source": "record-dispatch-completion.mjs"
+      }
     ]
   },
   "pages": [

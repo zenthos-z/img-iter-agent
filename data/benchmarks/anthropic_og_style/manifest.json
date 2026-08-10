@@ -1,12 +1,12 @@
 {
   "bench_id": "anthropic_og_style",
-  "version": "2.0.0",
-  "scene": "Anthropic OG 封面风格 · 多文章概念表达 benchmark（考风格精髓 + 概念表达 + 方法泛化性）",
-  "description": "全新场景：6 篇文章 × 风格神韵迁移。Generator 看参考集(7 张)抽象风格共性，凭『一篇文章的核心概念』原创一张同神韵、motif 不复制参考的封面，并产出一句话图片含义(meaning)。Critic 按三柱打分：神韵(0.40)/原创(0.40)/概念表达(0.20)。6 篇分两组：2 篇【参考对照】(og 在参考集，有官方 motif 作 ground truth 对照)、4 篇【非案例考题】(og 不在参考集，纯考泛化与概念原创表达)。泛化性 = benchmark 级跨 sample 考察：general.json 沉淀跨文章通用的『风格→概念』表达方法，后跑 sample 首轮是否优于冷启动。神韵 5 要素为 v1 候选，随经验闭环演化(见策略文档§6)。",
+  "version": "2.1.0",
+  "scene": "Anthropic OG 封面风格 · 多文章概念表达 benchmark（考风格精髓 + 概念表达 + 方法泛化性 + 创造力）",
+  "description": "全新场景：6 篇文章 × 风格神韵迁移。Generator 看参考集(7 张)抽象风格共性，凭『一篇文章的核心概念』原创一张同神韵、motif 不复制参考的封面，并产出一句话图片含义(meaning)。Generator 可选地给生图模型传参考图作风格锚定（解禁），但 Critic 用创造力维度反制过度锚定。Critic 按四柱打分：神韵(~0.36)/原创(~0.20)/概念表达(~0.14)/创造力(~0.30)。6 篇分两组：2 篇【参考对照】(og 在参考集，有官方 motif 作 ground truth 对照)、4 篇【非案例考题】(og 不在参考集，纯考泛化与概念原创表达)。泛化性 = benchmark 级跨 sample 考察：general.json 沉淀跨文章通用的『风格→概念』表达方法，后跑 sample 首轮是否优于冷启动。神韵 5 要素为 v1 候选，创造力子标准由对抗 tuner 全自动演化(见策略文档§6 + creativity_tuner)。",
 
   "scene_type": "style_transfer",
   "scoring_method": "hybrid_with_rank_calibration",
-  "scoring_note": "三柱：神韵(系统提炼5要素)/原创(motif非复制+原创度)/概念表达(图+meaning表达文章核心概念)。还原度=Σ(wᵢ×feature)，权重和=1.000。",
+  "scoring_note": "四柱：神韵(系统提炼5要素)/原创(motif非复制+原创度)/概念表达(图+meaning表达文章核心概念)/创造力(创造性偏离+参考独立性，反制参考图过度锚定)。还原度=Σ(wᵢ×feature)，权重和=1.000。",
 
   "generalization_protocol": {
     "design": "6 sample 分两组测泛化性",
@@ -26,52 +26,62 @@
   "score_dimensions": [
     {"pillar": "spirit", "dim": "spirit_hand_form", "title": "抽象主体造型 + 结构正确性",
      "desc": "主体(手或物件)抽象极简造型；构图由概念决定；结构合理(抽象允许夸张但无结构错误——抽象≠无逻辑)",
-     "weight_init": 0.100, "ref_needed": true, "scoring_type": "binary",
-     "check_items": ["spirit_hand_form-1 主体造型抽象极简(粗黑墨线+几何化，非写实解剖)", "spirit_hand_form-2 构图服务于概念(手有无/位置/姿势/物件由概念决定；参考集有多样手姿势+无手变体)", "spirit_hand_form-3 结构合理(抽象允许夸张，但无多指/关节错乱/无规律扭曲)"]},
+     "weight_init": 0.090, "ref_needed": true, "scoring_type": "binary",
+     "check_items": ["spirit_hand_form-1 主体造型抽象极简(粗黑墨线+几何化，非写实解剖)", "spirit_hand_form-2 构图服务于概念(手有无/位置/姿势/物件由概念决定；参考集有多样手姿势+无手变体)", "spirit_hand_form-3 结构合理(抽象允许夸张，但无多指/关节错乱/无规律扭曲)", "spirit_hand_form-4 手为极致平面表达：整只手是一笔完成的连续粗墨线轮廓，无指甲/褶皱/关节纹理/肌肉起伏等任何细节", "spirit_hand_form-5 纯平面一点透视(正视图)：手与物件无错落立体堆叠、无前后遮挡纵深，整体如扁平贴纸"]},
 
     {"pillar": "spirit", "dim": "spirit_ink_line", "title": "墨线质感",
      "desc": "黑线模拟毛笔/软头马克笔：起笔略粗收笔略细，自然顿挫但流畅连贯；禁机械直线",
-     "weight_init": 0.088, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-墨线质感"},
+     "weight_init": 0.079, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-墨线质感"},
 
     {"pillar": "spirit", "dim": "spirit_geometric_object", "title": "几何化物件简化",
      "desc": "实体物件提炼为 2–4 个基础几何形，去纹理/阴影，仅轮廓与必要连接",
-     "weight_init": 0.080, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-几何化物件"},
+     "weight_init": 0.072, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-几何化物件"},
 
     {"pillar": "spirit", "dim": "spirit_negative_space", "title": "负空间节奏",
      "desc": "70%+ 单色背景，主体集中右上/中右，形成『左下动手、右上构型』的不对称平衡",
-     "weight_init": 0.072, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-负空间节奏"},
+     "weight_init": 0.065, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#神韵-负空间节奏"},
 
     {"pillar": "spirit", "dim": "spirit_symbolic_interaction", "title": "象征性互动",
      "desc": "手与物件的关系是隐喻性动作(托举思想/编织连接/轻触开启)，动作即概念表达",
-     "weight_init": 0.060, "ref_needed": true, "scoring_type": "binary",
+     "weight_init": 0.054, "ref_needed": true, "scoring_type": "binary",
      "check_items": ["spirit_symbolic_interaction-1 手与物件存在直接接触点(线相交或端点触碰)", "spirit_symbolic_interaction-2 互动具单向引导性(手→物 或 物→手)", "spirit_symbolic_interaction-3 无双手、无工具中介(镊子/钳子等)"]},
 
     {"pillar": "originality", "dim": "originality_motif", "title": "motif 非复制(否决倾向)",
      "desc": "生成图主体动作/motif 不得明显雷同于任一参考图的 motif(见 reference_motifs)。参考对照类(sample s002/s003)额外不得直接复制本文章官方 og 的 motif",
-     "weight_init": 0.240, "ref_needed": true, "scoring_type": "binary",
+     "weight_init": 0.130, "ref_needed": true, "scoring_type": "binary",
      "check_items": ["originality_motif-1 主体 motif 与 7 个参考 motif 均非明显雷同", "originality_motif-2 未直接复制某个参考的手+物组合", "originality_motif-3 物件类型与几何组合与参考集有明显区分"]},
 
     {"pillar": "originality", "dim": "originality_degree", "title": "原创程度",
      "desc": "motif 构思的新颖度——是否在参考集 motif 空间之外提出新的隐喻动作",
-     "weight_init": 0.160, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#原创-原创程度"},
+     "weight_init": 0.070, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#原创-原创程度"},
 
     {"pillar": "concept", "dim": "concept_expression", "title": "概念表达",
      "desc": "图 + Generator 的 meaning 解释是否清晰表达了给定文章的【核心概念】(不只是泛主题，而是具体概念)；是本次升级的核心考察点",
-     "weight_init": 0.120, "ref_needed": false, "scoring_type": "binary",
+     "weight_init": 0.085, "ref_needed": false, "scoring_type": "binary",
      "check_items": ["concept_expression-1 图的视觉隐喻与 meaning 一致(图确实表达了它声称的概念)", "concept_expression-2 图+meaning 共同清晰表达文章核心概念(非泛主题、非随机手物组合)"]},
 
     {"pillar": "concept", "dim": "concept_clarity", "title": "概念表达清晰度",
      "desc": "概念隐喻的清晰度——观者能否看出图与文章核心概念的关联",
-     "weight_init": 0.080, "ref_needed": false, "scoring_type": "continuous", "rubric_ref": "rubric.md#概念-清晰度"}
+     "weight_init": 0.055, "ref_needed": false, "scoring_type": "continuous", "rubric_ref": "rubric.md#概念-清晰度"},
+
+    {"pillar": "creativity", "dim": "creative_departure", "title": "创造性偏离",
+     "desc": "在保留风格神韵的前提下，提出参考集 motif 空间之外的全新视觉隐喻/构图思路（创造性=有意义的偏离，服务于文章概念，非随机求新）。创造力主维度，反制参考图过度锚定",
+     "weight_init": 0.200, "ref_needed": true, "scoring_type": "continuous", "rubric_ref": "rubric.md#创造性-偏离",
+     "note": "种子标准；细分由 creativity_tuner 对抗式全自动演化，overlay 见 creativity_criteria.json"},
+
+    {"pillar": "creativity", "dim": "reference_independence", "title": "参考独立性",
+     "desc": "生成图与本次实际传入生图 API 的参考图(见 trajectory reference_ids)保持独立性——未直接复制参考的具体 motif/手物组合/构图。纯文生图(reference_ids 空)默认通过",
+     "weight_init": 0.100, "ref_needed": true, "scoring_type": "binary",
+     "check_items": ["reference_independence-1 生成图 motif 与本次实际传入参考图(reference_ids)无直接复制", "reference_independence-2 纯文生图(reference_ids 空)时本项默认通过"]}
   ],
 
-  "comparative_dims": ["spirit_hand_form", "spirit_ink_line", "spirit_geometric_object", "spirit_negative_space", "spirit_symbolic_interaction", "originality_motif", "originality_degree"],
+  "comparative_dims": ["spirit_hand_form", "spirit_ink_line", "spirit_geometric_object", "spirit_negative_space", "spirit_symbolic_interaction", "originality_motif", "originality_degree", "creative_departure", "reference_independence"],
   "absolute_dims": ["concept_expression", "concept_clarity"],
 
   "task": {
     "type": "style_transfer_single",
     "layout": "single_cover",
-    "input_contract": "Generator 收『参考集(7 张) + 文章核心概念(article_topic) + 风格 brief(辅助)』；学参考集风格共性、禁复制任一 motif。产出 = 图 + 一句话 meaning。",
+    "input_contract": "Generator 收『参考集(7 张) + 文章核心概念(article_topic) + 风格 brief(辅助)』；学参考集风格共性、禁复制任一 motif。Generator 可选地用 generate_image 的 reference_images 参数把部分参考图作为风格锚定传给生图模型（Gemini 作 inline_data 条件）。产出 = 图 + 一句话 meaning。",
     "output": "单张封面插画 + meaning(一句话含义解释)"
   },
 

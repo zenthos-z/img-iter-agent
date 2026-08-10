@@ -1,0 +1,76 @@
+{
+  "bench_id": "anthropic_og_style",
+  "version": 1,
+  "created_at": "2026-08-10T09:36:11.403982+00:00",
+  "updated_at": "2026-08-10T09:36:11.403986+00:00",
+  "source_runs": [
+    "anthropic_og_style-s001-creative-gemini",
+    "anthropic_og_style-s002-creative-gemini",
+    "anthropic_og_style-s003-creative-gemini",
+    "anthropic_og_style-s004-creative-gemini",
+    "anthropic_og_style-s005-creative-gemini",
+    "anthropic_og_style-s006-creative-gemini"
+  ],
+  "weights": {
+    "creative_departure": 0.2,
+    "reference_independence": 0.1
+  },
+  "criteria": {
+    "creative_departure": {
+      "scoring_type": "continuous",
+      "points": [
+        "是否通过视觉隐喻或动作逻辑的重构（而非仅是元素替换），超越参考集中的现有构图模式",
+        "偏离是否有意义（服务于文章概念，非随机求新）",
+        "在风格神韵约束下，能否主动打破参考图的肢体语言或互动范式（如从‘手持物’进化为‘系统化控制’或‘抽象边界界定’）"
+      ]
+    },
+    "reference_independence": {
+      "scoring_type": "binary",
+      "items": [
+        {
+          "id": "reference_independence-1",
+          "check": "生成图 motif 与本次实际传入参考图(reference_ids)无直接复制",
+          "anchor": null
+        },
+        {
+          "id": "reference_independence-2",
+          "check": "纯文生图(reference_ids 为空)时本项默认通过",
+          "anchor": null
+        },
+        {
+          "id": "reference_independence-3,",
+          "check": "生成图未显性复刻或简单拼贴参考图中的核心视觉 Motif 组合（即：不仅是无直接复制，更要避免 motif 拼贴感）",
+          "anchor": null
+        }
+      ]
+    }
+  },
+  "history": [
+    {
+      "version": 1,
+      "ts": "2026-08-10T09:36:11.403992+00:00",
+      "source_runs": [
+        "anthropic_og_style-s001-creative-gemini",
+        "anthropic_og_style-s002-creative-gemini",
+        "anthropic_og_style-s003-creative-gemini",
+        "anthropic_og_style-s004-creative-gemini",
+        "anthropic_og_style-s005-creative-gemini",
+        "anthropic_og_style-s006-creative-gemini"
+      ],
+      "delta_summary": "当前系统判别力良好（discriminates=true），且未出现明显的假阳性或假阴性。通过对 creative_departure 的措辞优化，引导模型从‘元素级别’创新向‘逻辑与范式级别’创新进阶。新增 reference_independence-3 旨在遏制对参考集 motif 组合的潜在路径依赖。",
+      "weight_delta": {},
+      "signals": {
+        "n_records": 24,
+        "n_with_refs": 19,
+        "creative_departure_mean": 0.8804,
+        "creative_departure_var": 0.0316,
+        "copy_reward_corr": 0.007,
+        "noise_as_creative_count": 0,
+        "over_strict_count": 0,
+        "reference_independence_mean": 0.9375,
+        "discriminates": true
+      },
+      "n_items": 3
+    }
+  ]
+}

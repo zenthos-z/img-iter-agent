@@ -114,6 +114,58 @@ def _skill_author_review_prompt() -> str:
 _VIEW_MAX_DIM = 1280
 
 
+def _render_checklist(checklist: dict | None) -> str:
+    """把 content_spec.checklist（per-dim 逐项判定）渲染成可读文本——这是「生成目标」的细则。
+
+    binary 维度：list[{id, check, anchor?}]；continuous 维度：{_scoring, points[]}。
+    """
+    if not checklist:
+        return "(无)"
+    lines: list[str] = []
+    for dim, body in checklist.items():
+        lines.append(f"#### {dim}")
+        if isinstance(body, dict):
+            if body.get("_scoring"):
+                lines.append(f"_评分：{body['_scoring']}_")
+            for p in body.get("points") or []:
+                lines.append(f"- {p}")
+        elif isinstance(body, list):
+            for it in body:
+                if isinstance(it, dict):
+                    anchor = f"（对照 {it['anchor']}）" if it.get("anchor") else ""
+                    lines.append(f"- [{it.get('id', '')}] {it.get('check', '')}{anchor}")
+                else:
+                    lines.append(f"- {it}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _render_constraints(constraints: dict | None) -> str:
+    """把 content_spec.constraints 渲染成可读文本——必须保留/可变/必须避免/禁止 motif。
+
+    forbidden_motifs（禁复制的参考 motif）对原创性维度至关重要，单独高亮。
+    """
+    if not constraints:
+        return "(无)"
+    lines: list[str] = []
+    labels = [
+        ("must_keep", "必须保留"),
+        ("may_change", "可变"),
+        ("must_avoid", "必须避免"),
+        ("forbidden_motifs", "禁止 motif（不得复制的参考 motif——原创性维度的硬约束）"),
+    ]
+    for key, label in labels:
+        vals = constraints.get(key)
+        if not vals:
+            continue
+        lines.append(f"**{label}**：")
+        for v in vals:
+            lines.append(f"- {v}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+
 def _resized_data_uri(path: Path, max_dim: int = _VIEW_MAX_DIM) -> str | None:
     """读图 → 等比缩到最长边 max_dim → JPEG data-URI（控制注入蒸馏器 prompt 的体积）。"""
     try:
@@ -547,24 +599,32 @@ class ExperienceDistiller:
         except Exception:  # noqa: BLE001
             pass
 
-        # 评分维度（质量标准/自检）
-        lines.append("\n## 评分维度（生成后自检 / 质量标准）")
+        # === ⭐ 生成目标（评分标准——skill 必须命中的目标；这是考题的"要求"）===
+        # 旧版只给一行 dim 摘要 + 截断 JSON，agent 漏掉原创性/创造力等高权重维度 → 产出机械。
+        # 现：rubric 全文 + dimensions(权重/类型/完整 desc) + checklist 逐项 + constraints(含 forbidden_motifs)。
+        spec_d = spec.model_dump() if spec else {}
+        lines.append(
+            "\n## ⭐ 生成目标（评分标准——本技能必须让产出命中的目标）\n"
+            "下方是 benchmark 的评分真源：rubric（人类可读细则）+ score_dimensions（机器真源，含权重）"
+            "+ checklist（逐项判定）+ constraints（必须保留/可变/必须避免/禁止 motif）。"
+            "**SKILL.md 必须传达这些目标**——尤其高权重维度（注意原创性/创造力常占大权重）与禁止 motif，"
+            "别只盯风格还原。"
+        )
+        rubric_path = self.lb.bench_dir / "rubric.md"
+        if rubric_path.exists():
+            lines.append("\n### rubric.md（评分细则全文——首要）\n" + rubric_path.read_text(encoding="utf-8"))
+        lines.append("\n### score_dimensions（机器真源：dim / 权重 / 类型 / 判定标准）")
         for d in bench.score_dimensions:
             lines.append(
-                f"- {d.dim}（{getattr(d, 'scoring_type', '?')}, 权重 {getattr(d, 'weight_init', '?')}）: {d.desc or ''}"
+                f"- **{d.dim}**（{getattr(d, 'scoring_type', '?')}, 权重 {getattr(d, 'weight_init', '?')}）："
+                f"{d.desc or ''}"
             )
-        if spec and getattr(spec, "checklist", None):
-            lines.append(
-                "\n**checklist 摘要**："
-                + json.dumps(spec.model_dump().get("checklist") or {}, ensure_ascii=False)[:1200]
-            )
-
-        # 约束
-        if spec and getattr(spec, "constraints", None):
-            lines.append(
-                "\n## 约束（must_keep / may_change / must_avoid / forbidden_motifs）\n"
-                + json.dumps(spec.model_dump().get("constraints") or {}, ensure_ascii=False)
-            )
+        cl = spec_d.get("checklist")
+        if cl:
+            lines.append("\n### checklist（逐项判定细则）\n" + _render_checklist(cl))
+        cs = spec_d.get("constraints")
+        if cs:
+            lines.append("\n### constraints\n" + _render_constraints(cs))
 
         # 头号燃料：style_brief.md 全文（风格 spec——创作风格指南的首要依据）
         if sample_dir is not None:

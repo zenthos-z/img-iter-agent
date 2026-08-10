@@ -60,7 +60,9 @@ def load_weights(
 
     优先级（高→低）：
         1. `run_dir/calibrated_weights.json`（单 loop 校准产物）
-        2. `data/calibration/<bench_id>/<sample_id>_weights.json`（sample 级跨 loop 校准产物）
+        2. `data/calibration/<bench_id>/<sample_id>_weights.json`（sample 级跨 loop 人工校准产物）
+        2.5. `data/benchmarks/<bench_id>/creativity_criteria.json`（bench 级创造力对抗 tuner 产物；
+              仅含创造力维度权重，merge 进先验；低于人工校准、高于先验）
         3. benchmark manifest 的 weight_init 先验
 
     Args:
@@ -73,18 +75,21 @@ def load_weights(
         w = _load_calib_file(run_dir / "calibrated_weights.json", prior)
         if w is not None:
             return w
-    if sample_id is not None:
-        # sample 级文件：data_root/calibration/<bench_id>/<sample_id>_weights.json
-        # run_dir 存在时从它推断 data_root；否则回退 _DEFAULT_DATA_ROOT。
-        data_root = run_dir.parents[1] if run_dir is not None else None
-        if data_root is None:
-            from ...config import get_settings  # 延迟导入避免循环
+    # data_root：run_dir 存在时从它推断（data/runs/<id> → parents[1]=data）；否则取 settings。
+    from ..config import get_settings  # 延迟导入避免循环
 
-            data_root = get_settings().data_root
+    data_root = (run_dir.parents[1] if run_dir is not None else None) or get_settings().data_root
+    if sample_id is not None:
+        # tier 2: sample 级人工校准 data/calibration/<bench_id>/<sample_id>_weights.json
         p = Path(data_root) / "calibration" / bench.bench_id / f"{sample_id}_weights.json"
         w = _load_calib_file(p, prior)
         if w is not None:
             return w
+    # tier 2.5: bench-level creativity overlay（creativity_tuner 产物；低于人工校准，高于先验）
+    bench_overlay = Path(data_root) / "benchmarks" / bench.bench_id / "creativity_criteria.json"
+    w = _load_calib_file(bench_overlay, prior)
+    if w is not None:
+        return w
     return prior
 
 

@@ -241,7 +241,8 @@ class AttemptRecord(BaseModel):
     # --- 生成输入（全部用文件路径/值，不用 base64）---
     gen_mode: str | None = None  # image_edit / multi_image_fusion / multiturn_edit ...
     prompt: str | None = None
-    reference_image_refs: list[str] = Field(default_factory=list)  # 相对 run 目录
+    reference_image_refs: list[str] = Field(default_factory=list)  # 相对 run 目录（agent 看到的参考集）
+    reference_ids: list[str] = Field(default_factory=list)  # 实际传给生图 API 的参考标识符(stem)；[]=纯文生图（creativity tuner 用）
     conversation_history_refs: list[str] = Field(default_factory=list)
     size: str | None = None
     model_params: dict[str, str | int | float | bool | None] = Field(default_factory=dict)

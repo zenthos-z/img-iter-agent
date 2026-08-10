@@ -152,7 +152,7 @@ def build_graph(
         _critic_hints = [h["text"] for h in _hints if h.get("agent") == "critic" and h.get("text")]
         verdict = critic.evaluate(CriticInput(
             sample=sample, generated_images=gen_imgs, weights=weights,
-            meaning=outcome.meaning,
+            meaning=outcome.meaning, reference_ids=list(outcome.reference_ids),
         ), config=config, extra_hints=_critic_hints or None)
         return {"_verdict": verdict, "verdicts": [verdict]}
 
@@ -176,6 +176,7 @@ def build_graph(
             model=outcome.model, test_variable=outcome.test_variable,
             baseline_ref=outcome.baseline_ref, gen_mode=outcome.gen_mode,
             prompt=outcome.prompt, reference_image_refs=list(outcome.reference_image_refs),
+            reference_ids=list(outcome.reference_ids),
             size=outcome.size, output_image_refs=list(outcome.output_image_refs),
             verdict=verdict, lesson_ref=lesson_ref, delta_note=outcome.delta_note,
             meaning=outcome.meaning,

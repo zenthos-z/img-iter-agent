@@ -32,7 +32,7 @@ from ..memory.schema import (
 from ._agent_output import CriticAgentOutput
 from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
-from .tools.critic_tools import make_critic_tools
+from .tools.critic_tools import _effective_checklist, _load_creativity_overlay, make_critic_tools
 
 _DEFAULT_CRITIC_SYS = (
     "你是严格的产品图评判员。对照参考图(target)对生成图打分：二分维度逐项判通过/不通过 + 一句理由，"
@@ -50,6 +50,7 @@ class CriticInput:
     generated_images: list[Path] = field(default_factory=list)  # 三视图等生成图
     weights: dict[str, float] = field(default_factory=dict)  # 当前生效权重
     meaning: str | None = None  # Generator 的一句话图片含义解释（风格迁移场景；判概念表达时参考）
+    reference_ids: list[str] = field(default_factory=list)  # 本次实际传给生图 API 的参考标识符；判 reference_independence 用
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,9 @@ class Critic:
         self.bench = bench
         self.system_prompt = system_prompt or load_system_prompt("critic", _DEFAULT_CRITIC_SYS)
         self.skills_dir = str(skills_dir) if skills_dir else None
+        # 创造力标准 overlay（creativity_tuner 产物）：Critic 实例构建时读一次，覆盖种子 content_spec。
+        # 每个 loop 子进程构建一次 → tuner 只在批与批之间生效（不污染在跑的 loop）。
+        self._creativity_overlay = _load_creativity_overlay(bench.bench_id)
 
     def evaluate(
         self, inp: CriticInput, *, config: RunnableConfig | None = None,
@@ -121,8 +125,9 @@ class Critic:
 
         user_content = self._build_user_content(
             target, generated, spec, meaning=inp.meaning, extra_hints=extra_hints,
+            reference_ids=inp.reference_ids,
         )
-        tools = make_critic_tools(bench=self.bench, spec=spec)
+        tools = make_critic_tools(bench=self.bench, spec=spec, overlay=self._creativity_overlay)
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
@@ -150,7 +155,7 @@ class Critic:
 
     def _build_user_content(
         self, target: Path, generated: list[Path], spec, meaning: str | None = None,
-        extra_hints: list[str] | None = None,
+        extra_hints: list[str] | None = None, reference_ids: list[str] | None = None,
     ) -> list[dict] | str:
         """初始 HumanMessage：喂图说明 + 每维度**逐项 checklist** + 评分指令 + 生成图与 target(image_url)。
 
@@ -159,7 +164,7 @@ class Critic:
         """
         dim_lines: list[str] = []
         for d in self.bench.score_dimensions:
-            cl = (spec.checklist or {}).get(d.dim)
+            cl = _effective_checklist(spec, d.dim, self._creativity_overlay)
             if d.scoring_type == "binary":
                 items = list(cl) if isinstance(cl, list) else []
                 # 兼容 content_spec 缺该维度时回落到 manifest 的 check_items（"CX 描述"串）
@@ -192,6 +197,14 @@ class Critic:
             "**严格**：拿不准、有瑕疵、与 target 不完全一致时，倾向判不通过/给低分；只有确无问题才判通过。\n"
             "维度清单：\n" + "\n".join(dim_lines) + "\n\n请结构化输出每个维度的评分。"
         )
+        # 参考图使用情况：让 critic 能判 reference_independence（对照「实际传入」的参考，而非全 7 张）
+        if reference_ids is not None:
+            ids_str = ", ".join(reference_ids) if reference_ids else "（空 = 纯文生图，未用参考图）"
+            task += (
+                f"\n\n【参考图使用情况】本次 Generator 实际传给生图 API 的参考图(reference_ids)：{ids_str}。"
+                f"reference_independence 维度据此判定：只判生成图是否复制了**这些实际传入**参考图的 motif；"
+                f"reference_ids 为空（纯文生图）时 reference_independence 默认通过。"
+            )
         # 人工补充评分准则（运行时人工介入；与 checklist 同等效力，必须执行）
         if extra_hints:
             task += (

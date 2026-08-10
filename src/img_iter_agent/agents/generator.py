@@ -46,8 +46,12 @@ _DEFAULT_GENERATOR_SYS = (
     "query_experience（本题已验证经验，round>1 才有意义）。\n"
     "3. 构造/改进**英文优先**的生图 prompt：保留考题所有约束（白底/三视图布局/尺寸）；"
     "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分。\n"
-    "4. **只调一次** generate_image(prompt=..., size=...) 出图；成功后立即结构化输出 "
+    "4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图；成功后立即结构化输出 "
     "prompt + delta_note（本轮相对上轮改了什么）。不要重复出图、不要再调其它工具。\n"
+    "5. 【风格迁移·参考图用法】generate_image 的 reference_images 参数可选，传参考图标识符子集（如 "
+    "['hand-abacus']）。Gemini 把它们作 inline_data 风格条件。**这是创意权衡**：0-2 张帮你锚定风格神韵；"
+    ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
+    "纯文生图(reference_images=[])是合法且常更原创的选择。可用标识符见用户消息。\n"
     "你的可用工具只有：generate_image / query_experience / query_general_experience。\n"
     "system prompt 末尾的「通用经验索引」= 该系列跨 loop 蒸馏的类目速览；每轮 user message 会按上下文"
     "带 ≤4 条最相关详情（直接遵循）；更多按类目调 query_general_experience(category) 取。"
@@ -71,7 +75,8 @@ class GenOutcome(BaseModel):
     gen_mode: str
     prompt: str
     size: str
-    reference_image_refs: list[str]  # 相对 run 目录
+    reference_image_refs: list[str]  # 相对 run 目录（agent 看到的参考集，供上下文）
+    reference_ids: list[str] = Field(default_factory=list)  # 实际传给生图 API 的参考标识符(stem)；[]=纯文生图。供 creativity tuner
     output_image_refs: list[str]  # 相对 run 目录（三视图一张图）
     model: str
     model_family: str
@@ -152,12 +157,12 @@ class Generator:
         task = spec.task
         size_str = (task.output.get("size") if task and task.output else None) or "2K"
 
-        # 参考：image_edit/multiview 用 target 作风格锚；style_transfer 注入参考集多图供 agent 抽象风格共性
-        reference_images: list[Path] = []
+        # 参考：image_edit/multiview 用 target 作风格锚；style_transfer 注入参考集多图供 agent 抽象风格共性。
+        # D2：style_transfer 解禁——agent 通过 generate_image(reference_images=[...]) 主动选参考子集传给生图 API
+        # （make_generator_tools 建 ref_registry）；默认 [] = 纯文生图。reference_images 这里只是 agent 看到的上下文。
+        reference_images: list[Path] = []  # agent 在 user content 里看到的参考（≠传给 API 的）
         gen_mode = "text_to_image"
         if task and task.mode == "style_transfer":
-            # 风格神韵迁移：Generator 看参考集(多张)抽象风格共性、文生图原创；
-            # reference_images 只注入 agent user content 供其"看"，generate_image 工具为纯文生图，不进生图 API。
             refs = [sample.sample_dir / a for a in (task.input_assets or [])]
             reference_images = [p for p in refs if p.exists()]
             gen_mode = "text_to_image"
@@ -204,15 +209,20 @@ class Generator:
             output_refs = [sink["ref"]]
             model_used = sink.get("model", "")
             model_family = sink.get("family", "?")
+            reference_ids_out = list(sink.get("reference_ids") or [])
         else:
             fb_size = _size_from_str(size_str)
             layout = (sample.spec.task.output.get("layout")
                       if sample.spec.task and sample.spec.task.output else None)
             if layout == "three_view_single_image":
                 fb_size.ratio = "16:9"  # 三视图宽幅，避免 1:1 挤变形
+            # style_transfer 兜底=纯文生图（与 D2 agent 默认一致，避免 7 图全锚定→同质化）；
+            # image_edit/multiview 兜底仍用 target 锚定。
+            fb_refs: list[Path] = ([] if (task and task.mode == "style_transfer")
+                                   else list(reference_images))
             req = GenRequest(
                 prompt=prompt, size=fb_size,
-                reference_images=list(reference_images), model_hint=model_hint,
+                reference_images=fb_refs, model_hint=model_hint,
             )
             # 兜底出图也加重试+退避：dmxapi 间歇性连接中断时，单次 router.generate 抛 APIConnectionError
             # 会直接炸掉整轮（乃至整 sample）。这里重试扛过网关抖动，与 agent.invoke 的重试对齐。
@@ -238,6 +248,7 @@ class Generator:
             output_refs = [str(dest.relative_to(run_dir))]
             model_used = img.model
             model_family = img.meta.get("family", "?")
+            reference_ids_out = [p.stem for p in fb_refs]
 
         improved = round > 1 and prior_feedback is not None and bool(prior_feedback.failed_items)
 
@@ -251,6 +262,7 @@ class Generator:
             meaning=meaning,
             size=size_str,
             reference_image_refs=[str(p.resolve()) for p in reference_images],
+            reference_ids=reference_ids_out,
             output_image_refs=output_refs,
             model=model_used,
             model_family=model_family,

@@ -22,6 +22,7 @@ description: 操作 img-iter-agent（自我迭代的 AI 生图 agent：Generator
 | 跑一个 loop 看 N 轮效果 | 启动 loop | `references/loop-run.md` + `scripts/run_loop_auto.py` |
 | 一次跑多个 sample | 批量 loop | `scripts/batch_loops.py` |
 | 看一个 loop 跑得怎样、经验闭环是否生效 | 效果诊断 | `references/experience-diagnosis.md` + `scripts/diagnose_loop.py` |
+| 跑完一批后对抗调参「创造力」子标准（全自动+留痕） | 创造力对抗调参 | `scripts/tune_creativity.py`（写 `data/benchmarks/<bench>/creativity_criteria.json`，下批 loop 自动生效） |
 | 把多个 loop 的经验归纳成通用 dos/donts | 经验管理 | `references/experience-manage.md` |
 
 不确定就读 `references/experience-diagnosis.md`（最常用）。

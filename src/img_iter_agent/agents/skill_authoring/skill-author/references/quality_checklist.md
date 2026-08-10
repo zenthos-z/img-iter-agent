@@ -39,7 +39,23 @@ review 阶段：你拿到 draft 的全文 + 本 checklist。**只改有问题的
 - [ ] image_edit 类：运行时输入不打包；写了编辑流程 + eval criteria。
 - [ ] 结构据 mode 自定，非硬编码模板。
 
-## F. references / assets
+## F. 生成目标覆盖（最重要——别漏考题要求；数据驱动，不预设 benchmark 类型）
+
+- [ ] **有「## 评分目标」段**（输入→输出契约 + 评分维度按权重排序 + 每维度判定标准 + 评分意图 why），置于工作流之前。
+- [ ] **按 dossier 实际权重讲了高权重维度怎么命中**——权重最大的维度有专门展开。（高权重是什么由数据决定：风格类可能是创造力/原创，还原类可能是 consistency/structure——不预设。）
+- [ ] **constraints 硬约束**：若 dossier 有 `forbidden_motifs` 或关键 `must_avoid`，SKILL.md 明确列出 + 解释为何 + 如何规避；**没有就不写，不凭空编造**。
+- [ ] checklist 的关键 binary ✓/✗ 判定（用本 benchmark 真实判定项）进了自检步骤。
+- [ ] 传达了 benchmark 的评分意图（why，据 rubric 实际写的倾向/意图）。
+
+## G. 写作基调（拒绝机械填模板）
+
+- [ ] 读起来像深度理解 benchmark 的人写的指南，非填模板产物。
+- [ ] 规则附 why（用本 benchmark 真实的维度权重/意图作理由，不只是 MUST/禁止罗列）。
+- [ ] 有 benchmark-grounded 的具体例子（真实维度/约束/输入），非占位符。
+- [ ] 传达了 benchmark 想要什么样的产出（核心目标 + 最看重的维度）。
+- [ ] 段落讲思路 + 例子讲做法 + 清单做速查，三者结合；不是清一色规则罗列。
+
+## H. references / assets
 
 - [ ] `references` 路径是相对名（如 `style_guide.md`），**不含 `lessons.md`**（系统渲染）。
 - [ ] `asset_paths` 是 benchmark 内相对路径，且 generator 实际用到（不瞎列）。

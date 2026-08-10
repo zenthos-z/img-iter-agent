@@ -28,6 +28,24 @@ const NODE_LABEL = {
 window.__overviewCache = null;
 window.__loopCache = { current: null };
 
+// 紧凑模式（图片优先、文字折叠）—— 默认开启，除非用户显式关闭
+window.__compactMode = localStorage.getItem("img-iter-compact") !== "0";
+
+function toggleCompactMode() {
+  window.__compactMode = !window.__compactMode;
+  localStorage.setItem("img-iter-compact", window.__compactMode ? "1" : "0");
+  document.body.classList.toggle("compact-mode", window.__compactMode);
+  const dot = document.querySelector(".compact-dot");
+  if (dot) dot.classList.toggle("on", window.__compactMode);
+  router();
+}
+
+function initCompactMode() {
+  document.body.classList.toggle("compact-mode", window.__compactMode);
+  const dot = document.querySelector(".compact-dot");
+  if (dot) dot.classList.toggle("on", window.__compactMode);
+}
+
 // ---- API helpers ----
 async function api(path, opts = {}) {
   const r = await fetch("/api" + path, {
@@ -355,42 +373,11 @@ async function viewOverview() {
       return;
     }
 
-    let html = "";
-    for (const bench of data.benches) {
-      const active = bench.samples.filter((s) => s.loops.length > 0);
-      const idle = bench.samples.filter((s) => s.loops.length === 0);
-      const hasActive = active.length > 0;
-      const expanded = hasActive ? "open" : "";
-      const expCount = bench.general_experience_count || 0;
-      const expBadge = expCount > 0 ? ` <span class="badge badge-success">${expCount}</span>` : "";
-
-      html += `<details class="bench-section card" ${expanded}>
-        <summary class="bench-header">
-          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
-          <h2>${esc(bench.bench_id)} ${bench.description ? "· " + esc(bench.description) : ""}</h2>
-          <span class="badge">${bench.samples.length} sample</span>
-          <button class="btn btn-ghost btn-sm exp-entry" title="跨 loop 通用经验（可移植 SKILL.md）" onclick="event.stopPropagation(); location.hash='#/experience/${esc(bench.bench_id)}'">通用经验${expBadge}</button>
-        </summary>
-        <div class="bench-body">`;
-
-      if (hasActive) {
-        for (const sample of active) html += renderSampleCard(bench, sample);
-      } else {
-        html += `<div class="card-padded muted">该 benchmark 还没有运行过的 loop。</div>`;
-      }
-
-      if (idle.length) {
-        html += `<div class="idle-bank">
-          <summary class="muted">可选题库（${idle.length} 道未运行）</summary>
-          <div class="bank-list">
-            ${idle.map((s) => `<button class="btn btn-ghost btn-sm" onclick="location.hash='#/scoring/${esc(bench.bench_id)}/${esc(s.sample_id)}'">${esc(s.sample_id)} ${s.product ? "· " + esc(s.product) : ""}</button>`).join("")}
-          </div>
-        </div>`;
-      }
-
-      html += `</div></details>`;
+    if (window.__compactMode) {
+      app.innerHTML = renderOverviewCompact(data);
+    } else {
+      app.innerHTML = renderOverviewFull(data);
     }
-    app.innerHTML = html;
   } catch (e) {
     handleError(e, "加载总览失败");
     app.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
@@ -442,6 +429,119 @@ function updatePendingCount(data) {
   if (pEl) { pEl.textContent = pending; pEl.hidden = pending === 0; }
   const rEl = document.getElementById("nav-running-count");
   if (rEl) { rEl.textContent = running; rEl.hidden = running === 0; }
+}
+
+function renderOverviewFull(data) {
+  let html = "";
+  for (const bench of data.benches) {
+    const active = bench.samples.filter((s) => s.loops.length > 0);
+    const idle = bench.samples.filter((s) => s.loops.length === 0);
+    const hasActive = active.length > 0;
+    const expanded = hasActive ? "open" : "";
+    const expCount = bench.general_experience_count || 0;
+    const expBadge = expCount > 0 ? ` <span class="badge badge-success">${expCount}</span>` : "";
+
+    html += `<details class="bench-section card" ${expanded}>
+      <summary class="bench-header">
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        <h2>${esc(bench.bench_id)} ${bench.description ? "· " + esc(bench.description) : ""}</h2>
+        <span class="badge">${bench.samples.length} sample</span>
+        <button class="btn btn-secondary btn-sm exp-entry" title="跨 loop 通用经验（可移植 SKILL.md）" onclick="event.stopPropagation(); location.hash='#/experience/${esc(bench.bench_id)}'">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+          通用经验${expBadge}
+        </button>
+      </summary>
+      <div class="bench-body">`;
+
+    if (hasActive) {
+      for (const sample of active) html += renderSampleCard(bench, sample);
+    } else {
+      html += `<div class="card-padded muted">该 benchmark 还没有运行过的 loop。</div>`;
+    }
+
+    if (idle.length) {
+      html += `<div class="idle-bank">
+        <summary class="muted">可选题库（${idle.length} 道未运行）</summary>
+        <div class="bank-list">
+          ${idle.map((s) => `<button class="btn btn-ghost btn-sm" onclick="location.hash='#/scoring/${esc(bench.bench_id)}/${esc(s.sample_id)}'">${esc(s.sample_id)} ${s.product ? "· " + esc(s.product) : ""}</button>`).join("")}
+        </div>
+      </div>`;
+    }
+
+    html += `</div></details>`;
+  }
+  return html;
+}
+
+// 紧凑总览：按 sample 分组，每组内 loop 图卡横向滚动，图片优先
+function renderOverviewCompact(data) {
+  let html = "";
+  for (const bench of data.benches) {
+    const activeSamples = bench.samples.filter((s) => s.loops.length > 0);
+    const idle = bench.samples.filter((s) => s.loops.length === 0);
+    const expanded = activeSamples.length ? "open" : "";
+    const expCount = bench.general_experience_count || 0;
+    const expBadge = expCount > 0 ? ` <span class="badge badge-success">${expCount}</span>` : "";
+
+    html += `<details class="bench-section card bench-compact" ${expanded}>
+      <summary class="bench-header">
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        <h2>${esc(bench.bench_id)}</h2>
+        <span class="badge">${activeSamples.length} sample · ${activeSamples.reduce((n, s) => n + s.loops.length, 0)} loop</span>
+        <button class="btn btn-ghost btn-sm exp-entry" title="跨 loop 通用经验（可移植 SKILL.md）" onclick="event.stopPropagation(); location.hash='#/experience/${esc(bench.bench_id)}'">通用经验${expBadge}</button>
+      </summary>
+      <div class="bench-body">`;
+
+    if (activeSamples.length) {
+      for (const sample of activeSamples) {
+        html += `<div class="sample-group">
+          <div class="sample-group-header">
+            <span class="sample-group-id">${esc(sample.sample_id)}</span>
+            <span class="sample-group-product">${sample.product ? esc(sample.product) : ""}</span>
+            <span class="sample-group-meta">${sample.n_traces} trace · ${sample.loops.length} loop</span>
+          </div>
+          <div class="sample-group-grid">
+            ${sample.loops.map((l) => renderLoopThumbCard(bench, sample, l)).join("")}
+          </div>
+        </div>`;
+      }
+    }
+
+    if (idle.length) {
+      html += `<div class="idle-bank">
+        <summary class="muted">未运行 ${idle.length}</summary>
+        <div class="bank-list">
+          ${idle.map((s) => `<button class="btn btn-ghost btn-sm" onclick="location.hash='#/scoring/${esc(bench.bench_id)}/${esc(s.sample_id)}'">${esc(s.sample_id)}</button>`).join("")}
+        </div>
+      </div>`;
+    }
+
+    html += `</div></details>`;
+  }
+  return html;
+}
+
+function renderLoopThumbCard(bench, sample, loop) {
+  const thumb = loop.thumbnail ? imgURL(loop.thumbnail, loop.loop_id) : "";
+  const best = loop.best_restoration != null ? fmt(loop.best_restoration) : "—";
+  const loopShort = esc(loop.loop_id.replace(/.*-\d{4}-/, ""));
+  return `<div class="loop-thumb-card">
+    <div class="loop-thumb-wrap" onclick="location.hash='#/loop/${esc(loop.loop_id)}'">
+      ${thumb ? `<img class="loop-thumb" src="${thumb}" data-lb="${thumb}" alt="">` : '<div class="loop-thumb"></div>'}
+      <span class="loop-thumb-score"><span class="dot ${loop.status}"></span>${best}</span>
+    </div>
+    <div class="loop-thumb-info">
+      <div class="loop-thumb-title">
+        <strong>${loopShort}</strong>
+        <span class="muted">${esc(sample.sample_id)}${sample.product ? " · " + esc(sample.product) : ""}</span>
+      </div>
+      <div class="loop-thumb-meta">${loop.n_traces} trace · 最佳 ${best}</div>
+      <div class="loop-thumb-actions">
+        <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">排序</a>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); startNewLoop('${esc(bench.bench_id)}','${esc(sample.sample_id)}')">继续跑</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ============ 视图：运行中 ============
@@ -548,133 +648,20 @@ async function viewLoop(loopId) {
 
     setTitle(loopId, `<a class="btn btn-secondary btn-sm" href="#/scoring/${esc(loop.bench_id)}/${esc(loop.sample_id)}">人工排序</a>`);
 
-    let html = `<div class="page-header">
-      <div class="title-block">
-        <nav class="breadcrumb">
-          <a href="#/">总览</a>
-          <span>/</span>
-          <a href="#/">${esc(loop.bench_id)}</a>
-          <span>/</span>
-          <span>${esc(loop.sample_id)}</span>
-        </nav>
-        <h1>${esc(loopId)}</h1>
-        <div class="muted">${esc(loop.model)} ${loop.note ? "· " + esc(loop.note) : ""}</div>
-      </div>
-    </div>`;
-
-    // 状态条
-    html += `<div class="status-bar">
-      <span class="status-pill"><span class="dot ${st}"></span>${esc(STATUS_LABEL[st] || st)}</span>
-      ${loop.round != null ? `<span class="muted">当前轮: ${loop.round}</span>` : ""}
-      ${loop.finished_at ? `<span class="muted">完成: ${esc(loop.finished_at)}</span>` : ""}
-      <div class="control-actions">
-        ${st === "awaiting_review" ? `
-          <button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续下一轮</button>
-          <button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止</button>` : ""}
-        ${st === "running" ? `<span class="muted" id="cur-node">执行中…</span>` : ""}
-      </div>
-    </div>`;
-
-    // 人工提示词面板（常驻：运行中可增删，下一轮生效）
-    html += `<div id="hints-panel" class="mt-3"></div>`;
-
-    // error
-    if (st === "error" && loop.last_error) {
-      const err = loop.last_error.split("\n").find((l) => /失败|Error|error|Forbidden|Timeout|4\d\d|5\d\d/.test(l)) || loop.last_error.split("\n")[0];
-      html += `<div class="alert">
-        <div class="alert-title">运行出错</div>
-        <div>${esc(err.trim())}</div>
-        <details><summary class="muted">完整错误</summary><pre>${esc(loop.last_error)}</pre></details>
-      </div>`;
-    }
-
-    // awaiting_review
-    if (st === "awaiting_review" && loop.interrupt_payload) {
-      const ip = loop.interrupt_payload;
-      html += `<div class="review-card">
-        <div class="review-info">
-          <div class="review-title">第 ${ip.round} 轮等待审批</div>
-          <div class="review-meta">还原度: ${fmt(ip.restoration)}${ip.failed_items?.length ? " · 失败项: " + esc(ip.failed_items.join(", ")) : ""}</div>
-        </div>
-        <button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续下一轮</button>
-        <button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止</button>
-      </div>`;
-    }
-
-    // 目标 sample
-    if (loop.target_image || loop.target_md) {
-      html += `<div class="card card-padded loop-target-card">
-        <h3>目标 sample · ${esc(loop.sample_id)}</h3>
-        <div class="loop-target-body">
-          ${loop.target_image ? `<img src="${imgURL(loop.target_image)}" data-lb="${imgURL(loop.target_image)}" alt="target">` : '<div class="trace-img"></div>'}
-          <div class="target-desc">${loop.target_md ? renderMarkdown(loop.target_md) : "暂无目标描述"}</div>
-        </div>
-      </div>`;
-    }
-
-    // Trace 时间线
-    html += `<h2>迭代轨迹（${loop.traces.length} trace）</h2>`;
-    if (!loop.traces.length) {
-      html += `<div class="card card-padded muted">该 loop 还没有 trace。</div>`;
-    } else {
-      const bestRestoration = Math.max(...loop.traces.filter((x) => x.verdict).map((x) => x.verdict.restoration));
-      html += `<div class="timeline">`;
-      for (let i = 0; i < loop.traces.length; i++) {
-        const t = loop.traces[i];
-        const img = t.output_image_refs[0];
-        const isBest = t.verdict && t.verdict.restoration === bestRestoration;
-        const prev = i > 0 ? loop.traces[i - 1] : null;
-        const hasDiff = prev && prev.prompt && prev.prompt !== t.prompt;
-        html += `<div class="timeline-item ${isBest ? "best" : ""}">
-          <div class="timeline-marker">${t.round}</div>
-          <div class="timeline-body">
-            <div class="trace-header">
-              <span class="round">第 ${t.round} 轮</span>
-              <span class="muted">${esc(t.test_variable || "基线")}</span>
-              ${isBest ? '<span class="badge badge-primary">最佳</span>' : ""}
-              ${t.human_rank != null ? `<span class="badge">人工排序 #${t.human_rank}</span>` : ""}
-              <span class="score ${isBest ? "best" : ""}">还原度 ${t.verdict ? fmt(t.verdict.restoration) : "—"}</span>
-            </div>
-            <div class="trace-content">
-              <div>
-                ${img ? `<img class="trace-img" src="${imgURL(img, loopId)}" data-lb="${imgURL(img, loopId)}" alt="">` : '<div class="trace-img"></div>'}
-              </div>
-              <div class="trace-detail">
-                <div class="trace-params">
-                  ${t.model ? `<div class="param"><span class="pk">模型</span><span class="pv">${esc(t.model)}</span></div>` : ""}
-                  ${t.size ? `<div class="param"><span class="pk">尺寸</span><span class="pv">${esc(t.size)}</span></div>` : ""}
-                  ${t.gen_mode ? `<div class="param"><span class="pk">模式</span><span class="pv">${esc(t.gen_mode)}</span></div>` : ""}
-                  ${t.baseline_ref ? `<div class="param"><span class="pk">基线</span><span class="pv">${esc(t.baseline_ref)}</span></div>` : ""}
-                  ${t.ts ? `<div class="param"><span class="pk">时间</span><span class="pv">${esc(t.ts)}</span></div>` : ""}
-                </div>
-                ${t.verdict ? renderDimList(t.verdict.dimensions) : ""}
-                <div class="prompt-tools">
-                  <button class="btn btn-ghost btn-sm" data-ptog="${i}">展开 prompt</button>
-                  ${hasDiff ? `<button class="btn btn-ghost btn-sm" data-pdiff="${i}">对比第${prev.round}轮</button>` : ""}
-                </div>
-                <div class="prompt-box" id="prompt-box-${i}" hidden><pre>${esc(t.prompt || "(空)")}</pre></div>
-              </div>
-            </div>
-          </div>
-        </div>`;
-      }
-      html += `</div>`;
-    }
-
-    // 经验沉淀
-    if (loop.conclusions && loop.conclusions.length) {
-      html += `<details class="card card-padded mt-4" open>
-        <summary style="cursor:pointer;font-weight:600">经验沉淀（${loop.conclusions.length} 条）</summary>
-        <div class="mt-3">${renderConclusions(loop.conclusions)}</div>
-      </details>`;
-    }
+    const html = window.__compactMode
+      ? renderLoopCompact(loop, loopId)
+      : renderLoopFull(loop, loopId);
 
     app.innerHTML = html;
+
+    if (window.__compactMode) {
+      initLoopCompact(loop);
+    }
 
     // 人工提示词面板（异步填充）
     renderHintsPanel(loopId);
 
-    // prompt 事件委托
+    // prompt 事件委托（完整视图）
     app.addEventListener("click", (e) => {
       const t = e.target;
       if (t.dataset.ptog !== undefined) { togglePromptBox(+t.dataset.ptog); return; }
@@ -704,6 +691,318 @@ async function viewLoop(loopId) {
     handleError(e, "加载 loop 详情失败");
     app.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
   }
+}
+
+// ============ loop 详情：完整视图 ============
+function renderLoopFull(loop, loopId) {
+  const bestIdx = loop.traces.length
+    ? loop.traces.reduce((best, t, i) => ((t.verdict?.restoration ?? -1) > (loop.traces[best].verdict?.restoration ?? -1) ? i : best), 0)
+    : -1;
+
+  const controls = [];
+  if (loop.status === "running") {
+    controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止 loop</button>`);
+  } else if (loop.status === "awaiting_review") {
+    controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
+    controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止并采用</button>`);
+  }
+
+  let review = "";
+  if (loop.status === "awaiting_review" && loop.interrupt_payload) {
+    const p = loop.interrupt_payload;
+    review = `<div class="review-card">
+      <div class="review-info">
+        <div class="review-title">等待人工审批</div>
+        <div class="review-meta">${p.message || ""}${p.next_round ? ` · 下一轮 #${p.next_round}` : ""}</div>
+      </div>
+      <div class="review-actions">${controls.join("")}</div>
+    </div>`;
+  }
+
+  let errorAlert = "";
+  if (loop.status === "error" && loop.last_error) {
+    errorAlert = `<div class="alert">
+      <div class="alert-title">loop 出错</div>
+      <pre>${esc(loop.last_error)}</pre>
+    </div>`;
+  }
+
+  let targetCard = "";
+  if (loop.target_image || loop.target_md) {
+    targetCard = `<div class="card loop-target-card">
+      <div class="loop-target-body card-padded">
+        ${loop.target_image ? `<img src="${imgURL(loop.target_image)}" data-lb="${imgURL(loop.target_image)}" alt="target">` : ""}
+        ${loop.target_md ? `<div class="target-desc">${renderMarkdown(loop.target_md)}</div>` : ""}
+      </div>
+    </div>`;
+  }
+
+  const statusBody = [];
+  statusBody.push(`<span class="status-pill"><span class="dot ${loop.status}"></span>${esc(STATUS_LABEL[loop.status] || loop.status)}</span>`);
+  statusBody.push(`<span class="muted mono">${esc(loop.model)}</span>`);
+  if (loop.status === "running") {
+    statusBody.push(`<div class="progress-track"><div class="progress-fill" style="width:60%"></div></div>`);
+    statusBody.push(`<span class="muted" id="cur-node" style="font-size:12px"><strong>运行中</strong></span>`);
+  }
+
+  let html = `
+    <div class="breadcrumb mb-3"><a href="#/">总览</a><span>/</span><span>${esc(loop.bench_id)}</span><span>/</span><span>${esc(loop.sample_id)}</span></div>
+    <div class="page-header">
+      <div class="title-block">
+        <div class="muted" style="font-size:12px">${esc(loopId)}</div>
+        <h1>${esc(loop.sample_id)} ${loop.product ? `<span class="muted">${esc(loop.product)}</span>` : ""}</h1>
+      </div>
+      <div class="control-actions">${controls.join("")}</div>
+    </div>
+    <div class="status-bar">${statusBody.join("")}</div>
+    ${errorAlert}
+    ${review}
+    ${targetCard}
+    <div class="timeline">`;
+
+  for (let i = 0; i < loop.traces.length; i++) {
+    const t = loop.traces[i];
+    const isBest = i === bestIdx && loop.traces.length > 1;
+    const score = t.verdict?.restoration;
+    const scoreCls = isBest ? "best" : "";
+    const img = t.output_image_refs[0];
+    html += `
+      <div class="timeline-item ${isBest ? "best" : ""}">
+        <div class="timeline-marker">${t.round}</div>
+        <div class="timeline-body">
+          <div class="trace-header">
+            <span class="round">第 ${t.round} 轮</span>
+            ${t.ts ? `<span class="muted" style="font-size:12px">${esc(t.ts)}</span>` : ""}
+            <span class="score ${scoreCls}">还原度 ${fmt(score)}</span>
+          </div>
+          <div class="trace-content">
+            ${img ? `<img class="trace-img" src="${imgURL(img, t.loop_id)}" data-lb="${imgURL(img, t.loop_id)}" alt="">` : '<div class="trace-img"></div>'}
+            <div class="trace-detail">
+              <div class="trace-params">
+                ${t.test_variable ? `<div class="param"><span class="pk">变量</span><span class="pv">${esc(t.test_variable)}</span></div>` : ""}
+                ${t.baseline_ref ? `<div class="param"><span class="pk">基线</span><span class="pv">${esc(t.baseline_ref)}</span></div>` : ""}
+                ${t.gen_mode ? `<div class="param"><span class="pk">模式</span><span class="pv">${esc(t.gen_mode)}</span></div>` : ""}
+                ${t.size ? `<div class="param"><span class="pk">尺寸</span><span class="pv">${esc(t.size)}</span></div>` : ""}
+                ${t.human_rank != null ? `<div class="param"><span class="pk">人工排序</span><span class="pv">${fmt(t.human_rank)}</span></div>` : ""}
+              </div>
+              ${t.verdict ? renderDimList(t.verdict.dimensions) : ""}
+              ${t.delta_note ? `<div class="dim-raw" style="margin-top:8px">改动：${esc(t.delta_note)}</div>` : ""}
+              <div class="prompt-tools">
+                <button class="btn btn-ghost btn-sm" data-ptog="${i}">查看 prompt</button>
+                ${i > 0 ? `<button class="btn btn-ghost btn-sm" data-pdiff="${i}">对比第${loop.traces[i - 1].round}轮</button>` : ""}
+              </div>
+              <div class="prompt-box" id="prompt-box-${i}" hidden><pre>${esc(t.prompt || "(空)")}</pre></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  html += `</div>`;
+
+  if (loop.conclusions && loop.conclusions.length) {
+    html += `<h2 class="mt-4">经验结论</h2>${renderConclusions(loop.conclusions)}`;
+  }
+
+  html += `<div id="hints-panel" class="mt-4"></div>`;
+  return html;
+}
+
+// 紧凑 loop 详情：大图优先，文字折叠在详情里
+function renderLoopCompact(loop, loopId) {
+  const bestIdx = loop.traces.length
+    ? loop.traces.reduce((best, t, i) => ((t.verdict?.restoration ?? -1) > (loop.traces[best].verdict?.restoration ?? -1) ? i : best), 0)
+    : 0;
+
+  const controls = [];
+  if (loop.status === "running") {
+    controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止 loop</button>`);
+  } else if (loop.status === "awaiting_review") {
+    controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
+    controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止并采用</button>`);
+  }
+
+  let errorAlert = "";
+  if (loop.status === "error" && loop.last_error) {
+    errorAlert = `<div class="alert">
+      <div class="alert-title">loop 出错</div>
+      <pre>${esc(loop.last_error)}</pre>
+    </div>`;
+  }
+
+  const statusLine = `<span class="status-pill"><span class="dot ${loop.status}"></span>${esc(STATUS_LABEL[loop.status] || loop.status)}</span>
+    <span class="muted">${esc(loop.sample_id)}${loop.product ? " · " + esc(loop.product) : ""}</span>
+    <span class="muted mono">${esc(loop.model)}</span>`;
+
+  const strip = loop.traces.map((t, i) => {
+    const img = t.output_image_refs[0];
+    const score = t.verdict?.restoration;
+    const isBest = i === bestIdx && loop.traces.length > 1;
+    return `<div class="trace-item ${i === bestIdx ? "selected current" : ""}" data-trace-idx="${i}" tabindex="0" role="button" aria-label="查看第 ${t.round} 轮">
+      ${img ? `<img class="trace-thumb" src="${imgURL(img, t.loop_id)}" alt="">` : '<div class="trace-thumb"></div>'}
+      <span class="trace-idx">#${t.round}</span>
+      ${score != null ? `<span class="trace-score">${fmt(score)}</span>` : ""}
+      ${isBest ? `<span class="trace-tag best">最佳</span>` : ""}
+    </div>`;
+  }).join("");
+
+  const compareOptions = loop.traces.map((t, i) => `<option value="${i}">#${t.round}</option>`).join("");
+
+  return `
+    <div class="breadcrumb mb-3"><a href="#/">总览</a><span>/</span><span>${esc(loop.bench_id)}</span><span>/</span><span>${esc(loop.sample_id)}</span></div>
+    <div class="compact-layout">
+      <div class="status-bar compact-status">${statusLine}<div class="control-actions">${controls.join("")}</div></div>
+      ${errorAlert}
+
+      <div class="loop-hero card">
+        <div class="hero-img-wrap">
+          <img id="compact-hero-img" src="" data-lb="" alt="">
+          <span class="hero-badge" id="compact-hero-badge"></span>
+        </div>
+        <div class="hero-meta">
+          <div>
+            <div class="hero-title">当前选中</div>
+            <div class="hero-sub" id="compact-hero-sub"></div>
+          </div>
+          <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(loop.bench_id)}/${esc(loop.sample_id)}">去排序</a>
+        </div>
+      </div>
+
+      <div class="card bench-section">
+        <div class="bench-header" style="cursor:default">
+          <h2>迭代历史</h2>
+          <span class="badge badge-primary">${loop.traces.length} 轮</span>
+        </div>
+        <div class="trace-strip no-scrollbar" id="compact-strip">${strip}</div>
+      </div>
+
+      <details class="card bench-section">
+        <summary class="bench-header">
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <h2>Critic 评分</h2>
+          <span class="eval-score" id="compact-eval-score">—</span>
+        </summary>
+        <div id="compact-eval-body"></div>
+      </details>
+
+      <details class="card bench-section">
+        <summary class="bench-header">
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <h2>Prompt & 对比</h2>
+        </summary>
+        <div id="compact-prompt-body">
+          <div class="log-list"><pre id="compact-prompt-text"></pre></div>
+          <div class="compare-bar">
+            <select id="compact-base" class="select-sm">${compareOptions}</select>
+            <span class="muted">vs</span>
+            <select id="compact-target" class="select-sm">${compareOptions}</select>
+          </div>
+          <div class="diff-view" id="compact-diff-view"></div>
+          <div class="diff-summary" id="compact-diff-summary"></div>
+        </div>
+      </details>
+
+      ${loop.conclusions && loop.conclusions.length ? `<details class="card bench-section">
+        <summary class="bench-header">
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <h2>经验结论</h2>
+          <span class="badge">${loop.conclusions.length}</span>
+        </summary>
+        ${renderConclusions(loop.conclusions)}
+      </details>` : ""}
+
+      <div id="hints-panel"></div>
+    </div>`;
+}
+
+function initLoopCompact(loop) {
+  const strip = document.getElementById("compact-strip");
+  if (!strip) return;
+  const baseSel = document.getElementById("compact-base");
+  const targetSel = document.getElementById("compact-target");
+
+  const bestIdx = loop.traces.length
+    ? loop.traces.reduce((best, t, i) => ((t.verdict?.restoration ?? -1) > (loop.traces[best].verdict?.restoration ?? -1) ? i : best), 0)
+    : 0;
+
+  const diffPrompt = (prev, cur) => {
+    const toks = (s) => (s || "").split(/(\s+)/);
+    const a = toks(prev), b = toks(cur);
+    const n = a.length, m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Int16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--)
+      for (let j = m - 1; j >= 0; j--)
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const out = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { out.push(`<span>${esc(b[j])}</span>`); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`<del>${esc(a[i])}</del>`); i++; }
+      else { out.push(`<ins>${esc(b[j])}</ins>`); j++; }
+    }
+    while (i < n) out.push(`<del>${esc(a[i++])}</del>`);
+    while (j < m) out.push(`<ins>${esc(b[j++])}</ins>`);
+    return out.join("");
+  };
+
+  const renderCompactDiff = () => {
+    const base = loop.traces[+baseSel.value];
+    const target = loop.traces[+targetSel.value];
+    if (!base || !target) return;
+    const view = document.getElementById("compact-diff-view");
+    const summary = document.getElementById("compact-diff-summary");
+    if (base.trace_id === target.trace_id) {
+      if (view) view.innerHTML = "";
+      if (summary) summary.textContent = "选择不同轮次进行对比";
+      return;
+    }
+    const ops = diffPrompt(base.prompt || "", target.prompt || "");
+    if (view) view.innerHTML = ops || "<span class=\"muted\">prompt 相同</span>";
+    if (summary) summary.textContent = `${base.prompt ? base.prompt.length : 0} → ${target.prompt ? target.prompt.length : 0} 字符`;
+  };
+
+  const selectTrace = (idx) => {
+    const t = loop.traces[idx];
+    if (!t) return;
+    strip.querySelectorAll(".trace-item").forEach((el) => el.classList.toggle("selected", +el.dataset.traceIdx === idx));
+    const img = t.output_image_refs[0];
+    const heroImg = document.getElementById("compact-hero-img");
+    if (heroImg) {
+      heroImg.src = img ? imgURL(img, t.loop_id) : "";
+      heroImg.dataset.lb = img ? imgURL(img, t.loop_id) : "";
+    }
+    const best = loop.traces.reduce((best, tr) => ((tr.verdict?.restoration ?? -1) > (best.verdict?.restoration ?? -1) ? tr : best), loop.traces[0]);
+    const isBest = t.trace_id === best.trace_id;
+    const badge = document.getElementById("compact-hero-badge");
+    if (badge) badge.textContent = `#${t.round}${isBest ? " 最佳" : ""} · ${fmt(t.verdict?.restoration)}`;
+    const sub = document.getElementById("compact-hero-sub");
+    if (sub) sub.textContent = `${esc(loop.model)} · ${t.ts || ""}`;
+    const evalScore = document.getElementById("compact-eval-score");
+    if (evalScore) evalScore.textContent = fmt(t.verdict?.restoration);
+    const evalBody = document.getElementById("compact-eval-body");
+    if (evalBody) evalBody.innerHTML = t.verdict ? renderDimList(t.verdict.dimensions) : '<div class="muted" style="padding:0 16px 16px">暂无评分</div>';
+    const promptText = document.getElementById("compact-prompt-text");
+    if (promptText) promptText.textContent = t.prompt || "(空)";
+    if (baseSel) baseSel.value = String(Math.max(0, idx - 1));
+    if (targetSel) targetSel.value = String(idx);
+    renderCompactDiff();
+  };
+
+  strip.addEventListener("click", (e) => {
+    const item = e.target.closest(".trace-item");
+    if (!item) return;
+    selectTrace(+item.dataset.traceIdx);
+  });
+  strip.addEventListener("keydown", (e) => {
+    const item = e.target.closest(".trace-item");
+    if (!item || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    selectTrace(+item.dataset.traceIdx);
+  });
+  if (baseSel) baseSel.addEventListener("change", renderCompactDiff);
+  if (targetSel) targetSel.addEventListener("change", renderCompactDiff);
+
+  selectTrace(bestIdx);
 }
 
 function renderDimList(dimensions) {
@@ -1297,7 +1596,7 @@ async function renderExperience(benchId) {
       <div class="exp-toolbar">
         <h2 style="margin:0">通用经验 · ${esc(benchId)}</h2>
         <div class="exp-actions">
-          <button class="btn btn-secondary btn-sm" title="规范可安装技能包（SKILL.md + references + assets）" onclick="exportSkillPackage('${esc(benchId)}')">导出技能包(.skill)</button>
+          <button class="btn btn-secondary btn-sm" title="规范技能包 zip（SKILL.md + references + assets）" onclick="exportSkillPackage('${esc(benchId)}')">导出技能包(.zip)</button>
           <button class="btn btn-ghost btn-sm" onclick="exportSkillMd('${esc(benchId)}')">SKILL.md</button>
           <button class="btn btn-ghost btn-sm" onclick="copySkillMd('${esc(benchId)}')">复制</button>
           <button class="btn btn-primary btn-sm" id="distill-btn" onclick="triggerDistill('${esc(benchId)}')">重新蒸馏</button>
@@ -1445,7 +1744,7 @@ async function exportSkillMd(benchId) {
 }
 
 function exportSkillPackage(benchId) {
-  // 下载规范 .skill 包（目录 zip：SKILL.md + references/ + assets/），可装到别的 agent 工具
+  // 下载规范技能包 zip（目录 zip：SKILL.md + references/ + assets/），可装到别的 agent 工具
   window.location.href = `/api/experience/${encodeURIComponent(benchId)}/skill.zip`;
 }
 
@@ -1485,4 +1784,4 @@ async function router() {
 }
 
 window.addEventListener("hashchange", router);
-window.addEventListener("load", router);
+window.addEventListener("load", () => { initCompactMode(); router(); });
