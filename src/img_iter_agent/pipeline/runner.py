@@ -24,7 +24,6 @@ from langsmith import traceable
 
 from ..agents.critic import Critic
 from ..agents.generator import Generator
-from ..agents.summarizer import Summarizer
 from ..config import Settings, get_settings
 from ..data.benchmark import LoadedBenchmark
 from ..data.human_hints import load_effective_hints
@@ -32,15 +31,9 @@ from ..data.runstore import RunStore
 from ..generation.client import DmxapiClient
 from ..generation.router import Router
 from ..llm.chat_model import build_chat_model
+from ..memory.experience import generator_skills_source
 from ..memory.schema import CriticVerdict
 from .graph import CompiledGraph, build_graph
-
-# 项目根（定位 skills/<role>/SKILL.md，随仓库分发；deepagents SkillsMiddleware 从此读）
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _skills_dir(role: str) -> Path:
-    return _PROJECT_ROOT / "skills" / role
 
 
 @dataclass
@@ -162,17 +155,17 @@ def build_loop_context(
     # Generator/Critic：deepagent 引擎（tool-using agent）。chat_model 指向 dmxapi OpenAI 兼容端点。
     gen_chat = build_chat_model(settings, role="generator")
     generator = Generator(
-        router, chat_model=gen_chat, skills_dir=_skills_dir("generator"),
+        router, chat_model=gen_chat,
+        skills_dir=generator_skills_source(settings.data_root, lb.bench.bench_id),
         data_root=settings.data_root, bench_id=lb.bench.bench_id,
     )
     critic_chat = build_chat_model(settings, role="critic")
-    critic = Critic(critic_chat, bench=lb.bench, skills_dir=_skills_dir("critic"))
-    summarizer = Summarizer(chat_model=build_chat_model(settings, role="summarizer"))
+    critic = Critic(critic_chat, bench=lb.bench)
 
     checkpointer = open_checkpointer(store.run_dir) if persist else InMemorySaver()
     app = build_graph(
         bench=lb, run_store=store, generator=generator, critic=critic,
-        summarizer=summarizer, sample_id=sample_id,
+        sample_id=sample_id,
         checkpointer=checkpointer, loop_model=loop_model,
     )
     model = store.meta.model if store.meta else (loop_model or "")

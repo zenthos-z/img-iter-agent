@@ -21,7 +21,6 @@ from langchain_core.messages import AIMessage
 
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
-from img_iter_agent.agents.summarizer import Summarizer
 from img_iter_agent.config import Settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.generation.base import GeneratedImage
@@ -117,14 +116,13 @@ def _patch_build_app(monkeypatch, lb, settings):
         router = _FakeRouter()
         gen = Generator(router, chat_model=FakeToolCallingChatModel(responses=_gen_responses(3)),
                         skills_dir=None)
-        critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-        summ = Summarizer()
+        critic = Critic(_critic_chat(lb), bench=bench)
         conn = sqlite3.connect(store.run_dir / "checkpoints.sqlite", check_same_thread=False)
         from langgraph.checkpoint.sqlite import SqliteSaver
         checkpointer = SqliteSaver(conn)
         app = build_graph(
             bench=lb, run_store=store, generator=gen, critic=critic,
-            summarizer=summ, sample_id=sample_id, checkpointer=checkpointer,
+            sample_id=sample_id, checkpointer=checkpointer,
         )
         cfg = {"configurable": {"thread_id": store.run_dir.name}}
         return app, cfg
@@ -260,3 +258,44 @@ def test_start_finished_loop_runs_next_round(setup, monkeypatch):
     h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
     assert h.phase == "awaiting_review", f"start 续跑期望 awaiting_review，实际 {h.phase}: {h.last_error}"
     assert _rounds() == [1, 2], f"期望跑到第 2 轮，实际 {_rounds()}"
+
+
+def test_resume_adopts_handleless_loop(setup, monkeypatch):
+    """resume() 收养无内存 handle 的 loop（外部 run_loop_auto 起 / server 重启后）：
+    清空 _handles 后 resume('continue') 应重建 graph 跑出 N+1 轮，而非返回 False。
+
+    覆盖 resume() → _adopt_and_resume → _run_first_round(resume_existing=True) 路径——
+    这是「卡片/详情页一键续跑外部 loop」的后端依赖。
+    """
+    settings, lb, bench_id = setup
+    _patch_build_app(monkeypatch, lb, settings)
+    runner = get_runner()
+
+    def _rounds():
+        traj = (settings.run_dir(loop_id) / "trajectory.jsonl").read_text(encoding="utf-8")
+        return [json.loads(l)["round"] for l in traj.strip().splitlines() if l.strip()]
+
+    loop_id = runner.start(bench_id=bench_id, sample_id="s001", model="fake-model", rounds=1)
+    _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    runner.resume(loop_id, "stop")
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "finished"
+    assert _rounds() == [1]
+
+    # 模拟外部进程起的 loop / server 重启：清空内存 handle（run 目录仍在盘上）
+    runner._handles.clear()
+    assert runner.get(loop_id) is None  # 确实无 handle
+
+    # resume 无 handle 但盘上存在 → 收养重建 + 续跑第 2 轮（旧实现这里返回 False）
+    assert runner.resume(loop_id, "continue") is True
+    h = _wait_phase(runner, loop_id, {"awaiting_review", "finished", "error"})
+    assert h.phase == "awaiting_review", f"resume 收养后续跑期望 awaiting_review，实际 {h.phase}: {h.last_error}"
+    assert _rounds() == [1, 2], f"期望跑到第 2 轮，实际 {_rounds()}"
+
+
+def test_resume_unknown_loop_returns_false(setup, monkeypatch):
+    """resume() 对盘上不存在的 loop_id 返回 False（→ 路由 404）。"""
+    _, lb, bench_id = setup
+    _patch_build_app(monkeypatch, lb, setup[0])
+    runner = get_runner()
+    assert runner.resume("nope-not-exist", "continue") is False

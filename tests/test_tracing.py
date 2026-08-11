@@ -145,7 +145,6 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
 
     from img_iter_agent.agents.critic import Critic
     from img_iter_agent.agents.generator import Generator
-    from img_iter_agent.agents.summarizer import Summarizer
     from img_iter_agent.data.benchmark import load_benchmark
     from img_iter_agent.data.runstore import RunStore
     from img_iter_agent.generation.client import DmxapiClient
@@ -198,8 +197,7 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     app = build_graph(
         bench=lb, run_store=store,
         generator=Generator(router, chat_model=gen_chat, skills_dir=None),
-        critic=Critic(critic_chat, bench=bench, skills_dir=None),
-        summarizer=Summarizer(),
+        critic=Critic(critic_chat, bench=bench),
         sample_id="s001", checkpointer=InMemorySaver(),
     )
     cfg = {"configurable": {"thread_id": "tracetest"}}

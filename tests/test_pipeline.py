@@ -14,7 +14,6 @@ from langchain_core.messages import AIMessage
 
 from img_iter_agent.agents.critic import Critic
 from img_iter_agent.agents.generator import Generator
-from img_iter_agent.agents.summarizer import Summarizer
 from img_iter_agent.config import Settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.data.runstore import RunStore
@@ -105,12 +104,11 @@ def test_loop_runs_one_round_and_stops(setup):
     bench = lb.bench
     router = _FakeRouter()
     gen = Generator(router, chat_model=_gen_chat_model(1))
-    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-    summ = Summarizer()
+    critic = Critic(_critic_chat(lb), bench=bench)
 
     state = run_loop(
         bench=lb, run_store=store, sample_id="s001",
-        generator=gen, critic=critic, summarizer=summ,
+        generator=gen, critic=critic,
         decisions=["stop"],
     )
     # 跑了 1 轮（三视图 = 1 张图，单次生成）
@@ -132,12 +130,11 @@ def test_loop_two_rounds_then_stop(setup):
     bench = lb.bench
     router = _FakeRouter()
     gen = Generator(router, chat_model=_gen_chat_model(2))
-    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-    summ = Summarizer()
+    critic = Critic(_critic_chat(lb), bench=bench)
 
     state = run_loop(
         bench=lb, run_store=store, sample_id="s001",
-        generator=gen, critic=critic, summarizer=summ,
+        generator=gen, critic=critic,
         decisions=["continue", "stop"],
     )
     assert state["round"] == 2
@@ -152,11 +149,10 @@ def test_loop_writes_lessons_and_index(setup):
     lb, store = setup
     bench = lb.bench
     gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(1))
-    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-    summ = Summarizer()
+    critic = Critic(_critic_chat(lb), bench=bench)
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
-             generator=gen, critic=critic, summarizer=summ, decisions=["stop"])
+             generator=gen, critic=critic, decisions=["stop"])
 
     # 经验知识库 conclusions.json（替代原单轮 MD）
     cpath = store.run_dir / "lessons" / "conclusions.json"
@@ -180,11 +176,10 @@ def test_control_variable_baseline_ref_set_on_round2(setup):
     lb, store = setup
     bench = lb.bench
     gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(2))
-    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-    summ = Summarizer()
+    critic = Critic(_critic_chat(lb), bench=bench)
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
-             generator=gen, critic=critic, summarizer=summ,
+             generator=gen, critic=critic,
              decisions=["continue", "stop"])
 
     traj = [json.loads(l) for l in
@@ -200,11 +195,10 @@ def test_round2_prompt_improved_from_round1_feedback(setup):
     bench = lb.bench
     gen = Generator(_FakeRouter(), chat_model=_gen_chat_model(2))
     # 构造一些失败项：让二分维度有失败（前 N-1 通过 → 最后 1 项失败）
-    critic = Critic(_critic_chat(lb), bench=bench, skills_dir=None)
-    summ = Summarizer()
+    critic = Critic(_critic_chat(lb), bench=bench)
 
     run_loop(bench=lb, run_store=store, sample_id="s001",
-             generator=gen, critic=critic, summarizer=summ,
+             generator=gen, critic=critic,
              decisions=["continue", "stop"])
 
     traj = [json.loads(l) for l in

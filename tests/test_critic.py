@@ -95,7 +95,7 @@ def test_critic_evaluate_full_hybrid(loaded, three_view_images):
     bench = loaded.bench
     weights = init_weights(bench)
     chat = FakeToolCallingChatModel(responses=[_critic_agent_response(loaded)])
-    critic = Critic(chat, bench=bench, skills_dir=None)
+    critic = Critic(chat, bench=bench)
 
     verdict = critic.evaluate(CriticInput(
         sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,
@@ -130,7 +130,7 @@ def test_critic_injects_target_and_generated_images(loaded, three_view_images):
     """生成图 + target 以 image_url 注入初始 HumanMessage（agent 循环每步都看得到）。"""
     bench = loaded.bench
     chat = FakeToolCallingChatModel(responses=[_critic_agent_response(loaded)])
-    critic = Critic(chat, bench=bench, skills_dir=None)
+    critic = Critic(chat, bench=bench)
     critic.evaluate(CriticInput(
         sample=loaded.sample("s001"), generated_images=three_view_images,
         weights=init_weights(bench),
@@ -152,7 +152,7 @@ def test_critic_robust_to_empty_output(loaded, three_view_images):
         "args": {"dimensions": []},
     }])
     chat = FakeToolCallingChatModel(responses=[bad])
-    critic = Critic(chat, bench=bench, skills_dir=None)
+    critic = Critic(chat, bench=bench)
 
     verdict = critic.evaluate(CriticInput(
         sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,
@@ -169,7 +169,7 @@ def test_critic_missing_checklist_items_default_zero(loaded, three_view_images):
     chat = FakeToolCallingChatModel(
         responses=[_critic_agent_response(loaded, empty_binary=("consistency",))],
     )
-    critic = Critic(chat, bench=bench, skills_dir=None)
+    critic = Critic(chat, bench=bench)
 
     verdict = critic.evaluate(CriticInput(
         sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,

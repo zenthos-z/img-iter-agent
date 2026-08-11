@@ -99,15 +99,18 @@ class Critic:
         *,
         bench: Benchmark,
         system_prompt: str | None = None,
-        skills_dir: Path | str | None = None,
     ) -> None:
         self.chat_model = chat_model
         self.bench = bench
         self.system_prompt = system_prompt or load_system_prompt("critic", _DEFAULT_CRITIC_SYS)
-        self.skills_dir = str(skills_dir) if skills_dir else None
         # 创造力标准 overlay（creativity_tuner 产物）：Critic 实例构建时读一次，覆盖种子 content_spec。
         # 每个 loop 子进程构建一次 → tuner 只在批与批之间生效（不污染在跑的 loop）。
         self._creativity_overlay = _load_creativity_overlay(bench.bench_id)
+        # 经验总结（原 in-loop Summarizer 职责）：critic 打分后兼做跨轮因果验证 + lesson 富化。
+        # Summarizer 不再作为 graph 独立节点——loop 只剩 generator/critic 两个 agent；其成熟逻辑
+        # （distiller 跨 loop 蒸馏依赖的 conclusions.json 产物）作为工具被 critic 调用。
+        from .summarizer import Summarizer
+        self._summarizer = Summarizer(chat_model=chat_model)
 
     def evaluate(
         self, inp: CriticInput, *, config: RunnableConfig | None = None,
@@ -131,7 +134,6 @@ class Critic:
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
-            skills=[self.skills_dir] if self.skills_dir else None,
             response_format=CriticAgentOutput, checkpointer=None, name="critic",
             middleware=narrow_tools_middleware(),
         )
@@ -151,6 +153,14 @@ class Critic:
             restoration=restoration,
         )
 
+    def summarize_round(self, **kwargs) -> str:
+        """critic 兼任的经验总结（原 in-loop Summarizer 职责）。
+
+        打分后做跨轮因果验证 + 复发检测 + lesson 富化，更新 conclusions.json，返回 lesson_ref。
+        逻辑见 Summarizer.summarize（成熟；distiller 跨 loop 蒸馏依赖其 conclusions.json 产物）。
+        """
+        return self._summarizer.summarize(**kwargs)
+
     # --- 辅助 ---
 
     def _build_user_content(
@@ -164,16 +174,9 @@ class Critic:
         """
         dim_lines: list[str] = []
         for d in self.bench.score_dimensions:
-            cl = _effective_checklist(spec, d.dim, self._creativity_overlay)
+            cl = _effective_checklist(spec, d.dim, self._creativity_overlay, bench=self.bench)
             if d.scoring_type == "binary":
                 items = list(cl) if isinstance(cl, list) else []
-                # 兼容 content_spec 缺该维度时回落到 manifest 的 check_items（"CX 描述"串）
-                if not items:
-                    items = [
-                                        type("CI", (), {"id": s.split()[0], "check": s.split(None, 1)[-1],
-                                                         "anchor": None})()
-                                        for s in (d.check_items or [])
-                    ] if d.check_items else []
                 item_lines = "\n".join(
                     f"    - {getattr(it, 'id', '?')}: {getattr(it, 'check', '')}"
                     + (f"（{it.anchor}）" if getattr(it, 'anchor', None) else "")

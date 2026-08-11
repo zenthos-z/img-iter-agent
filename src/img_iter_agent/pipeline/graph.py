@@ -1,10 +1,10 @@
-"""LangGraph 闭环 A：generator → critic → summarizer → human_review(interrupt) → 条件边。
+"""LangGraph 闭环 A：generator → critic → human_review(interrupt) → 条件边。
 
 节点职责（ARCH §2，经验闭环演进）：
   - generator_node：控制变量法构造 GenRequest → 三视图出图；读经验知识库注入上下文
-  - critic_node：对三视图打混合评分（Critic 是改动有效性的客观裁判）
-  - summarizer_node：Critic 驱动的经验闭环验证（上轮改动→前后 verdict 对比→有效/无效）；
-    更新 conclusions.json；记 AttemptRecord（含 delta_note）
+  - critic_node：对三视图打混合评分（Critic 是改动有效性的客观裁判）；**兼任经验总结**
+    （原独立 summarizer_node 职责：上轮改动→前后 verdict 对比→有效/无效；更新 conclusions.json；
+    记 AttemptRecord 含 delta_note）。loop 内只剩 generator/critic 两个 agent。
   - human_review_node：interrupt() 等人工裁决（continue/stop/调方向），不自动收敛（ADR-007）
 
 条件边 route：decision==stop → END，否则回到 generator。
@@ -25,7 +25,6 @@ from langgraph.types import Command, interrupt
 
 from ..agents.critic import Critic, CriticInput
 from ..agents.generator import Generator, GenOutcome
-from ..agents.summarizer import Summarizer
 from ..config import get_settings
 from ..data.benchmark import LoadedBenchmark
 from ..data.runstore import RunStore
@@ -51,7 +50,6 @@ def build_graph(
     run_store: RunStore,
     generator: Generator,
     critic: Critic,
-    summarizer: Summarizer,
     sample_id: str,
     checkpointer=None,
     loop_model: str | None = None,
@@ -154,17 +152,13 @@ def build_graph(
             sample=sample, generated_images=gen_imgs, weights=weights,
             meaning=outcome.meaning, reference_ids=list(outcome.reference_ids),
         ), config=config, extra_hints=_critic_hints or None)
-        return {"_verdict": verdict, "verdicts": [verdict]}
-
-    def summarizer_node(state: RunState, config: RunnableConfig) -> dict:
-        outcome: GenOutcome = state["_outcome"]  # type: ignore[typeddict-item]
-        verdict: CriticVerdict = state["_verdict"]  # type: ignore[typeddict-item]
-        # Critic 驱动的经验闭环：取上轮 verdict + 上轮改动说明，做跨轮验证
+        # 经验总结（原独立 summarizer_node 职责，现 critic 兼任）+ trajectory 写入。
+        # 取上轮 verdict + 上轮改动说明，做跨轮因果验证；critic.summarize_round 内部更新
+        # conclusions.json 并返回 lesson_ref（distiller 跨 loop 蒸馏依赖该产物）。
         all_verdicts: list[CriticVerdict] = state.get("verdicts", [])
         prev_verdict = all_verdicts[-2] if len(all_verdicts) >= 2 else None
-        # 上轮 delta_note 从 trajectory 最后一条 AttemptRecord 取
         prev_delta_note = _prev_delta_note(run_dir)
-        lesson_ref = summarizer.summarize(
+        lesson_ref = critic.summarize_round(
             run_dir=run_dir, round=state["round"], outcome=outcome,
             verdict=verdict, sample_id=sample_id,
             prev_verdict=prev_verdict, prev_delta_note=prev_delta_note, config=config,
@@ -182,7 +176,7 @@ def build_graph(
             meaning=outcome.meaning,
         )
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)
-        return {"attempts": [rec]}
+        return {"_verdict": verdict, "verdicts": [verdict], "attempts": [rec]}
 
     def human_review_node(state: RunState, config: RunnableConfig) -> dict:
         verdict: CriticVerdict | None = state.get("_verdict")  # type: ignore[assignment]
@@ -220,12 +214,10 @@ def build_graph(
     builder = StateGraph(RunState)
     builder.add_node("generator", generator_node)
     builder.add_node("critic", critic_node)
-    builder.add_node("summarizer", summarizer_node)
     builder.add_node("human_review", human_review_node)
     builder.add_edge(START, "generator")
     builder.add_edge("generator", "critic")
-    builder.add_edge("critic", "summarizer")
-    builder.add_edge("summarizer", "human_review")
+    builder.add_edge("critic", "human_review")
     builder.add_conditional_edges("human_review", route, {"generator": "generator", END: END})
 
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
@@ -238,7 +230,6 @@ def run_loop(
     sample_id: str,
     generator: Generator,
     critic: Critic,
-    summarizer: Summarizer,
     decisions: list[str],
     thread_id: str | None = None,
 ) -> RunState:
@@ -255,7 +246,7 @@ def run_loop(
     model = run_store.meta.model if run_store.meta else ""
     cfg = make_loop_config(tid, bench.bench.bench_id, sample_id, model)
     app = build_graph(bench=bench, run_store=run_store, generator=generator,
-                      critic=critic, summarizer=summarizer, sample_id=sample_id)
+                      critic=critic, sample_id=sample_id)
 
     # 首轮：给初始输入跑到第一个 interrupt
     state = app.invoke({"round": 0, "model": (run_store.meta.model if run_store.meta else ""),
