@@ -2,38 +2,44 @@
   "sample_id": "s001",
   "product": "欧式白色雕花双人床",
   "category": "bed",
-
   "task": {
     "mode": "image_edit",
-    "input_assets": ["target.jpg"],
+    "input_assets": [
+      "target.jpg"
+    ],
     "instruction": "以该图为参考产品,生成【一张】白底素材图,图中并排排版同一张床的三个视角:正视图(正面平视)、侧视图(90°侧面平视)、立体图(45°斜侧)。三个视角必须是同一产品、同色、同比例,纯白背景。一次生成一张完整的三视图排版图。",
     "output": {
       "layout": "three_view_single_image",
-      "views": ["front", "side", "perspective"],
+      "views": [
+        "front",
+        "side",
+        "perspective"
+      ],
       "background": "white",
       "size": "2K"
     }
   },
-
   "constraints": {
-    "must_keep": ["弧形床头板形状", "床头板雕花装饰", "纯白漆面", "四条床腿与床框结构", "床垫浅米色与绗缝"],
-    "may_change": ["背景(纯白)", "光影(白底标准打光)"],
-    "must_avoid": ["床头板变平直", "雕花消失或糊化", "白色发黄发灰", "床腿穿模缺失", "三视角不一致"]
+    "must_keep": [
+      "弧形床头板形状",
+      "床头板雕花装饰",
+      "纯白漆面",
+      "四条床腿与床框结构",
+      "床垫浅米色与绗缝"
+    ],
+    "may_change": [
+      "背景(纯白)",
+      "光影(白底标准打光)"
+    ],
+    "must_avoid": [
+      "床头板变平直",
+      "雕花消失或糊化",
+      "白色发黄发灰",
+      "床腿穿模缺失",
+      "三视角不一致"
+    ]
   },
-
   "checklist": {
-    "consistency": [
-      {"id": "C1", "check": "图中三个视角是同一张床"},
-      {"id": "C2", "check": "三个视角白色一致"},
-      {"id": "C3", "check": "侧视床宽=正视床宽"},
-      {"id": "C4", "check": "三个视角高度比例一致"}
-    ],
-    "product_structure": [
-      {"id": "S1", "check": "床头板+床框+四腿结构齐全(对照参考图)", "anchor": "对照 target"},
-      {"id": "S2", "check": "无部件穿模/重叠"},
-      {"id": "S3", "check": "无部件缺失"},
-      {"id": "S4", "check": "床头板仍是弧形(非平直,对照参考图)", "anchor": "对照 target"}
-    ],
     "material_texture": {
       "_scoring": "continuous: LLM对这些点整体给0-1还原度分(有偏差,排序校准吸收权重)",
       "points": [
@@ -50,18 +56,85 @@
         "床垫浅米色一致"
       ]
     },
+    "consistency": [
+      {
+        "id": "C1",
+        "check": "三视图是同一产品"
+      },
+      {
+        "id": "C2",
+        "check": "三视图颜色一致"
+      },
+      {
+        "id": "C3",
+        "check": "侧视与正视几何尺寸一致(不预设具体形态)"
+      },
+      {
+        "id": "C4",
+        "check": "各视图高度比例一致"
+      },
+      {
+        "id": "C5",
+        "check": "每个视图完整呈现整个产品(正视/侧视/立体各自完整,无截断/不显示局部)"
+      }
+    ],
+    "product_structure": [
+      {
+        "id": "S1",
+        "check": "整体结构忠实还原参考图(对照target自由对比各部件形态/数量/位置/比例)"
+      },
+      {
+        "id": "S2",
+        "check": "无部件穿模/重叠"
+      },
+      {
+        "id": "S3",
+        "check": "无部件缺失/多余"
+      },
+      {
+        "id": "S4",
+        "check": "整体造型轮廓忠实还原参考图(对照target判断,不预设具体形态)"
+      }
+    ],
     "artifact_defect": [
-      {"id": "A1", "check": "床框直线无弯曲"},
-      {"id": "A2", "check": "左右对称结构对称"},
-      {"id": "A3", "check": "无模糊/拼接痕"},
-      {"id": "A4", "check": "家具接地有阴影(不悬浮)"}
+      {
+        "id": "A1",
+        "check": "直线无弯曲"
+      },
+      {
+        "id": "A2",
+        "check": "对称结构对称"
+      },
+      {
+        "id": "A3",
+        "check": "无模糊/拼接痕"
+      },
+      {
+        "id": "A4",
+        "check": "家具接地有阴影(不悬浮)"
+      }
     ],
     "commercial_focus": [
-      {"id": "B1", "check": "主体居中突出"},
-      {"id": "B2", "check": "背景纯白干净"},
-      {"id": "B3", "check": "留白构图符合电商规范"}
+      {
+        "id": "B1",
+        "check": "主体居中突出"
+      },
+      {
+        "id": "B2",
+        "check": "背景纯白干净"
+      },
+      {
+        "id": "B3",
+        "check": "留白构图符合平台规范"
+      }
     ]
   },
-
-  "anchor_for": ["consistency", "product_structure", "material_texture", "color_accuracy", "artifact_defect", "commercial_focus"]
+  "anchor_for": [
+    "consistency",
+    "product_structure",
+    "material_texture",
+    "color_accuracy",
+    "artifact_defect",
+    "commercial_focus"
+  ]
 }

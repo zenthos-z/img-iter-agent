@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...config import get_settings
-from ..services.agent_config import AGENTS, get_agent_config, reset_agent_config, save_agent_config
+from ..services.agent_config import AGENTS, get_agent_config, list_bench_ids, reset_agent_config, save_agent_config
 
 router = APIRouter()
 
@@ -21,7 +21,6 @@ _IMAGE_MODEL_DEFS = [
 _AGENT_MODEL_DEFS = [
     ("generator", "generator_model", "Generator"),
     ("critic", "critic_model", "Critic"),
-    ("summarizer", "summarizer_model", "Summarizer"),
 ]
 
 
@@ -53,27 +52,30 @@ class AgentConfigUpdate(BaseModel):
 
 @router.get("/config")
 def list_agents() -> dict:
-    """列出所有 agent 及当前配置。"""
-    return {"agents": [get_agent_config(a) for a in AGENTS]}
+    """列出所有 agent 及当前配置 + 可选 benchmark 列表（供配置页下拉切换 per-bench 技能）。"""
+    return {
+        "agents": [get_agent_config(a) for a in AGENTS],
+        "benches": list_bench_ids(),
+    }
 
 
 @router.get("/config/{agent}")
-def get_config(agent: str) -> dict:
+def get_config(agent: str, bench: str | None = None) -> dict:
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"未知 agent: {agent}")
-    return get_agent_config(agent)
+    return get_agent_config(agent, bench_id=bench)
 
 
 @router.post("/config/{agent}")
-def update_config(agent: str, update: AgentConfigUpdate) -> dict:
+def update_config(agent: str, update: AgentConfigUpdate, bench: str | None = None) -> dict:
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"未知 agent: {agent}")
-    return save_agent_config(agent, system_prompt=update.system_prompt, model=update.model)
+    return save_agent_config(agent, system_prompt=update.system_prompt, model=update.model, bench_id=bench)
 
 
 @router.post("/config/{agent}/reset")
-def reset_config(agent: str) -> dict:
+def reset_config(agent: str, bench: str | None = None) -> dict:
     """恢复代码默认。"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"未知 agent: {agent}")
-    return reset_agent_config(agent)
+    return reset_agent_config(agent, bench_id=bench)

@@ -21,7 +21,6 @@ from ...config import Settings, get_settings
 from ...data.benchmark import load_benchmark
 from ...llm.chat_model import build_chat_model
 from ...memory.experience import load_general_experience, save_general_experience
-from ...pipeline.runner import _skills_dir
 
 
 @dataclass
@@ -96,7 +95,7 @@ class DistillerRunner:
             with self._lock:
                 self._states[bench_id] = _DistillState(state="error", error=str(e))
 
-    # --- 核心：发现 run → 蒸馏（复刻 cli.py cmd_summarize）---
+    # --- 核心：发现 run → 蒸馏（复刻 cli.py cmd_distill）---
     def _collect_runs(self, settings: Settings, bench_id: str) -> list[Path]:
         run_dirs = [Path(p) for p in glob.glob(str(settings.runs_dir / f"{bench_id}-*"))]
         return [rd for rd in run_dirs if (rd / "trajectory.jsonl").exists()]
@@ -110,7 +109,6 @@ class DistillerRunner:
             lb=lb,
             data_root=settings.data_root,
             previous=load_general_experience(settings.data_root, bench_id),
-            skills_dir=_skills_dir("experience-distiller"),
         )
         return distiller.distill()
 

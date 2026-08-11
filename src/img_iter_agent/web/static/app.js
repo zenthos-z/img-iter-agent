@@ -15,6 +15,14 @@ const STATUS_LABEL = {
 
 const STATUS_ORDER = { awaiting_review: 0, running: 1, error: 2, finished: 3, unknown: 4, idle: 5 };
 
+// 可一键续跑的状态：等审批 或 已结束（resume() 现已支持 finished，并能收养无 handle 的外部 loop）。
+// running/error/unknown 不给续——外部进程可能正写，靠 status 门控避免并发写冲突。
+const RESUMABLE = ["awaiting_review", "finished"];
+// 一个 sample 下挑「最近一个可续跑 loop」（按 started_at 倒序）供 sample 卡片「继续跑」用。
+const latestResumableLoop = (loops) => (loops || [])
+  .filter((l) => RESUMABLE.includes(l.status))
+  .sort((a, b) => String(b.started_at || "").localeCompare(String(a.started_at || "")))[0];
+
 const DISTILL_LABEL = { idle: "未蒸馏", running: "蒸馏中", done: "完成", error: "失败", no_runs: "无 run" };
 
 const NODE_LABEL = {
@@ -397,6 +405,12 @@ function renderSampleCard(bench, sample) {
       </span>`;
     }).join("");
 
+  // sample 卡片「继续跑」= 续最近一个可续跑 loop（一题多 loop 时取 started_at 最新的）
+  const cont = latestResumableLoop(sample.loops);
+  const contBtn = cont
+    ? `<button class="btn btn-ghost btn-sm" onclick="resumeLoop('${esc(cont.loop_id)}','continue')">继续跑</button>`
+    : "";
+
   return `<div class="sample-card">
     ${target ? `<img class="sample-thumb" src="${target}" data-lb="${target}" alt="">` : '<div class="sample-thumb"></div>'}
     <div class="sample-info">
@@ -410,7 +424,7 @@ function renderSampleCard(bench, sample) {
     </div>
     <div class="sample-actions">
       <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">人工排序</a>
-      <button class="btn btn-ghost btn-sm" onclick="startNewLoop('${esc(bench.bench_id)}','${esc(sample.sample_id)}')">继续跑</button>
+      ${contBtn}
     </div>
   </div>`;
 }
@@ -538,7 +552,9 @@ function renderLoopThumbCard(bench, sample, loop) {
       <div class="loop-thumb-meta">${loop.n_traces} trace · 最佳 ${best}</div>
       <div class="loop-thumb-actions">
         <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">排序</a>
-        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); startNewLoop('${esc(bench.bench_id)}','${esc(sample.sample_id)}')">继续跑</button>
+        ${RESUMABLE.includes(loop.status)
+          ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); resumeLoop('${esc(loop.loop_id)}','continue')">继续跑</button>`
+          : ""}
       </div>
     </div>
   </div>`;
@@ -659,7 +675,7 @@ async function viewLoop(loopId) {
     }
 
     // 人工提示词面板（异步填充）
-    renderHintsPanel(loopId);
+    renderHintsPanel(loopId, loop.status);
 
     // prompt 事件委托（完整视图）
     app.addEventListener("click", (e) => {
@@ -705,6 +721,8 @@ function renderLoopFull(loop, loopId) {
   } else if (loop.status === "awaiting_review") {
     controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
     controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止并采用</button>`);
+  } else if (loop.status === "finished") {
+    controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
   }
 
   let review = "";
@@ -820,6 +838,8 @@ function renderLoopCompact(loop, loopId) {
   } else if (loop.status === "awaiting_review") {
     controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
     controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止并采用</button>`);
+  } else if (loop.status === "finished") {
+    controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
   }
 
   let errorAlert = "";
@@ -1059,21 +1079,26 @@ async function resumeLoop(loopId, decision) {
 }
 
 // ============ 人工提示词面板（loop 详情页，运行中可增删） ============
-async function renderHintsPanel(loopId) {
+// status 用来门控底部「继续跑（本轮生效）」按钮——只在可续跑状态显示。
+async function renderHintsPanel(loopId, status) {
   const el = document.getElementById("hints-panel");
   if (!el) return;
   let hints = [];
   try {
     hints = ((await api(`/loops/${loopId}/hints`)).hints) || [];
   } catch (_) { return; }
-  const scopeBadge = (s) => s === "sample"
-    ? `<span class="badge badge-primary">持久</span>`
-    : `<span class="badge badge-ghost">临时</span>`;
   const renderHint = (h) => `<div class="hint-row">
-    ${scopeBadge(h.scope)}
     <span class="badge">${esc(h.agent)}</span>
     <span class="hint-text">${esc(h.text)}</span>
     <button class="btn btn-ghost btn-sm" onclick="removeLoopHint('${esc(loopId)}','${esc(h.id)}')">×</button>
+  </div>`;
+  // 按作用域分组：持久（sample，该考题所有 loop 共享）/ 临时（loop，仅当前 loop）。
+  // 详情页本就 per-loop，分组让「临时提示词归属本 loop」一目了然。
+  const persist = hints.filter((h) => h.scope === "sample");
+  const temp = hints.filter((h) => h.scope !== "sample");
+  const group = (title, subtitle, list) => `<div class="hint-group mt-2">
+    <div class="muted" style="font-size:11px">${esc(title)}${subtitle ? ` · ${esc(subtitle)}` : ""}</div>
+    <div class="hint-list">${list.length ? list.map(renderHint).join("") : '<div class="muted" style="font-size:12px">无</div>'}</div>
   </div>`;
   const editor = `<div class="nl-hint-editor mt-2">
     <div class="row" style="gap:8px;align-items:flex-start">
@@ -1089,13 +1114,19 @@ async function renderHintsPanel(loopId) {
     <textarea id="hp-text" class="mt-1" rows="2" placeholder="追加一条提示词…"></textarea>
     <button class="btn btn-primary btn-sm mt-1" onclick="addLoopHint('${esc(loopId)}')">＋ 添加</button>
   </div>`;
+  // 「继续跑」与提示词注入绑定：加完提示词直接续跑，下一轮即生效。仅可续跑状态显示。
+  const contBtn = RESUMABLE.includes(status)
+    ? `<button class="btn btn-primary mt-2" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑（本轮生效）</button>`
+    : `<div class="muted" style="font-size:11px;margin-top:8px">提示词已记录，下一轮续跑时生效。</div>`;
   el.innerHTML = `<div class="card card-padded hints-card">
     <div class="hints-head">
       <h3 style="margin:0">人工提示词</h3>
-      <span class="muted" style="font-size:11px">给 generator/critic 追加；下一轮生效。临时=仅本 loop；持久=该考题所有 loop。</span>
+      <span class="muted" style="font-size:11px">给 generator/critic 追加。临时=仅本 loop；持久=该考题所有 loop。</span>
     </div>
-    <div class="hint-list mt-2">${hints.length ? hints.map(renderHint).join("") : '<div class="muted" style="font-size:12px">暂无提示词。</div>'}</div>
+    ${group("持久", "该考题所有 loop", persist)}
+    ${group("临时", `仅本 loop ${esc(loopId.replace(/.*-\d{4}-/, ""))}`, temp)}
     ${editor}
+    ${contBtn}
   </div>`;
 }
 
@@ -1107,7 +1138,7 @@ async function addLoopHint(loopId) {
   try {
     await api(`/loops/${loopId}/hints`, { method: "POST", body: JSON.stringify({ agent, text, scope }) });
     toast("已添加提示词", "success");
-    renderHintsPanel(loopId);
+    renderHintsPanel(loopId, window.__loopCache.current?.status);
   } catch (e) { handleError(e, "添加失败"); }
 }
 
@@ -1115,7 +1146,7 @@ async function removeLoopHint(loopId, hintId) {
   try {
     await api(`/loops/${loopId}/hints/${hintId}`, { method: "DELETE" });
     toast("已删除", "success");
-    renderHintsPanel(loopId);
+    renderHintsPanel(loopId, window.__loopCache.current?.status);
   } catch (e) { handleError(e, "删除失败"); }
 }
 
@@ -1352,6 +1383,8 @@ async function recalib() {
 
 // ============ 视图：Agent 设置 ============
 let _cfgAgent = "generator";
+let _cfgBench = null;        // 当前选中的 benchmark（generator 的技能随它切换）
+let _cfgBenches = [];        // 可选 benchmark 列表（data/benchmarks/）
 
 async function viewConfig() {
   setNavActive("config");
@@ -1361,38 +1394,96 @@ async function viewConfig() {
 
   try {
     const data = await api("/config");
+    _cfgBenches = data.benches || [];
+    if (!_cfgBench && _cfgBenches.length) _cfgBench = _cfgBenches[0];
     app.innerHTML = `<div class="config-layout">
       <nav class="config-tabs" aria-label="Agent tabs">
-        ${["generator", "critic", "summarizer"].map((a) => `<button class="config-tab ${a === _cfgAgent ? "active" : ""}" onclick="switchCfg('${a}')">${a}</button>`).join("")}
+        ${["generator", "critic", "distiller"].map((a) => `<button class="config-tab ${a === _cfgAgent ? "active" : ""}" onclick="switchCfg('${a}')">${a}</button>`).join("")}
       </nav>
       <div class="card card-padded config-form" id="cfg-form"></div>
     </div>`;
-    renderCfgForm(data.agents);
+    await loadCfgForm();
   } catch (e) { handleError(e, "加载配置失败"); }
 }
 
 function switchCfg(a) { _cfgAgent = a; viewConfig(); }
+function switchCfgBench(b) { _cfgBench = b; loadCfgForm(); }
 
-function renderCfgForm(agents) {
-  const a = agents.find((x) => x.agent === _cfgAgent) || agents[0];
+async function loadCfgForm() {
+  const form = document.getElementById("cfg-form");
+  if (!form) return;
+  form.innerHTML = skeleton(1);
+  try {
+    const q = _cfgBench ? `?bench=${encodeURIComponent(_cfgBench)}` : "";
+    const a = await api(`/config/${_cfgAgent}${q}`);
+    renderCfgForm(a);
+  } catch (e) { handleError(e, "加载配置失败"); }
+}
+
+function renderCfgForm(a) {
+  // benchmark 下拉：generator 的技能 = per-bench 蒸馏 skill_package，随它切换。
+  const benchOpts = (_cfgBenches || []).map(
+    (b) => `<option value="${esc(b)}" ${b === _cfgBench ? "selected" : ""}>${esc(b)}</option>`,
+  ).join("");
+  const benchSel = (a.agent === "generator" && benchOpts)
+    ? `<label>benchmark（generator 技能随它切换；未蒸馏则裸跑）</label>
+       <select id="cfg-bench" onchange="switchCfgBench(this.value)">${benchOpts}</select>`
+    : "";
+  // —— 只读派生区：工具 / 技能 / 其他参数（后端 get_agent_config 返回，POST 不写）——
+  const toolsHtml = (a.tools && a.tools.length)
+    ? `<div class="chip-row">${a.tools.map((t) => `<span class="cfg-chip">${esc(t)}</span>`).join("")}</div>`
+    : `<span class="muted">无（直接调用 LLM，不走工具）</span>`;
+  let skillsHtml;
+  if (a.agent === "critic") {
+    skillsHtml = `<span class="muted">critic 不使用技能（靠 user message 注入的 rubric/checklist 判分）</span>`;
+  } else if (a.skills && a.skills.length) {
+    skillsHtml = `<ul class="cfg-skills">${a.skills.map(
+      (s) => `<li><strong>${esc(s.name)}</strong>${s.summary ? ` — <span class="muted">${esc(s.summary)}</span>` : ""}<br><span class="muted" style="font-size:11px">来源: ${esc(s.source || "")}</span></li>`,
+    ).join("")}</ul>`;
+  } else if (a.agent === "generator") {
+    skillsHtml = `<span class="muted">该 benchmark 尚未蒸馏，generator 裸跑（无技能）</span>`;
+  } else {
+    skillsHtml = `<span class="muted">无</span>`;
+  }
+  const params = a.params || {};
+  const paramKeys = Object.keys(params);
+  const paramsHtml = paramKeys.length
+    ? `<div class="trace-params">${paramKeys
+        .map((k) => `<div class="param"><span class="pk">${esc(k)}</span><span class="pv">${esc(String(params[k]))}</span></div>`)
+        .join("")}</div>`
+    : `<span class="muted">无</span>`;
+
   document.getElementById("cfg-form").innerHTML = `
     <h2>${esc(_cfgAgent)} 配置</h2>
+    ${benchSel}
     <label>模型 id</label>
     <input type="text" id="cfg-model" value="${esc(a.model)}">
-    <label>系统提示词</label>
-    <textarea id="cfg-prompt">${esc(a.system_prompt)}</textarea>
+    <label>系统提示词${a.readonly ? ' <span class="muted" style="font-size:11px">（代码内置，仅展示）</span>' : ""}</label>
+    <textarea id="cfg-prompt"${a.readonly ? " readonly" : ""}>${esc(a.system_prompt)}</textarea>
     <div class="row mt-3">
-      <button class="btn btn-primary" onclick="saveCfg()">保存</button>
-      <button class="btn btn-ghost" onclick="resetCfg()">恢复默认</button>
-      <span id="cfg-msg" class="muted"></span>
-    </div>`;
+      ${a.readonly
+        ? `<span class="muted">distiller 配置代码内置；model 走全局 settings.summarizer_model（.env 配）。</span>`
+        : `<button class="btn btn-primary" onclick="saveCfg()">保存</button>
+           <button class="btn btn-ghost" onclick="resetCfg()">恢复默认</button>
+           <span id="cfg-msg" class="muted"></span>`}
+    </div>
+
+    <section class="cfg-readonly">
+      <h2>可用工具</h2>
+      ${toolsHtml}
+      <h2>技能 (skills)</h2>
+      ${skillsHtml}
+      <h2>其他参数</h2>
+      ${paramsHtml}
+    </section>`;
 }
 
 async function saveCfg() {
   const model = document.getElementById("cfg-model").value;
   const prompt = document.getElementById("cfg-prompt").value;
   try {
-    await api(`/config/${_cfgAgent}`, { method: "POST", body: JSON.stringify({ system_prompt: prompt, model }) });
+    const q = _cfgBench ? `?bench=${encodeURIComponent(_cfgBench)}` : "";
+    await api(`/config/${_cfgAgent}${q}`, { method: "POST", body: JSON.stringify({ system_prompt: prompt, model }) });
     toast("配置已保存", "success");
     document.getElementById("cfg-msg").textContent = "已保存 ✓";
     setTimeout(() => { const m = document.getElementById("cfg-msg"); if (m) m.textContent = ""; }, 2000);
@@ -1402,9 +1493,10 @@ async function saveCfg() {
 async function resetCfg() {
   if (!confirm("确定恢复为代码默认配置？")) return;
   try {
-    await api(`/config/${_cfgAgent}/reset`, { method: "POST" });
+    const q = _cfgBench ? `?bench=${encodeURIComponent(_cfgBench)}` : "";
+    await api(`/config/${_cfgAgent}${q}/reset`, { method: "POST" });
     toast("已恢复默认", "success");
-    viewConfig();
+    loadCfgForm();
   } catch (e) { handleError(e, "恢复失败"); }
 }
 
@@ -1495,24 +1587,22 @@ function updateNewLoopPreview() {
   const rounds = parseInt(document.getElementById("nl-rounds").value, 10) || 1;
   const bench = _newLoopData.benches.find((b) => b.bench_id === benchId);
   const sample = bench?.samples.find((s) => s.sample_id === sampleId);
-  const existing = sample?.loops?.[0];
   const product = sample?.product ? `（${esc(sample.product)}）` : "";
 
-  let action, btnText;
-  if (existing) {
-    action = `继续 loop <code>${esc(existing.loop_id)}</code>（已有 ${existing.n_traces} 轮）`;
-    btnText = "继续跑下一轮";
-  } else {
-    action = `新建 loop <code>${esc(benchId)}-${esc(sampleId)}</code>`;
-    btnText = "启动 loop";
-  }
+  // modal 只负责 web loop（一题一条：固定 loop_id=<bench>-<sample>）。存在则续跑，不存在则新建。
+  // 续跑特定 loop（含外部 -tag loop）请用卡片/详情页的「继续跑」一键 resume，不走本 modal。
+  const webLoopId = `${benchId}-${sampleId}`;
+  const exists = (sample?.loops || []).some((l) => l.loop_id === webLoopId);
+  const action = exists
+    ? `续跑 web loop <code>${esc(webLoopId)}</code>（已存在）`
+    : `新建 web loop <code>${esc(webLoopId)}</code>`;
   const roundsDesc = rounds > 1
     ? `将自动连跑 <strong>${rounds}</strong> 轮，跑满后停在审批节点。`
     : `首轮回跑到人工审批节点停下。`;
 
   document.getElementById("nl-preview").innerHTML =
     `将对 <code>${esc(sampleId)}</code>${product} 用 <code>${esc(model)}</code> ${action}<br>` + roundsDesc;
-  document.getElementById("nl-submit").textContent = btnText;
+  document.getElementById("nl-submit").textContent = "启动 loop";
 }
 
 async function submitNewLoop() {
