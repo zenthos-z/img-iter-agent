@@ -109,32 +109,6 @@ class RenovationPlan(BaseModel):
     renovation: list[RenoItem] = Field(default_factory=list)
 
 
-class AuthoredReference(BaseModel):
-    """技能包内 agent 自撰的一篇参考文档（references/<path>）。"""
-
-    path: str = Field(description="相对 references/ 的文件名（如 style_guide.md），禁绝对路径/../")
-    content: str = Field(description="Markdown 正文")
-
-
-class AuthoredSkill(BaseModel):
-    """skill-creator 武装的 author_skill agent 产出：规范可移植技能包内容。
-
-    lessons.md 不在此（由 general.json 确定性渲染，单一源）；asset_paths 指向 benchmark
-    实际用到的资产（style_transfer 参考图等），由 assembly 拷进 assets/。
-    """
-
-    summary: str = Field(default="", description="这个技能做什么（一句话）")
-    skill_name: str = Field(default="", description="技能名（assembly 强制 = slug(bench)，保 name==dir)")
-    description: str = Field(description="frontmatter description：做什么+何时触发（pushy）")
-    skill_md: str = Field(description="SKILL.md 正文（无 frontmatter；<500 行，渐进披露）")
-    references: list[AuthoredReference] = Field(
-        default_factory=list, description="agent 自撰的域参考（style_guide/eval_criteria 等）"
-    )
-    asset_paths: list[str] = Field(
-        default_factory=list, description="要打包的 benchmark 资产（相对 bench_dir），用到的才列"
-    )
-
-
 class GeneralExperience(BaseModel):
     """落盘的跨 loop 通用经验库（general.json 内容）。自描述 + 状态机。"""
 
@@ -174,6 +148,27 @@ def skill_package_dir(data_root: Path, bench_id: str) -> Path:
     slug = slugify_bench(bench_id)，保证 skill-creator validate（name==目录名）通过。
     """
     return Path(data_root) / "experience" / bench_id / slugify_bench(bench_id)
+
+
+def generator_skills_source(data_root: Path, bench_id: str) -> Path | None:
+    """generator 的 skills source 目录（deepagents SkillsMiddleware 用），per-benchmark 激活。
+
+    返回 ``<data_root>/experience/<bench_id>/`` —— 其下的 ``<slug>/`` 子目录含 SKILL.md，
+    SkillsMiddleware 扫 source 下子目录自动发现并 progressive disclosure。
+    技能 = summarizer 蒸馏出的经验 skill_package（见 skill_package_dir），跑哪个 bench 就激活哪个。
+
+    未蒸馏（目录不存在、bench_id 为空、或无任何 ``<slug>/SKILL.md``）→ 返回 None，
+    generator 裸跑（无技能）。**只读探测，不创建目录**（区别于 general_experience_path 等）。
+    """
+    if not bench_id:
+        return None
+    bench_dir = Path(data_root) / "experience" / bench_id
+    if not bench_dir.is_dir():
+        return None
+    for sub in bench_dir.iterdir():
+        if sub.is_dir() and (sub / "SKILL.md").exists():
+            return bench_dir
+    return None
 
 
 def slugify_bench(bench_id: str) -> str:
@@ -378,68 +373,98 @@ def render_lessons_reference_md(exp: GeneralExperience) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def assemble_skill_package(
-    data_root: Path,
-    bench_dir: Path,
-    bench_id: str,
-    authored: "AuthoredSkill",
-    exp: GeneralExperience,
-) -> Path:
-    """把 AuthoredSkill 装配成规范技能包目录（SKILL.md + references/ + assets/）。
+def prepare_skill_package(data_root: Path, bench_id: str) -> Path:
+    """清空并重建技能包目录（authoring agent 的干净工作区）：``<pkg>/{references,assets}/``。
 
-    - 清空并重建 skill_dir，避免旧 reference/asset 残留。
-    - skill_name 强制 = slug(bench)，保 skill-creator validate（name==dir）通过。
-    - references/lessons.md 由 general.json 渲染（单一源）；其余 references 用 authored。
-    - assets/ 拷贝 authored.asset_paths（相对 bench_dir，仅存在的）。
-    返回 skill_dir。
+    全工具 authoring agent 直接 ``write_file`` 到此目录；运行前由代码清空旧包、建好子目录。
+    返回 pkg_dir（= ``skill_package_dir``）。
     """
-    slug = slugify_bench(bench_id)
     skill_dir = skill_package_dir(data_root, bench_id)
     if skill_dir.exists():
         shutil.rmtree(skill_dir, ignore_errors=True)
     (skill_dir / "references").mkdir(parents=True, exist_ok=True)
     (skill_dir / "assets").mkdir(parents=True, exist_ok=True)
+    return skill_dir
 
-    # SKILL.md：frontmatter（name=slug，薄格式化）+ agent 自撰正文（含 lessons 强调，由 prompt 保证）。
-    # 代码不注入内容——SKILL.md 全文由 agent 按规范产出；代码只落盘。
-    # description 结构 sanitize（剥尖括号——quick_validate 硬规则；纯合规，非创作）+ 截断 1024。
-    desc = re.sub(r"[<>]", "", authored.description or "").strip()[:1024]
-    frontmatter = (
-        "---\n"
-        f"name: {slug}\n"
-        f"description: {desc}\n"
-        "---\n\n"
-    )
-    skill_md_text = frontmatter + authored.skill_md.strip() + "\n"
-    (skill_dir / "SKILL.md").write_text(skill_md_text, encoding="utf-8")
 
-    # 结构校验（复刻 quick_validate 硬规则）：不过则日志告警，不阻断（正文质量归 review 阶段）。
-    ok, msg = validate_skill_md(skill_md_text)
-    if not ok:
-        print(f"[skill_package] 结构校验未过（{slug}）：{msg}", flush=True)
+def finalize_skill_package(
+    data_root: Path,
+    bench_dir: Path,
+    bench_id: str,
+    exp: GeneralExperience,
+    asset_paths: list[str] | None = None,
+) -> Path | None:
+    """agent 写完后收尾：读回 SKILL.md → sanitize frontmatter → 渲染 lessons.md → 拷 assets → 校验。
 
-    # references/lessons.md（单一源，确定性渲染）
+    - agent 已 ``write_file`` ``<pkg>/SKILL.md`` + ``<pkg>/references/*.md``（自撰）。
+    - 代码补：① sanitize frontmatter（强制 name=slug、剥 description 尖括号、截 1024）；
+      ② 渲染 ``references/lessons.md``（general.json 单一源，**覆盖** agent 误写的同名文件）；
+      ③ 拷 ``assets/``（benchmark 二进制；asset_paths 相对 bench_dir，兼容 sample 相对）；
+      ④ ``validate_skill_md`` 结构校验告警。
+    - SKILL.md 缺失（agent 未落盘/失败）→ 返回 None（调用方跳过技能包，exp 照存）。
+    """
+    slug = slugify_bench(bench_id)
+    skill_dir = skill_package_dir(data_root, bench_id)
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        print(f"[skill_package] agent 未写出 SKILL.md（{slug}），跳过装配", flush=True)
+        return None
+
+    # ① sanitize frontmatter（合规，非创作）：强制 name=slug + 剥 desc 尖括号 + 截 1024
+    text = skill_md.read_text(encoding="utf-8")
+    skill_md.write_text(_sanitize_skill_frontmatter(text, slug), encoding="utf-8")
+
+    # ② references/lessons.md（单一源，确定性渲染——覆盖 agent 误写的同名文件）
     (skill_dir / "references" / "lessons.md").write_text(
         render_lessons_reference_md(exp), encoding="utf-8"
     )
 
-    # agent 自撰 references（路径安全校验）
-    for ref in authored.references or []:
-        safe = _safe_ref_path(ref.path)
-        if not safe or not safe.endswith(".md"):
-            continue
-        (skill_dir / "references" / safe).write_text(ref.content.strip() + "\n", encoding="utf-8")
-
-    # assets（拷 benchmark 实际用到的）。asset_paths 可能是 bench_dir 相对 或 sample 相对
-    # （如 reference_style/x.png 实际在 samples/<id>/reference_style/）—— 兼容两种。
+    # ③ assets（拷 benchmark 实际用到的；asset_paths 兼容 bench_dir 相对 / sample 相对）
     bench_root = Path(bench_dir).resolve()
-    for ap in authored.asset_paths or []:
+    for ap in asset_paths or []:
         src = _resolve_asset(bench_root, ap)
         if src is None:
             continue
         shutil.copy2(src, skill_dir / "assets" / src.name)
 
+    # ④ 结构校验（复刻 quick_validate 硬规则）：不过则日志告警，不阻断（正文质量归 skill 自审）
+    ok, msg = validate_skill_md(skill_md.read_text(encoding="utf-8"))
+    if not ok:
+        print(f"[skill_package] 结构校验未过（{slug}）：{msg}", flush=True)
+
     return skill_dir
+
+
+def _sanitize_skill_frontmatter(text: str, slug: str) -> str:
+    """合规修正 agent 写出的 SKILL.md frontmatter（**不改正文创作内容**）。
+
+    - 有 frontmatter：强制 ``name=slug``（保 name==dir）、剥 description 尖括号、截 1024、丢弃非法键。
+    - 无/坏 frontmatter：前置最小合规块（name=slug + 占位 description），正文保留。
+    """
+    import yaml  # 局部 import（仅 sanitize 时需要）
+
+    def _minimal(body: str) -> str:
+        return f"---\nname: {slug}\ndescription: experience skill for {slug}\n---\n\n" + body.lstrip()
+
+    if not text.startswith("---"):
+        return _minimal(text)
+    m = re.match(r"^---\n(.*?)\n---(.*)", text, re.DOTALL)
+    if not m:
+        return _minimal(text)
+    try:
+        fm = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        return _minimal(m.group(2))
+    if not isinstance(fm, dict):
+        fm = {}
+    fm["name"] = slug
+    desc = fm.get("description", "")
+    desc = re.sub(r"[<>]", "", desc if isinstance(desc, str) else "").strip()[:1024]
+    fm["description"] = desc or f"experience skill for {slug}"
+    allowed = {"name", "description", "license", "allowed-tools", "metadata", "compatibility"}
+    clean = {k: v for k, v in fm.items() if k in allowed}
+    new_fm = yaml.safe_dump(clean, allow_unicode=True, sort_keys=False, width=4096).strip()
+    return f"---\n{new_fm}\n---{m.group(2)}"
 
 
 def _resolve_asset(bench_root: Path, ap: str) -> Path | None:
@@ -468,7 +493,7 @@ def _resolve_asset(bench_root: Path, ap: str) -> Path | None:
 
 
 def _safe_ref_path(path: str) -> str:
-    """references 子路径安全化：取 basename，禁目录穿越/绝对路径。"""
+    """references 子路径安全化：取 basename，禁目录穿越/绝对路径。（已无调用方，保留供测试/未来复用）"""
     if not path:
         return ""
     p = Path(path).name  # 仅取 basename，丢弃任何目录部分
@@ -478,8 +503,8 @@ def _safe_ref_path(path: str) -> str:
 def validate_skill_md(text: str) -> tuple[bool, str]:
     """结构校验（复刻 skill-creator ``quick_validate`` 的 frontmatter 硬规则，yaml 解析保持一致）。
 
-    用于 ``assemble_skill_package`` 装配后自检 + 测试/router 复用。**仅查 frontmatter 结构**；
-    正文（冷启动可用性 / lessons 前景化等）质量由 distiller 的 review 阶段（quality_checklist）把关。
+    用于 ``finalize_skill_package`` 收尾后自检 + 测试/router 复用。**仅查 frontmatter 结构**；
+    正文（冷启动可用性 / lessons 前景化等）质量由 authoring agent 的 skill 自审（quality_checklist）把关。
     """
     import yaml  # 局部 import：仅校验时需要（yaml 是本环境传递依赖，已可用）
 
@@ -554,18 +579,17 @@ def save_general_experience(data_root: Path, bench_id: str, exp: GeneralExperien
 
 
 __all__ = [
-    "AuthoredReference",
-    "AuthoredSkill",
     "DistilledExperience",
     "DistilledLesson",
     "GeneralExperience",
     "RenoItem",
     "RenovationPlan",
-    "assemble_skill_package",
     "experience_skill_md_path",
+    "finalize_skill_package",
     "general_experience_path",
     "load_general_experience",
     "new_lesson_id",
+    "prepare_skill_package",
     "render_experience_index",
     "render_experience_skill_md",
     "render_lessons_detail",

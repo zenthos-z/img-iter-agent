@@ -41,10 +41,10 @@ from .tools.generator_tools import _size_from_str, make_generator_tools
 _DEFAULT_GENERATOR_SYS = (
     "你是生图提示词工程师。每轮按以下精简流程，不要发散：\n"
     "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项）。"
-    "参考产品图已直接附在消息里，**不要去文件系统找图**。\n"
+    "参考图（若有）已直接附在消息里，**不要去文件系统找图**。\n"
     "2. 至多各调一次：query_general_experience（跨题先验，首题也用得上）、"
     "query_experience（本题已验证经验，round>1 才有意义）。\n"
-    "3. 构造/改进**英文优先**的生图 prompt：保留考题所有约束（白底/三视图布局/尺寸）；"
+    "3. 构造/改进**英文优先**的生图 prompt：保留用户消息里给出的所有考题约束；"
     "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分。\n"
     "4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图；成功后立即结构化输出 "
     "prompt + delta_note（本轮相对上轮改了什么）。不要重复出图、不要再调其它工具。\n"
@@ -53,8 +53,8 @@ _DEFAULT_GENERATOR_SYS = (
     ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
     "纯文生图(reference_images=[])是合法且常更原创的选择。可用标识符见用户消息。\n"
     "你的可用工具只有：generate_image / query_experience / query_general_experience。\n"
-    "system prompt 末尾的「通用经验索引」= 该系列跨 loop 蒸馏的类目速览；每轮 user message 会按上下文"
-    "带 ≤4 条最相关详情（直接遵循）；更多按类目调 query_general_experience(category) 取。"
+    "每轮 user message 会按上下文带 ≤4 条最相关通用经验详情（直接遵循）；"
+    "更多按类目调 query_general_experience(category) 取。"
 )
 
 
@@ -109,30 +109,20 @@ class Generator:
         # 跨 loop 通用经验库定位（query_general_experience 工具用）；None 时该工具回「未配置」。
         self.data_root = data_root
         self.bench_id = bench_id
-        # 策略性输入（v2）：system prompt 只常驻精简索引（避免库膨胀→注意力分散）；
-        # 详情按上下文 select 进每轮 user message。self._experience 供 _build_user_content 取。
-        self._experience = None
-        self.system_prompt = self._with_general_experience(self.system_prompt)
+        # 跨 loop 通用经验（per-benchmark）：仅供 _build_user_content 按上下文 select ≤4 条详情
+        # 注入 user message + query_general_experience 工具。**不进 system prompt**——system prompt 固定、
+        # 只定义身份/能力；benchmark 相关（考题、经验）全走 user message 动态注入。
+        self._experience = self._load_experience()
 
-    def _with_general_experience(self, prompt: str) -> str:
-        """system prompt 末尾拼接【精简索引】（每 category 一行，恒定 ~6 行），并存 self._experience。
-
-        不再全量 inline——避免经验库膨胀稀释注意力。详情由 _build_user_content 按上下文 select 注入。
-        无经验（首跑/空库）时原样返回。
-        """
+    def _load_experience(self):
+        """加载本 benchmark 的跨 loop 通用经验（无则 None，绝不抛——经验闭环要兜底）。"""
         if not self.data_root or not self.bench_id:
-            return prompt
+            return None
         try:
-            from ..memory.experience import load_general_experience, render_experience_index
-
-            exp = load_general_experience(self.data_root, self.bench_id)
-            self._experience = exp
-            idx = render_experience_index(exp)
-            if not idx:
-                return prompt
-            return prompt.rstrip() + "\n\n" + idx
+            from ..memory.experience import load_general_experience
+            return load_general_experience(self.data_root, self.bench_id)
         except Exception:  # noqa: BLE001
-            return prompt
+            return None
 
     def generate_round(
         self,
