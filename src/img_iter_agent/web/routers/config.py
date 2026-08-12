@@ -17,10 +17,12 @@ _IMAGE_MODEL_DEFS = [
     ("gemini_image", "model_gemini_image", "Gemini Image"),
     ("qwen_image", "model_qwen_image", "Qwen Image"),
 ]
-# agent LLM key→（settings 字段名, 展示标签）
+# agent LLM key→（settings 字段名, 展示标签）。distiller 复用 summarizer_model（蒸馏要审图，
+# 需多模态 LLM）。与 agent_config.AGENTS / _settings_default_model 保持一致。
 _AGENT_MODEL_DEFS = [
     ("generator", "generator_model", "Generator"),
     ("critic", "critic_model", "Critic"),
+    ("distiller", "summarizer_model", "Distiller"),
 ]
 
 
@@ -29,7 +31,7 @@ def list_models() -> dict:
     """列出 .env 中已配置（非空）的模型，供启动弹窗下拉选择。
 
     image_models 是生图模型（决定 loop 的 model 字段）；
-    agent_models 是 critic/generator/summarizer 的 LLM（仅展示，由全局 .env 控制）。
+    agent_models 是 generator/critic/distiller 的 LLM（仅展示，由全局 .env 控制）。
     """
     s = get_settings()
     image_models = [
