@@ -108,7 +108,7 @@ class LoopRunner:
         # 新建 loop
         RunStore.create(
             loop_id, bench_id,
-            model=model or settings.model_seedream_pro or "unknown",
+            model=model or settings.model_gemini_image or "unknown",
             settings=settings, note=note,
         )
         store = RunStore.open(loop_id, settings=settings)
@@ -168,16 +168,47 @@ class LoopRunner:
         """用一个 decision 续跑一轮（到下个 interrupt 或 END）。返回是否已提交。
 
         一题一 loop：awaiting_review（等审批）或 finished（已结束想再加一轮）都可 resume。
+
+        无内存 handle 时（外部 run_loop_auto 起的 loop、server 重启后），若盘上 run_dir 存在
+        则**收养**：重建 graph 续跑（与 start() 续跑同一条 _run_first_round(resume_existing=True)
+        路径）。否则返回 False（loop 不存在）。
         """
         handle = self.get(loop_id)
-        if handle is None:
+        if handle is not None:
+            if handle.phase not in ("awaiting_review", "finished"):
+                return False
+            handle.phase = "running"
+            handle.interrupt_payload = None
+            self._submit(handle, self._run_resume(handle, decision))
+            return True
+        # 无内存 handle：尝试收养盘上已存在的 loop
+        settings = get_settings()
+        if not self._find_existing_loop(settings, loop_id):
             return False
-        if handle.phase not in ("awaiting_review", "finished"):
-            return False
-        handle.phase = "running"
-        handle.interrupt_payload = None
-        self._submit(handle, self._run_resume(handle, decision))
+        self._adopt_and_resume(loop_id, decision, settings)
         return True
+
+    def _adopt_and_resume(self, loop_id: str, decision: str, settings) -> None:
+        """收养一个无内存 handle 的 loop（外部进程起 / server 重启后）并续跑下一轮。
+
+        复用 start() 续跑的同一机制：建新 handle → _run_first_round(resume_existing=True)
+        重建 graph + invoke（END 态重入跑 N+1 轮，interrupt 态 Command(resume)）。
+        一键手动续跑：rounds_remaining=0（跑一轮停审批）、auto_mode=False。
+        decision 仅 interrupt 态生效；手动续跑恒为 "continue"，这里不透传（保持与
+        _run_first_round 既有签名兼容）。
+        """
+        store = RunStore.open(loop_id, settings=settings)
+        bench_id = store.meta.bench_id if store.meta else ""
+        _, sample_id = self._resolve_bench_sample(loop_id, store)
+        lb = load_benchmark(bench_id, settings=settings)
+        handle = LoopHandle(
+            loop_id=loop_id, phase="running",
+            rounds_remaining=0, auto_mode=False,
+        )
+        handle.hints = load_effective_hints(settings.data_root, store, bench_id, sample_id)
+        with self._lock:
+            self._handles[loop_id] = handle
+        self._submit(handle, self._run_first_round(settings, lb, store, sample_id, resume_existing=True))
 
     # --- 人工提示词（hints）管理 ---
 
@@ -202,8 +233,20 @@ class LoopRunner:
 
     @staticmethod
     def _resolve_bench_sample(loop_id: str, store: RunStore) -> tuple[str, str]:
-        """从 store.meta.bench_id + loop_id 推 (bench_id, sample_id)。loop_id = `<bench>-<sample>`。"""
+        """推 (bench_id, sample_id)。
+
+        优先从 trajectory 取（record 含真实 sample_id/bench_id）——loop_id 可能带 batch
+        后缀（如 `<bench>-<sample>-b2`），直接按 `<bench>-<sample>` 解析会得到错误的 sample_id
+        （s002-b2 而非 s002）。trajectory 缺失时退回 loop_id 解析。
+        """
         bench_id = store.meta.bench_id if store.meta else ""
+        try:
+            from ...data.trajectory import TrajectoryReader
+            recs = TrajectoryReader(store.run_dir / "trajectory.jsonl").read_all()
+            if recs:
+                return recs[-1].bench_id or bench_id, recs[-1].sample_id
+        except Exception:  # noqa: BLE001
+            pass
         if bench_id and loop_id.startswith(bench_id + "-"):
             sample_id = loop_id[len(bench_id) + 1:]
         else:
