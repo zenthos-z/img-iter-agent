@@ -28,6 +28,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -170,6 +171,46 @@ def generator_skills_source(data_root: Path, bench_id: str) -> Path | None:
         if sub.is_dir() and (sub / "SKILL.md").exists():
             return bench_dir
     return None
+
+
+def generator_skill_fs(skills_dir: Path | str | None) -> tuple[Any, list, str] | None:
+    """为 Generator 构造**有界** FS，让标准 ``skills=`` 真正可用（deepagents 渐进披露依赖 read_file）。
+
+    Generator 本就接了 ``skills=[skills_dir]``，但 ``NarrowToolsMiddleware`` 剥了 ``read_file`` →
+    SkillsMiddleware 只能注入 skill 名/描述/路径、正文加载是半坏的。本 helper 给回一个**钉死在技能包内**的
+    read_file：``FilesystemBackend`` 锚定 ``experience/`` 根，``permissions`` 只允许读 ``<bench>/<slug>/**``、
+    拒绝其它一切（read-only，Generator 永不写）。技能包目录只有 ``.md``、无图，且 ls/glob/grep 仍被窄集中间件
+    剥掉 → 不可能重演旧版「空 sandbox 找图」死循环。
+
+    Args:
+        skills_dir: ``generator_skills_source(...)`` 返回的 source 目录（``experience/<bench_id>/``）；
+            None/不存在/无 ``<slug>/SKILL.md`` → 返回 None（Generator 裸跑，无 skills/fs）。
+
+    Returns:
+        ``(backend, permissions, skills_source_rel)``——供 ``create_deep_agent(backend=, permissions=,
+        skills=[skills_source_rel])`` 直接用；或 None。
+    """
+    if not skills_dir:
+        return None
+    src = Path(skills_dir)
+    if not src.is_dir():
+        return None
+    # source 下所有含 SKILL.md 的 <slug> 技能包（通常一个；多个则一并放行）
+    slugs = [s.name for s in src.iterdir() if s.is_dir() and (s / "SKILL.md").exists()]
+    if not slugs:
+        return None
+    from deepagents.backends.filesystem import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemPermission
+
+    root = src.parent  # experience/：锚定根，覆盖本 bench 技能包即可
+    source_rel = src.name  # <bench_id>：SkillsMiddleware 扫它发现 <slug>/
+    backend = FilesystemBackend(root_dir=str(root))
+    allow_paths = [f"/{source_rel}/{s}/**" for s in slugs]
+    permissions = [
+        FilesystemPermission(operations=["read"], paths=allow_paths, mode="allow"),
+        FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+    ]
+    return backend, permissions, source_rel
 
 
 def slugify_bench(bench_id: str) -> str:

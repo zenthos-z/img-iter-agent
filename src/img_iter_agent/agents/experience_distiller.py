@@ -17,6 +17,7 @@ import base64
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 from deepagents import create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -27,13 +28,13 @@ from langsmith import traceable
 from ..data.benchmark import LoadedBenchmark
 from ..data.trajectory import TrajectoryReader
 from ..memory.experience import (
-    AuthoredSkill,
     DistilledLesson,
     GeneralExperience,
     RenoItem,
     RenovationPlan,
-    assemble_skill_package,
+    finalize_skill_package,
     new_lesson_id,
+    prepare_skill_package,
     render_lessons_reference_md,
     skill_package_dir,
     slugify_bench,
@@ -62,51 +63,90 @@ _DEFAULT_DISTILLER_SYS = (
 )
 
 # skill-author 技能包目录（魔改版 skill-creator，经验 skill 专用）。
-# 内容（SKILL.md + 写作指南 + 质量 checklist）注入 authoring agent 上下文——NarrowToolsMiddleware
-# 剥掉了 read_file，agent 不能运行时读这些文件，故调用前由代码读入拼进 system prompt。
-_SKILL_AUTHOR_DIR = Path(__file__).parent / "skill_authoring" / "skill-author"
+# 全工具 authoring agent 经 deepagents ``skills=`` 加载它（progressive disclosure：read_file SKILL.md
+# → 按需 read_file references/）。**隔离源**：skill_authoring/ 只含 skill-author/ 一个 skill，故 skills
+# 源指 skill_authoring/ 父目录，避免连 skills/ 里的 generator/critic 兄弟 skill 一起加载。
+_SKILL_AUTHOR_PARENT = Path(__file__).parent / "skill_authoring"
+# repo 根：skill 在 src/ 下，data 默认在 repo/data 下（_backend_root 取公共祖先兜底外部 data）。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _read_skill_author_file(rel: str) -> str:
-    """读 bundled skill-author 内的文件（SKILL.md / references/*.md）；缺失返回空串。"""
-    try:
-        return (_SKILL_AUTHOR_DIR / rel).read_text(encoding="utf-8")
-    except OSError:
-        return ""
+def _common_ancestor(a: Path, b: Path) -> Path:
+    """两个路径的最长公共前缀目录（均 resolve 后逐段比较）。"""
+    a_parts, b_parts = Path(a).resolve().parts, Path(b).resolve().parts
+    common = [x for x, y in zip(a_parts, b_parts) if x == y]
+    return Path(*common) if common else Path("/")
 
 
-# 方法论兜底（bundled 文件意外缺失时用，保证 agent 仍有基本指导）。
-_SKILL_AUTHOR_FALLBACK = (
-    "你是经验技能编写员，遵循 skill-creator 规范（详见 references/）。产出规范可移植技能包："
-    "description（pushy, 做什么+何时触发, 通用不窄化, 无尖括号, <1024）、"
-    "skill_md（<500 行, 冷启动可用, 含可执行工作流+输出格式模板(strategy 可扩展), 前景化 3-5 条关键 dos/donts）、"
-    "references（域细则, 勿写 lessons.md）、asset_paths（实际用到的资产）。"
-    "lessons 是核心精华：SKILL.md 紧跟标题声明必读 references/lessons.md 并内联 3-5 条关键 dos/donts。"
+def _backend_root(data_root: Path) -> Path:
+    """backend root = _REPO_ROOT 与 data_root 的公共祖先（涵盖 skill[src/] + 数据[data/]）。
+
+    默认 data_root 在 repo 内 → root=repo；data_root 在 repo 外（罕见）→ 退到公共祖先。
+    """
+    return _common_ancestor(Path(_REPO_ROOT), Path(data_root))
+
+
+def _skill_author_source(root: Path) -> str:
+    """skills 源（POSIX，相对 backend root）：skill_authoring/ 父目录（只含 skill-author 一个 skill）。"""
+    return _SKILL_AUTHOR_PARENT.resolve().relative_to(Path(root).resolve()).as_posix()
+
+
+def _rel_posix(path: Path, root: Path) -> str:
+    """path 相对 root 的 POSIX 路径（无前导 /）。"""
+    return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+
+
+# authoring agent（全工具标准 deepagent）system prompt：紧凑 conductor，强化 skill 流程 + 落盘边界。
+# bench 特定的输入/输出路径在 dossier（user message）里给，不进 system prompt。
+_SKILL_AUTHOR_SYS = (
+    "你是**经验技能编写员**（全工具标准 deepagent），把一个图像生成 benchmark 的目标能力 + 跨 loop 蒸馏经验，"
+    "编写成规范、可移植、冷启动即可用的「经验技能包」。\n"
+    "**标准流程**：① 先 `read_file` 加载 skill-author skill（本任务已为你挂载；读它的 SKILL.md 全文，按需读"
+    " references/skill_writing_guide.md）；② 读任务消息里的 benchmark 输入（评分标准/style_brief/lessons/target/"
+    "参考图，**已全量给你，无需 ls/glob/grep 探索**）；③ 起草 description + SKILL.md 正文 + 自撰 references；"
+    "④ `read_file references/quality_checklist.md` 逐条自审、改完再落盘；⑤ `write_file` 到任务消息给的 `<output_dir>`"
+    "（只写 SKILL.md + references/*.md），写完回一句话确认即可终止。\n"
+    "**硬约束**：永不写 `references/lessons.md`（系统从 general.json 渲染，单一源）、永不写 `assets/`"
+    "（系统拷贝二进制，你只在 SKILL.md 列 asset_paths）；frontmatter `name` 填任务消息给的 slug；"
+    "没有的数据不凭空编造。\n"
+    "**不要用 `task`（子 agent）/`execute`（shell）**——单 agent 直读直写就够，多余操作徒增风险。"
+    "你的文件访问已被 permissions 限定：只能读 benchmark 与 skill 目录、只能写 output_dir。"
 )
 
 
-def _skill_author_methodology() -> str:
-    """拼装 authoring（draft）system prompt：skill-author SKILL.md + 写作指南全文。
+def _build_skill_author_agent(
+    chat_model: BaseChatModel, *, pkg_dir: Path, bench_dir: Path, data_root: Path,
+) -> Any:
+    """全工具标准 deepagent（authoring）。
 
-    agent 据此被武装完整 skill-creator 写作方法论（魔改成经验 skill 专用）。
+    - 保留 deepagents 默认全套工具（read_file/write_file/edit_file/ls/glob/grep/task）——用户选「全工具」。
+    - ``permissions`` 把 FS 限死 {bench 读, skill 读, pkg 写}：即便 agent 无视 skill 也逃不出 → 探索有界。
+    - ``FilesystemBackend``（非 Sandbox）→ ``execute`` 自然失效（保留工具名，消除最危险面）。
+    - ``skills=[_skill_author_source(root)]`` 加载隔离的 skill-author；默认 ``FilesystemMiddleware`` 提供 read_file
+      → SkillsMiddleware 的 progressive disclosure 真正生效（旧 narrow 版剥了 read_file，skill 加载是半坏的）。
+    - 不传 ``response_format`` → 自由 agent 循环，agent 直接 write_file 落盘（产物是文件副作用）。
     """
-    parts = [_read_skill_author_file("SKILL.md")]
-    guide = _read_skill_author_file("references/skill_writing_guide.md")
-    if guide:
-        parts.append("\n\n---\n# 附：写作规范基准（references/skill_writing_guide.md）\n" + guide)
-    text = "\n".join(parts).strip()
-    return text or _SKILL_AUTHOR_FALLBACK
+    from deepagents.backends.filesystem import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemPermission
 
-
-def _skill_author_review_prompt() -> str:
-    """review 阶段 system prompt：评审员角色 + quality checklist 全文。"""
-    checklist = _read_skill_author_file("references/quality_checklist.md")
-    return (
-        "你是经验技能**评审员**，按下方 quality checklist 严格审查草稿，产出**修订版** AuthoredSkill。"
-        "**只改有问题的部分，保留草稿有效内容，不要推倒重写**；草稿已合格则原样返回。"
-        "输出仍是完整 AuthoredSkill（与草稿同 schema），未改字段照抄草稿。\n\n"
-        + (checklist or "（quality checklist 缺失：检查 description 合规 / SKILL.md 冷启动可用 / "
-                        "lessons 前景化 / mode 适配）")
+    root = _backend_root(data_root)  # 涵盖 skill[src/] + 数据[data/]
+    backend = FilesystemBackend(root_dir=str(root))  # virtual_mode=True 默认（锚定 root + 阻 traversal）
+    bench_rel = _rel_posix(bench_dir, root)
+    pkg_rel = _rel_posix(pkg_dir, root)
+    skill_rel = _skill_author_source(root)
+    permissions = [
+        FilesystemPermission(operations=["read"], paths=[f"/{bench_rel}/**", f"/{skill_rel}/**"], mode="allow"),
+        FilesystemPermission(operations=["write"], paths=[f"/{pkg_rel}/**"], mode="allow"),
+        FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+    ]
+    return create_deep_agent(
+        model=chat_model, tools=[],
+        # authoring prompt 外部化到 data/agents_config/distiller.md（web 配置页可编辑）；
+        # 读不到回退代码默认 _SKILL_AUTHOR_SYS。与 web agent_config._code_default_prompt('distiller') 一致。
+        system_prompt=load_system_prompt("distiller", _SKILL_AUTHOR_SYS),
+        skills=[skill_rel],
+        permissions=permissions, backend=backend,
+        checkpointer=None, name="skill_author",
     )
 
 
@@ -205,7 +245,6 @@ class ExperienceDistiller:
         data_root: Path,
         previous: GeneralExperience | None = None,
         system_prompt: str | None = None,
-        skills_dir: Path | str | None = None,
     ) -> None:
         self.chat_model = chat_model
         self.run_dirs = list(run_dirs)
@@ -217,7 +256,6 @@ class ExperienceDistiller:
         self.system_prompt = system_prompt or load_system_prompt(
             "experience_distiller", _DEFAULT_DISTILLER_SYS,
         )
-        self.skills_dir = str(skills_dir) if skills_dir else None
 
     def distill(self, *, config: RunnableConfig | None = None) -> GeneralExperience:
         """跨 run 蒸馏通用经验，返回 GeneralExperience（含 source_runs/bench_id）。
@@ -239,13 +277,9 @@ class ExperienceDistiller:
         if config is not None:
             ls_extra["config"] = config  # parent run：嵌套到调用方的 trace
         exp = self._distill_traced(langsmith_extra=ls_extra, agent_config=config)
-        # 第二阶段：编写规范可移植技能包（skill-creator 武装）。失败不阻断 lessons 蒸馏。
+        # 第二阶段：全工具 authoring agent 编写规范技能包（prepare→agent→finalize）。失败不阻断 lessons。
         try:
-            authored = self.author_skill(exp, agent_config=config)
-            if authored is not None:
-                assemble_skill_package(
-                    self.data_root, self.lb.bench_dir, self.bench.bench_id, authored, exp,
-                )
+            self.author_skill(exp, agent_config=config)
         except Exception as e:  # noqa: BLE001
             print(f"[distiller] 技能包编写失败({type(e).__name__}): {e}", flush=True)
         return exp
@@ -265,7 +299,6 @@ class ExperienceDistiller:
         agent = create_deep_agent(
             model=self.chat_model, tools=[],
             system_prompt=self.system_prompt,
-            skills=[self.skills_dir] if self.skills_dir else None,
             response_format=RenovationPlan, checkpointer=None,
             name="distiller_agent",  # 内层 agent run 名，与外层 experience_distiller trace 根区分
             middleware=narrow_tools_middleware(),
@@ -498,79 +531,50 @@ class ExperienceDistiller:
 
     def author_skill(
         self, exp: GeneralExperience, *, agent_config: RunnableConfig | None = None
-    ) -> AuthoredSkill | None:
-        """两阶段编写规范可移植技能包：draft → review-revise。
+    ) -> Path | None:
+        """全工具 authoring agent 编写规范技能包：prepare → agent 跑 → finalize。
 
-        - draft：武装 skill-author 方法论的 gemini，吃富化 dossier → 完整 AuthoredSkill。
-        - review：按 quality checklist 审查草稿 → 修订版；失败回退 draft。
-        失败返回 None（不阻断蒸馏）。skill_name 强制 = slug(bench)。
+        - ``prepare_skill_package``：清空 + 建 ``pkg_dir/{references,assets}``（agent 干净工作区）。
+        - 全工具 deepagent（``_build_skill_author_agent``）：加载 skill-author skill → 读 dossier 输入 →
+          起草 → 按 ``references/quality_checklist.md`` 自审 → ``write_file`` SKILL.md + references 到 pkg_dir。
+        - ``finalize_skill_package``：读回 + sanitize frontmatter(name=slug) + 渲染 lessons.md(单一源) +
+          拷 assets + ``validate_skill_md`` 校验。
+        失败（agent 未落盘 / 异常）→ finalize 返回 None（不阻断蒸馏；exp 照存）。
         """
-        draft = self._draft_skill(exp, agent_config=agent_config)
-        if draft is None:
-            return None
-        revised = self._review_and_revise(draft, agent_config=agent_config)
-        out = revised or draft
-        out.skill_name = slugify_bench(self.bench.bench_id)
-        return out
-
-    def _draft_skill(
-        self, exp: GeneralExperience, *, agent_config: RunnableConfig | None = None
-    ) -> AuthoredSkill | None:
-        """阶段一：产完整草稿（武装 skill-author 方法论 + 富化 dossier）。"""
-        user_content = self._build_skill_dossier(exp)
-        agent = create_deep_agent(
-            model=self.chat_model, tools=[],
-            system_prompt=_skill_author_methodology(),
-            response_format=AuthoredSkill, checkpointer=None,
-            name="skill_author_draft", middleware=narrow_tools_middleware(),
+        pkg_dir = prepare_skill_package(self.data_root, self.bench.bench_id)
+        dossier = self._build_skill_dossier(exp, pkg_dir=pkg_dir)
+        agent = _build_skill_author_agent(
+            self.chat_model, pkg_dir=pkg_dir, bench_dir=self.lb.bench_dir, data_root=self.data_root,
         )
-        result, _ok = invoke_with_retry(
-            agent, {"messages": [HumanMessage(content=user_content)]},
-            config=_merge_recursion(agent_config, DISTILLER_RECURSION_LIMIT), label="skill_author_draft",
+        invoke_with_retry(
+            agent, {"messages": [HumanMessage(content=dossier)]},
+            config=_merge_recursion(agent_config, DISTILLER_RECURSION_LIMIT),
+            label="skill_author", require_structured=False,
         )
-        return (result.get("structured_response") if result else None)
-
-    def _review_and_revise(
-        self, draft: AuthoredSkill, *, agent_config: RunnableConfig | None = None
-    ) -> AuthoredSkill | None:
-        """阶段二：按 quality checklist 审查草稿并产出修订版；失败返回 None（调用方回退 draft）。"""
-        review_input = self._render_authored_for_review(draft)
-        agent = create_deep_agent(
-            model=self.chat_model, tools=[],
-            system_prompt=_skill_author_review_prompt(),
-            response_format=AuthoredSkill, checkpointer=None,
-            name="skill_author_review", middleware=narrow_tools_middleware(),
+        # agent 产物是 write_file 副作用；finalize 读回。asset_paths 据模式确定性决定（style 类打包参考图）。
+        return finalize_skill_package(
+            self.data_root, self.lb.bench_dir, self.bench.bench_id, exp, self._skill_asset_paths(),
         )
-        result, _ok = invoke_with_retry(
-            agent, {"messages": [HumanMessage(content=review_input)]},
-            config=_merge_recursion(agent_config, DISTILLER_RECURSION_LIMIT), label="skill_author_review",
-        )
-        return (result.get("structured_response") if result else None)
 
-    @staticmethod
-    def _render_authored_for_review(draft: AuthoredSkill) -> list[dict]:
-        """把 draft 渲染成 review 输入（文本）：description + skill_md + references + asset_paths。"""
-        refs = "\n\n".join(
-            f"### references/{r.path}\n{r.content}" for r in (draft.references or [])
-        ) or "(无)"
-        assets = ", ".join(draft.asset_paths) if draft.asset_paths else "(无)"
-        text = (
-            "# 待审查草稿（AuthoredSkill）\n\n"
-            f"## description\n{draft.description}\n\n"
-            f"## skill_md\n{draft.skill_md}\n\n"
-            f"## references\n{refs}\n\n"
-            f"## asset_paths\n{assets}\n\n"
-            "请按 quality checklist 审查并产出修订版 AuthoredSkill（只改有问题的部分）。"
-        )
-        return [{"type": "text", "text": text}]
+    def _skill_asset_paths(self) -> list[str]:
+        """确定要打包的 benchmark 资产：style_transfer 类打包 ``task.input_assets``（参考图）；其它空。
 
+        authoring agent 不再结构化返回 asset_paths；由代码据模式确定性决定（robust）。agent 在 SKILL.md
+        里把它们引用为 ``assets/<basename>``，系统拷贝后即匹配。多打包无害（外部 agent 按需引用）。
+        """
+        sample = next(iter(self.lb.samples.values()), None)
+        task = (sample.spec.task if (sample and sample.spec and sample.spec.task) else None)
+        if task and task.mode == "style_transfer" and task.input_assets:
+            return list(task.input_assets)
+        return []
 
-    def _build_skill_dossier(self, exp: GeneralExperience) -> list[dict]:
+    def _build_skill_dossier(self, exp: GeneralExperience, *, pkg_dir: Path) -> list[dict]:
         """组装技能编写 dossier（富化版）：benchmark 全要素 + 全量 lessons + 视觉参考图。
 
         给 authoring agent 充足燃料（修旧版「无米之炊」）：完整 style_brief（风格 spec）、
         代表 target.md（输入样例）、全量 lessons（dos/donts 全文）、完整输入输出契约、
         （style_transfer 类）视觉参考图——参考图即风格 spec，agent 须眼见为实。
+        全工具 agent：开头给**输出目录 + slug + 流程指令**，agent 据 skill-author skill 自主 read_file/write_file。
         """
         bench = self.bench
         sample = next(iter(self.lb.samples.values()), None)
@@ -578,9 +582,23 @@ class ExperienceDistiller:
         task = spec.task if (spec and spec.task) else None
         mode = task.mode if task else "(未知)"
         sample_dir = sample.sample_dir if sample else None
+        slug = slugify_bench(bench.bench_id)
+        root = _backend_root(self.data_root)  # 与 _build_skill_author_agent 同根，dossier 路径才与 agent 后端一致
+        out_rel = _rel_posix(pkg_dir, root)  # agent 写入的虚拟路径（相对 backend root）
+        bench_rel = _rel_posix(self.lb.bench_dir, root)
+        sample_rel = _rel_posix(sample_dir, root) if sample_dir is not None else ""
 
         lines: list[str] = [
             f"# 技能编写任务：benchmark={bench.bench_id}（mode={mode}）",
+            "## 输出指令（按 skill-author skill 流程编写，write_file 落盘）",
+            f"- **输出目录 `<output_dir>`**：`/{out_rel}/`（虚拟路径，相对你的工作区根）。",
+            f"- **slug（= frontmatter `name` = 目录名）**：`{slug}`。",
+            "- **流程**：① `read_file` 加载 skill-author skill（读 SKILL.md 全文，按需读 references/）→ "
+            "② 通读下方输入数据（已全量给你，无需 ls/glob/grep）→ ③ 起草 → "
+            "④ `read_file references/quality_checklist.md` 自审 → ⑤ `write_file` 到 `<output_dir>/SKILL.md` "
+            "与 `<output_dir>/references/*.md`（**禁写 lessons.md / assets/**），写完回一句话确认即终止。",
+            f"- 若要核对原文，可 `read_file` 源目录：bench `/{bench_rel}/`"
+            + (f"、sample `/{sample_rel}/`。" if sample_rel else "。"),
             f"## 场景\n{bench.scene or bench.description or ''}",
             "## 任务定义",
         ]
@@ -599,32 +617,33 @@ class ExperienceDistiller:
         except Exception:  # noqa: BLE001
             pass
 
-        # === ⭐ 生成目标（评分标准——skill 必须命中的目标；这是考题的"要求"）===
-        # 旧版只给一行 dim 摘要 + 截断 JSON，agent 漏掉原创性/创造力等高权重维度 → 产出机械。
-        # 现：rubric 全文 + dimensions(权重/类型/完整 desc) + checklist 逐项 + constraints(含 forbidden_motifs)。
+        # === ⭐ 生成检查清单（产出必须命中什么；考题的"要求"，转成生成向目标）===
+        # 定位：蒸馏经验服务"生成"。给 skill-author 的是「生成时要达成什么」，不是「怎么评分」——
+        # 故 score_dimensions 只取 desc（生成目标，不带权重/scoring_type），rubric 仅作"理解意图"的参考，
+        # checklist 转述为"生成时要确保的点"，constraints（must_keep/must_avoid/forbidden_motifs）原样保留。
+        # 旧版灌权重/类型/判定编号 → SKILL.md 满是评分流程，对生图无意义（用户反馈），故去评分化。
         spec_d = spec.model_dump() if spec else {}
         lines.append(
-            "\n## ⭐ 生成目标（评分标准——本技能必须让产出命中的目标）\n"
-            "下方是 benchmark 的评分真源：rubric（人类可读细则）+ score_dimensions（机器真源，含权重）"
-            "+ checklist（逐项判定）+ constraints（必须保留/可变/必须避免/禁止 motif）。"
-            "**SKILL.md 必须传达这些目标**——尤其高权重维度（注意原创性/创造力常占大权重）与禁止 motif，"
-            "别只盯风格还原。"
+            "\n## ⭐ 生成检查清单（产出必须命中什么）\n"
+            "这是 benchmark 对「生成结果」的要求——**写进 SKILL.md 时一律转成生成时要达成/确保的正向目标**，"
+            "不要抄权重数值、判定编号（C1/S1…）或评分机制（本技能服务生图，不评分）。"
+            "重点把握最关键的几个维度（原创/创造力 vs 还原/结构一致，以 benchmark 实际为准）与禁止 motif。"
         )
         rubric_path = self.lb.bench_dir / "rubric.md"
         if rubric_path.exists():
-            lines.append("\n### rubric.md（评分细则全文——首要）\n" + rubric_path.read_text(encoding="utf-8"))
-        lines.append("\n### score_dimensions（机器真源：dim / 权重 / 类型 / 判定标准）")
-        for d in bench.score_dimensions:
             lines.append(
-                f"- **{d.dim}**（{getattr(d, 'scoring_type', '?')}, 权重 {getattr(d, 'weight_init', '?')}）："
-                f"{d.desc or ''}"
+                "\n### rubric.md（仅供理解 benchmark 想要什么意图；勿把判定语义/权重抄进 SKILL.md）\n"
+                + rubric_path.read_text(encoding="utf-8")
             )
+        lines.append("\n### 各维度的生成目标（score_dimensions 的 desc；忽略权重/类型）")
+        for d in bench.score_dimensions:
+            lines.append(f"- **{d.dim}**：{d.desc or ''}")
         cl = spec_d.get("checklist")
         if cl:
-            lines.append("\n### checklist（逐项判定细则）\n" + _render_checklist(cl))
+            lines.append("\n### 生成要点（checklist——把判定项当成生成时要确保的点）\n" + _render_checklist(cl))
         cs = spec_d.get("constraints")
         if cs:
-            lines.append("\n### constraints\n" + _render_constraints(cs))
+            lines.append("\n### constraints（必须保留 / 可变 / 必须避免 / 禁止 motif）\n" + _render_constraints(cs))
 
         # 头号燃料：style_brief.md 全文（风格 spec——创作风格指南的首要依据）
         if sample_dir is not None:
@@ -671,10 +690,12 @@ class ExperienceDistiller:
             lines.append("\n## 上一版技能包\n（首次编写，从零创作）")
 
         lines.append(
-            "\n## 交付要求\n按 skill-author 方法论产出：description（pushy/通用/正确框定为「产出策略」而非"
-            "「生成器」/无尖括号/<1024）、skill_md（<500 行/冷启动可用/含可执行工作流+输出格式模板"
-            "(strategy 字段可扩展)/前景化 3-5 条关键 dos/donts）、references（域细则, **勿写 lessons.md**）、"
-            "asset_paths（实际用到的）。不要调用任何工具。"
+            "\n## 交付要求\n按 skill-author skill + quality_checklist 自审后产出，write_file 到 `<output_dir>`：\n"
+            "- `SKILL.md`：frontmatter（`name: <slug>` + description）+ 正文（含「## 评分目标」段、前景化 "
+            "lessons、可执行工作流、输出格式模板(strategy 可扩展)）。description pushy/通用/正确框定为「产出策略」"
+            "而非「生成器」/无尖括号/<1024；正文 <500 行、冷启动可用。\n"
+            "- `references/*.md`：域细则（style_guide / eval_criteria 等），**勿写 lessons.md**（系统渲染）。\n"
+            "- 在 SKILL.md 列 `asset_paths`（benchmark 内相对路径，style 类参考图）；**勿写 assets/**（系统拷贝）。"
         )
 
         parts: list[dict] = [{"type": "text", "text": "\n".join(lines)}]

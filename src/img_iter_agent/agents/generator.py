@@ -28,9 +28,15 @@ from ..data.benchmark import Sample
 from ..generation.base import GenRequest, ModelFamily
 from ..generation.image_io import file_to_data_uri
 from ..generation.router import Router
+from ..memory.experience import generator_skill_fs
 from ..memory.schema import CriticItemJudgment, TestVariable
 from ._agent_output import GeneratorOutput
-from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
+from ._narrow_tools import (
+    AGENT_RECURSION_LIMIT,
+    _GENERATOR_NARROW_EXCLUDED,
+    invoke_with_retry,
+    narrow_tools_middleware,
+)
 from .agent_config_loader import load_system_prompt
 from .tools.generator_tools import _size_from_str, make_generator_tools
 
@@ -42,17 +48,23 @@ _DEFAULT_GENERATOR_SYS = (
     "你是生图提示词工程师。每轮按以下精简流程，不要发散：\n"
     "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项 + 【本题已验证经验】摘要）。"
     "参考图（若有）已直接附在消息里，**不要去文件系统找图**。\n"
-    "2. 需要经验详情时调 query_experience（本题已验证经验全文，round>1 才有意义），至多一次。\n"
+    "2. 取经验（每个工具至多一次）：若挂载了本 benchmark 的经验技能包，按提示 read_file 它的 SKILL.md"
+    "（必要时再读 references/lessons.md）取跨 loop 蒸馏的生成要点；round>1 时调一次 query_experience 取本题"
+    " in-loop 经验全文（每轮 user message 也有结论摘要）。\n"
     "3. 构造/改进**英文优先**的生图 prompt：保留用户消息里给出的所有考题约束；"
     "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分；"
     "【本题已验证经验】里「勿重复」的改动绝对不要再试、「保持」的要延续。\n"
-    "4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图；成功后立即结构化输出 "
-    "prompt + delta_note（本轮相对上轮改了什么）。不要重复出图、不要再调其它工具。\n"
-    "5. 【风格迁移·参考图用法】generate_image 的 reference_images 参数可选，传参考图标识符子集（如 "
+    "4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图。\n"
+    "5. 【收尾·强制，违反会导致本轮作废】generate_image 只返回文件路径、**没有任何评分或质量反馈**，"
+    "因此**绝不能**为『改善结果』再出图。出图成功后，**下一步必须且只能**调用结构化输出工具 GeneratorOutput"
+    "（填 prompt + delta_note + meaning）结束本轮。**不要**在出图后停顿、**不要**输出纯文本就结束——"
+    "那样本轮会被判无结构化输出、触发重试、放大成一堆废图。\n"
+    "6. 【风格迁移·参考图用法】generate_image 的 reference_images 参数可选，传参考图标识符子集（如 "
     "['hand-abacus']）。Gemini 把它们作 inline_data 风格条件。**这是创意权衡**：0-2 张帮你锚定风格神韵；"
     ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
     "纯文生图(reference_images=[])是合法且常更原创的选择。可用标识符见用户消息。\n"
-    "你的可用工具只有：generate_image / query_experience。"
+    "你的核心工具：generate_image / query_experience。若挂载了经验技能包，还会自动出现 read_file"
+    "（仅限读该技能包的 SKILL.md / references，不可读其它路径）。"
 )
 
 
@@ -151,13 +163,27 @@ class Generator:
             router=self.router, sample=sample, out_dir=attempt_out, run_dir=run_dir,
             model_hint=model_hint, sink=sink,
         )
-        agent = create_deep_agent(
-            model=self.chat_model, tools=tools,
-            system_prompt=self.system_prompt,
-            skills=[self.skills_dir] if self.skills_dir else None,
-            response_format=GeneratorOutput, checkpointer=None, name="generator",
-            middleware=narrow_tools_middleware(),
-        )
+        # 跨 loop 蒸馏经验：标准 deepagents skills（progressive disclosure）。
+        # skills_dir 非空（本 bench 已蒸馏）→ 接有界 FS：read_file 钉死在技能包内、放回 read_file（Generator 专用窄集），
+        # 让 SkillsMiddleware 真能让模型 read_file SKILL.md。无技能包 → 裸跑（原 narrow 全集，剥 read_file）。
+        skill_fs = generator_skill_fs(self.skills_dir)
+        if skill_fs is not None:
+            _backend, _permissions, _skills_source = skill_fs
+            agent = create_deep_agent(
+                model=self.chat_model, tools=tools,
+                system_prompt=self.system_prompt,
+                skills=[_skills_source],
+                permissions=_permissions, backend=_backend,
+                response_format=GeneratorOutput, checkpointer=None, name="generator",
+                middleware=narrow_tools_middleware(excluded=_GENERATOR_NARROW_EXCLUDED),
+            )
+        else:
+            agent = create_deep_agent(
+                model=self.chat_model, tools=tools,
+                system_prompt=self.system_prompt,
+                response_format=GeneratorOutput, checkpointer=None, name="generator",
+                middleware=narrow_tools_middleware(),
+            )
 
         # in-loop 经验精简摘要：round>1 时读 conclusions.json，按本轮失败维度选定 ineffective/effective
         # 注入 user message（与 query_experience 工具的全文钻取互补）。读失败兜底为空——绝不中断闭环。

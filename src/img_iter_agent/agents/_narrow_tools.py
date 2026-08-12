@@ -43,6 +43,12 @@ _NARROW_EXCLUDED: frozenset[str] = frozenset({
     "write_file", "edit_file", "delete", "execute", "task", "patch", "batch",
 })
 
+# Generator 专用窄集：放回 read_file——deepagents SkillsMiddleware 的渐进披露硬性依赖它
+# （skills= 只注入 skill 名+描述+路径，要 read_file SKILL.md 才拿得到正文；无 embed 选项）。
+# Generator 用 FilesystemBackend + permissions 把 read_file 钉死在本 benchmark 技能包目录内（无图、不可越界），
+# 故放回 read_file 不会重演旧版「ls/glob/read_file 在空 sandbox 找图」的死循环（ls/glob/grep 仍剥）。
+_GENERATOR_NARROW_EXCLUDED: frozenset[str] = _NARROW_EXCLUDED - {"read_file"}
+
 
 def _tool_name(tool: BaseTool | dict[str, Any]) -> str | None:
     """从 BaseTool 或 dict 工具描述里取名字。"""
@@ -84,9 +90,14 @@ class NarrowToolsMiddleware(AgentMiddleware[Any, Any, Any]):
         return await handler(request)
 
 
-def narrow_tools_middleware() -> list[AgentMiddleware[Any, Any, Any]]:
-    """便捷工厂：返回 `[NarrowToolsMiddleware()]`，供 create_deep_agent(middleware=...) 直接用。"""
-    return [NarrowToolsMiddleware()]
+def narrow_tools_middleware(
+    excluded: frozenset[str] = _NARROW_EXCLUDED,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """便捷工厂：返回 `[NarrowToolsMiddleware(excluded=...)]`，供 create_deep_agent(middleware=...) 直接用。
+
+    默认剥全集（Critic/Distiller）；Generator 传 ``_GENERATOR_NARROW_EXCLUDED``（保留 read_file）。
+    """
+    return [NarrowToolsMiddleware(excluded=excluded)]
 
 
 def invoke_with_retry(
@@ -143,6 +154,7 @@ __all__ = [
     "AGENT_RECURSION_LIMIT",
     "DISTILLER_RECURSION_LIMIT",
     "NarrowToolsMiddleware",
+    "_GENERATOR_NARROW_EXCLUDED",
     "invoke_with_retry",
     "narrow_tools_middleware",
 ]
