@@ -41,7 +41,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                                 settings=settings, note=args.note)
 
     # 一处收口：agent 配方 + checkpointer + build_graph + 标准 config。
-    # loop 整体跑在 run_loop_session（@traceable）下 → 1 loop = 1 LangSmith trace。
+    # run_loop_session 每轮 invoke 各起一条 LangSmith trace（名字标 bench/sample/loop/round）。
     assert store.meta is not None  # create() 必已设置
     ctx = build_loop_context(lb, store, args.sample, loop_model=store.meta.model)
     try:
@@ -49,10 +49,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             ctx.app, ctx.cfg, store,
             rounds=args.rounds, bench_id=args.bench, sample_id=args.sample,
             prompt_decision=lambda _r, _v: input("  > "),
-            langsmith_extra={"metadata": {
-                "loop_id": loop_id, "bench_id": args.bench,
-                "sample_id": args.sample, "model": store.meta.model,
-            }},
         )
     finally:
         close_checkpointer(ctx.checkpointer)
@@ -153,6 +149,7 @@ def cmd_distill(args: argparse.Namespace) -> int:
     import glob
 
     from .agents.experience_distiller import ExperienceDistiller
+    from .agents.agent_config_loader import load_agent_model
     from .llm.chat_model import build_chat_model
     from .memory.experience import save_general_experience
 
@@ -179,7 +176,12 @@ def cmd_distill(args: argparse.Namespace) -> int:
         bench_id = first.bench_id if first else "unknown"
     lb = load_benchmark(bench_id, settings=settings)
 
-    chat = build_chat_model(settings, role="summarizer")
+    # distiller 的 model 外部化到 data/agents_config/distiller.json（web 配置页可改）；
+    # 读不到回退 settings.summarizer_model（.env）。
+    chat = build_chat_model(
+        settings, role="summarizer",
+        model_override=load_agent_model("distiller", settings.summarizer_model),
+    )
     from .memory.experience import load_general_experience, skill_package_dir
     distiller = ExperienceDistiller(
         chat, run_dirs=run_dirs, lb=lb, data_root=settings.data_root,

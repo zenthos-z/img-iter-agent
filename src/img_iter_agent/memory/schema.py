@@ -195,6 +195,11 @@ class CriticVerdict(BaseModel):
     dimensions: list[DimensionScore]
     weights_used: dict[str, float]
     restoration: float
+    # 经验总结产物（lessons/conclusions.json 相对 run 目录路径）。
+    # critic 在打分循环里调 note_experience 写下第一手经验判断，evaluate() 拿到结构化评分后
+    # 由代码用该判断 + 本轮 verdict 走规则落盘（Summarizer.summarize），lesson_ref 在此回填。
+    # 默认 None（向后兼容：旧测试/未走总结路径时不设）。
+    lesson_ref: str | None = None
 
     @property
     def features(self) -> dict[str, float]:

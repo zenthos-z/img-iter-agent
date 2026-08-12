@@ -1,0 +1,37 @@
+{
+  "weights": {
+    "spirit_hand_form": 1.8330699877529835e-17,
+    "spirit_ink_line": 9.848123456469891e-17,
+    "spirit_geometric_object": 3.122629638879793e-17,
+    "spirit_negative_space": 0.5599015255674158,
+    "spirit_symbolic_interaction": 1.451161683942202e-18,
+    "originality_motif": 0.14059089885927076,
+    "originality_degree": 3.853338228436582e-17,
+    "concept_expression": 7.615357436094395e-18,
+    "concept_clarity": 0.29950757557331337,
+    "creative_departure": 3.747087782625273e-17,
+    "reference_independence": 1.907634000048136e-17
+  },
+  "prior_weights": {
+    "spirit_hand_form": 0.08999999999999998,
+    "spirit_ink_line": 0.07899999999999999,
+    "spirit_geometric_object": 0.07199999999999998,
+    "spirit_negative_space": 0.06499999999999999,
+    "spirit_symbolic_interaction": 0.053999999999999986,
+    "originality_motif": 0.12999999999999998,
+    "originality_degree": 0.06999999999999999,
+    "concept_expression": 0.08499999999999999,
+    "concept_clarity": 0.054999999999999986,
+    "creative_departure": 0.19999999999999996,
+    "reference_independence": 0.09999999999999998
+  },
+  "pairwise_accuracy": 0.9333333333333333,
+  "margin": 0.05,
+  "n_traces": 6,
+  "n_pairs": 15,
+  "converged": true,
+  "loss": 0.21828869295593312,
+  "updated_at": "2026-08-11T22:36:39+0800",
+  "bench_id": "anthropic_og_style",
+  "sample_id": "s003"
+}

@@ -77,7 +77,7 @@ def main() -> int:
         return (loop_id, rc, rest)
 
     print(f"[batch] 并发度={args.concurrency} | samples={args.samples} | "
-          f"生图模型={args.model or '默认(seedream)'} | 目标轮数={args.rounds}", flush=True)
+          f"生图模型={args.model or '默认(run_loop_auto 定)'} | 目标轮数={args.rounds}", flush=True)
     results: list[tuple[str, int, list[float | None]]] = []
     with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as ex:
         results = list(ex.map(_run_one, args.samples))

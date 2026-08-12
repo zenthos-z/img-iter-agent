@@ -25,17 +25,21 @@ _ROLE_MODEL_ATTR = {
 Role = Literal["generator", "critic", "summarizer"]
 
 
-def build_chat_model(settings: Settings, *, role: Role, **extra) -> ChatOpenAI:
+def build_chat_model(
+    settings: Settings, *, role: Role, model_override: str | None = None, **extra,
+) -> ChatOpenAI:
     """按 role 从 settings 构造一个 ChatOpenAI（指向 dmxapi 的 OpenAI 兼容端点）。
 
     Args:
         role: 哪个 agent 用——决定取 generator_model / critic_model / summarizer_model。
+        model_override: 非空时覆盖 role 默认 model（来自 data/agents_config/<agent>.json 的外部化配置）；
+            为空/None 则用 settings 里该 role 的 model（.env）。默认 None。
         **extra: 透传给 ChatOpenAI 的额外参数（如 temperature、max_tokens）。
 
     返回的 ChatOpenAI 支持 `.bind_tools(...)` 与 `.with_structured_output(...)`，
     可直接喂给 `create_deep_agent(model=...)`。
     """
-    model_id = getattr(settings, _ROLE_MODEL_ATTR[role]) or "missing"
+    model_id = (model_override or "").strip() or getattr(settings, _ROLE_MODEL_ATTR[role]) or "missing"
     base_url = f"{settings.dmxapi_host.rstrip('/')}/v1"
     return ChatOpenAI(
         model=model_id,

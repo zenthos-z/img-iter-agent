@@ -1,8 +1,10 @@
-"""魔改版 skill-creator（skill-author）技能包 + 结构校验 单测。
+"""全工具 authoring agent 的技能包装配（prepare/finalize）+ 结构校验 + skill-author 自身合法性 单测。
 
-验证：① bundled skill-author 文件齐全；② quick_validate 原样可用（自校验 skill-author）；
-③ validate_skill_md（assembly 路径用的轻量校验）规则正确；④ assemble_skill_package 的
-description sanitize（剥尖括号——quick_validate 硬规则）。
+验证：① bundled skill-author 文件齐全 + 自身过 quick_validate/validate_skill_md（它是真 skill）；
+② skill-author 作为 deepagents ``skills=`` 源**隔离加载**（只它一个，无兄弟污染）；
+③ ``validate_skill_md`` 规则正确；④ ``prepare_skill_package`` 清空+建目录；
+⑤ ``finalize_skill_package`` 读回 agent 写的 SKILL.md → sanitize frontmatter(name=slug/剥尖括号) →
+渲染 lessons.md(单一源) → 拷 assets → 过校验；⑥ 缺 SKILL.md → None（优雅降级）。
 """
 
 from __future__ import annotations
@@ -14,24 +16,25 @@ from pathlib import Path
 import pytest
 
 from img_iter_agent.agents.experience_distiller import (
-    _SKILL_AUTHOR_DIR,
-    _read_skill_author_file,
-    _skill_author_methodology,
-    _skill_author_review_prompt,
+    _REPO_ROOT,
+    _SKILL_AUTHOR_PARENT,
+    _backend_root,
+    _skill_author_source,
 )
 from img_iter_agent.memory.experience import (
-    AuthoredReference,
-    AuthoredSkill,
+    DistilledLesson,
     GeneralExperience,
-    assemble_skill_package,
+    finalize_skill_package,
+    prepare_skill_package,
+    slugify_bench,
     validate_skill_md,
 )
 
-SKILL_AUTHOR = _SKILL_AUTHOR_DIR
+SKILL_AUTHOR = _SKILL_AUTHOR_PARENT / "skill-author"
 QUICK_VALIDATE = SKILL_AUTHOR / "scripts" / "quick_validate.py"
 
 
-# ---- bundled 文件齐全 ----
+# ---- bundled 文件齐全 + skill-author 自身合法 ----
 
 
 def test_skill_author_bundle_files_exist():
@@ -42,23 +45,11 @@ def test_skill_author_bundle_files_exist():
     assert QUICK_VALIDATE.exists()
 
 
-def test_methodology_loaded_into_prompt():
-    """方法论全文注入 authoring system prompt（agent 真被武装，非 35 行浓缩）。"""
-    m = _skill_author_methodology()
-    assert len(m) > 3000, "方法论过短，疑似仍是浓缩版"
-    assert "经验技能" in m
-    assert "pushy" in m.lower()
-    # 写作指南附录拼进来了
-    assert "渐进披露" in m or "Progressive" in m or "Anatomy" in m
-
-
-def test_review_prompt_has_checklist():
-    r = _skill_author_review_prompt()
-    assert "评审员" in r
-    assert "quality checklist" in r or "结构合规" in r
-
-
-# ---- quick_validate 原样可用（官方脚本，自校验 skill-author）----
+def test_skill_author_skill_self_validates():
+    """skill-author 是真 skill（被 deepagents 加载），自身须过 validate_skill_md。"""
+    text = (SKILL_AUTHOR / "SKILL.md").read_text(encoding="utf-8")
+    ok, msg = validate_skill_md(text)
+    assert ok, f"skill-author SKILL.md 自身不合法：{msg}"
 
 
 def test_quick_validate_runs_and_self_validates():
@@ -71,7 +62,24 @@ def test_quick_validate_runs_and_self_validates():
     assert "valid" in result.stdout.lower()
 
 
-# ---- validate_skill_md（assembly 路径用的同规则校验）----
+# ---- skill-author 作为 skills 源隔离加载（只它一个，无兄弟污染）----
+
+
+def test_skill_author_source_isolated():
+    """skills 源 = skill_authoring/ 父目录；deepagents 只在该源发现 skill-author（隔离）。"""
+    from deepagents.backends.filesystem import FilesystemBackend
+    from deepagents.middleware.skills import _list_skills
+
+    root = _backend_root(_REPO_ROOT / "data")  # 默认 data_root 在 repo 内 → root=repo
+    backend = FilesystemBackend(root_dir=str(root))
+    src = _skill_author_source(root)
+    assert src.endswith("skill_authoring"), src
+    skills = _list_skills(backend, src)
+    names = [s["name"] for s in skills]
+    assert names == ["skill-author"], f"应隔离加载仅 skill-author，实际：{names}"
+
+
+# ---- validate_skill_md（finalize 路径用的同规则校验）----
 
 
 def _skill_md(name: str, desc: str) -> str:
@@ -103,45 +111,127 @@ def test_validate_skill_md_rejects_missing_frontmatter():
     assert not ok and "frontmatter" in msg.lower()
 
 
-# ---- assemble_skill_package description sanitize ----
+# ---- prepare_skill_package ----
 
 
-def test_assemble_sanitizes_description_brackets(tmp_path):
-    """description 含尖括号 → assembly 剥掉（quick_validate 硬规则），落盘 SKILL.md 过校验。"""
-    authored = AuthoredSkill(
-        summary="x",
-        skill_name="will-be-overwritten",
-        description="输入文章→产出<策略>. 触发于y.",  # 含尖括号
-        skill_md="# 技能\n\n> 必读 lessons.md\n\n## 工作流\n1. x",
-        references=[AuthoredReference(path="style_guide.md", content="# 指南")],
-        asset_paths=[],
+def test_prepare_cleans_and_mkdirs(tmp_path):
+    """prepare 清空旧包残留 + 建 references/assets 子目录。"""
+    from img_iter_agent.memory.experience import skill_package_dir
+
+    pkg = skill_package_dir(tmp_path, "test-bench")
+    pkg.mkdir(parents=True)
+    (pkg / "references").mkdir(parents=True)
+    (pkg / "references" / "stale.md").write_text("old", encoding="utf-8")  # 旧残留
+
+    out = prepare_skill_package(tmp_path, "test-bench")
+    assert out == pkg
+    assert (pkg / "references").is_dir()
+    assert (pkg / "assets").is_dir()
+    assert not (pkg / "references" / "stale.md").exists(), "旧残留应被清空"
+
+
+# ---- finalize_skill_package ----
+
+
+def _write_agent_skill_md(pkg: Path, *, name: str = "wrong-name", desc: str = "ok desc") -> None:
+    """模拟全工具 agent 直接 write_file 的 SKILL.md（可能 name 不对 / desc 含尖括号）。"""
+    (pkg / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {desc}\n---\n\n# 技能\n\n> 必读 lessons.md\n\n## 工作流\n1. x\n",
+        encoding="utf-8",
     )
-    exp = GeneralExperience(bench_id="test-bench")
-    pkg = assemble_skill_package(tmp_path, tmp_path, "test-bench", authored, exp)
+
+
+def test_finalize_sanitizes_frontmatter_and_renders_lessons(tmp_path):
+    """agent 写的 SKILL.md：name 不对→强制 slug；desc 含尖括号→剥掉；并渲染 lessons.md（单一源）。"""
+    data_root = tmp_path / "data"
+    bench_dir = tmp_path / "bench"
+    bench_dir.mkdir()
+    bench_id = "test-bench"
+    slug = slugify_bench(bench_id)
+
+    pkg = prepare_skill_package(data_root, bench_id)
+    _write_agent_skill_md(pkg, name="wrong-name", desc="输入文章→产出<策略>. 触发于y.")  # 含尖括号
+
+    exp = GeneralExperience(
+        bench_id=bench_id,
+        lessons=[DistilledLesson(dim="d1", insight="i1", confidence=0.8, category="c1")],
+    )
+    out = finalize_skill_package(data_root, bench_dir, bench_id, exp, asset_paths=[])
+    assert out is not None
+
     text = (pkg / "SKILL.md").read_text(encoding="utf-8")
-    # 尖括号已剥
-    assert "<" not in text.split("---")[1] and ">" not in text.split("---")[1]
-    # 落盘后过结构校验
+    fm = text.split("---")[1]
+    assert "wrong-name" not in fm, "agent 写错的 name 应被强制覆盖为 slug"
+    assert slug in fm
+    assert "<" not in fm and ">" not in fm, "尖括号应被剥掉"
     ok, msg = validate_skill_md(text)
     assert ok, msg
 
-
-def test_assemble_writes_lessons_reference(tmp_path):
-    """references/lessons.md 由 general.json 渲染（单一源），agent 不写。"""
-    from img_iter_agent.memory.experience import DistilledLesson
-
-    exp = GeneralExperience(
-        bench_id="test-bench",
-        lessons=[DistilledLesson(dim="d1", insight="i1", confidence=0.8, category="c1")],
-    )
-    authored = AuthoredSkill(
-        summary="x", skill_name="b", description="ok desc",
-        skill_md="# body", references=[], asset_paths=[],
-    )
-    pkg = assemble_skill_package(tmp_path, tmp_path, "test-bench", authored, exp)
+    # lessons.md 由 general.json 渲染（agent 不写）
     lessons_md = (pkg / "references" / "lessons.md").read_text(encoding="utf-8")
     assert "d1" in lessons_md and "i1" in lessons_md
 
 
-def test_read_skill_author_file_missing_returns_empty():
-    assert _read_skill_author_file("nonexistent.md") == ""
+def test_finalize_copies_assets(tmp_path):
+    """asset_paths（bench 内相对）被拷进 assets/。"""
+    data_root = tmp_path / "data"
+    bench_dir = tmp_path / "bench"
+    asset_src = bench_dir / "reference_style" / "hand.png"
+    asset_src.parent.mkdir(parents=True)
+    asset_src.write_bytes(b"\x89PNG fake")
+
+    pkg = prepare_skill_package(data_root, "test-bench")
+    _write_agent_skill_md(pkg)
+
+    exp = GeneralExperience(bench_id="test-bench")
+    finalize_skill_package(
+        data_root, bench_dir, "test-bench", exp, asset_paths=["reference_style/hand.png"],
+    )
+    assert (pkg / "assets" / "hand.png").exists()
+    assert (pkg / "assets" / "hand.png").read_bytes() == b"\x89PNG fake"
+
+
+def test_finalize_overwrites_agent_lessons_md(tmp_path):
+    """agent 误写 references/lessons.md → finalize 用 general.json 单一源覆盖。"""
+    data_root = tmp_path / "data"
+    bench_dir = tmp_path / "bench"
+    bench_dir.mkdir()
+    pkg = prepare_skill_package(data_root, "test-bench")
+    _write_agent_skill_md(pkg)
+    (pkg / "references" / "lessons.md").write_text("# agent 误写的 lessons\n应被覆盖", encoding="utf-8")
+
+    exp = GeneralExperience(
+        bench_id="test-bench",
+        lessons=[DistilledLesson(dim="real-dim", insight="real-insight", confidence=0.9, category="c")],
+    )
+    finalize_skill_package(data_root, bench_dir, "test-bench", exp, asset_paths=[])
+    lessons_md = (pkg / "references" / "lessons.md").read_text(encoding="utf-8")
+    assert "real-dim" in lessons_md
+    assert "agent 误写" not in lessons_md
+
+
+def test_finalize_returns_none_when_no_skill_md(tmp_path):
+    """agent 未落盘 SKILL.md（失败/死循环）→ finalize 返回 None（优雅降级，exp 照存）。"""
+    data_root = tmp_path / "data"
+    bench_dir = tmp_path / "bench"
+    bench_dir.mkdir()
+    prepare_skill_package(data_root, "test-bench")  # 空目录，无 SKILL.md
+    exp = GeneralExperience(bench_id="test-bench")
+    out = finalize_skill_package(data_root, bench_dir, "test-bench", exp, asset_paths=[])
+    assert out is None
+
+
+def test_finalize_prepends_frontmatter_when_missing(tmp_path):
+    """agent 写的 SKILL.md 无 frontmatter → finalize 前置最小合规块。"""
+    data_root = tmp_path / "data"
+    bench_dir = tmp_path / "bench"
+    bench_dir.mkdir()
+    pkg = prepare_skill_package(data_root, "test-bench")
+    (pkg / "SKILL.md").write_text("# 技能\n\n正文无 frontmatter\n", encoding="utf-8")
+
+    out = finalize_skill_package(data_root, bench_dir, "test-bench", GeneralExperience(bench_id="test-bench"), [])
+    assert out is not None
+    text = (pkg / "SKILL.md").read_text(encoding="utf-8")
+    ok, msg = validate_skill_md(text)
+    assert ok, msg
+    assert "正文无 frontmatter" in text  # 正文保留

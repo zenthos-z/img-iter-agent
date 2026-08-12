@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents import create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -24,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
 from ..generation.image_io import file_to_data_uri
+from ..memory.knowledge import load_conclusions
 from ..memory.schema import (
     Benchmark,
     CriticVerdict,
@@ -33,24 +35,45 @@ from ._agent_output import CriticAgentOutput
 from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 from .tools.critic_tools import _effective_checklist, _load_creativity_overlay, make_critic_tools
+from .tools.generator_tools import _format_experience
+
+if TYPE_CHECKING:
+    from .generator import GenOutcome
 
 _DEFAULT_CRITIC_SYS = (
     "你是严格的产品图评判员。对照参考图(target)对生成图打分：二分维度逐项判通过/不通过 + 一句理由，"
     "连续维度给 0-1 分 + 一句理由。可用 query_rubric 查某维度的判定标准。所有维度都是"
-    "「生成图 vs target」的还原对比，不是绝对评判。拿不准倾向判不通过/给低分。"
-    "最后结构化输出每个维度的评分（不要自己算加权和/还原度，权重不在你手上）。"
+    "「生成图 vs target」的还原对比，不是绝对评判。拿不准倾向判不通过/给低分。\n"
+    "工作流：(1) 看图 → 按需 query_rubric 查判定标准 → 逐维度打分；"
+    "(2) 打完分后总结本轮经验——对每个本轮有判断的维度调用 note_experience 写下"
+    "『改动是否有效(effective/ineffective/escalated) + 可执行 lesson』，沉淀到经验知识库供后续轮次复用；"
+    "你作为裁判对『为什么有效/无效』理解最深最准，这是本职之一，务必执行（首轮无上轮对比时仍可记录本轮新发现的问题与 lesson）；"
+    "可用 query_experience 查已沉淀的历史经验辅助判断、避免重复无效思路；"
+    "(3) 最后结构化输出每个维度的评分（不要自己算加权和/还原度，权重不在你手上）。"
 )
 
 
 @dataclass
 class CriticInput:
-    """一次 Critic 评判的输入（一个 trace）。"""
+    """一次 Critic 评判的输入（一个 trace）。
+
+    经验总结相关字段（run_dir/outcome/...）由 graph 的 critic_node 注入；缺省时 evaluate 跳过
+    经验总结（向后兼容旧测试）。生产路径下，critic 在打分循环里调 note_experience 写下第一手
+    经验判断，evaluate 拿到结构化评分后由 Summarizer 用它走规则落盘。
+    """
 
     sample: Sample
     generated_images: list[Path] = field(default_factory=list)  # 三视图等生成图
     weights: dict[str, float] = field(default_factory=dict)  # 当前生效权重
     meaning: str | None = None  # Generator 的一句话图片含义解释（风格迁移场景；判概念表达时参考）
     reference_ids: list[str] = field(default_factory=list)  # 本次实际传给生图 API 的参考标识符；判 reference_independence 用
+    # —— 经验总结上下文（evaluate 内部驱动 in-loop 经验总结；缺省则跳过）——
+    run_dir: Path | None = None
+    round: int = 0
+    outcome: GenOutcome | None = None
+    prev_verdict: CriticVerdict | None = None
+    prev_delta_note: str | None = None
+    sample_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +152,14 @@ class Critic:
         user_content = self._build_user_content(
             target, generated, spec, meaning=inp.meaning, extra_hints=extra_hints,
             reference_ids=inp.reference_ids,
+            prev_delta_note=inp.prev_delta_note, run_dir=inp.run_dir, sample_id=inp.sample_id,
         )
-        tools = make_critic_tools(bench=self.bench, spec=spec, overlay=self._creativity_overlay)
+        # note_experience 工具把 agent 打分时的第一手经验判断回写到 sink；evaluate 拿到 verdict 后落盘。
+        sink: dict = {}
+        tools = make_critic_tools(
+            bench=self.bench, spec=spec, overlay=self._creativity_overlay,
+            sink=sink, run_dir=inp.run_dir,
+        )
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
@@ -146,26 +175,35 @@ class Critic:
 
         dim_scores = self._to_dimension_scores(out)
         restoration = recompute_restoration(dim_scores, inp.weights)
-        return CriticVerdict(
+        verdict = CriticVerdict(
             sample_id=spec.sample_id,
             dimensions=dim_scores,
             weights_used=dict(inp.weights),
             restoration=restoration,
         )
 
-    def summarize_round(self, **kwargs) -> str:
-        """critic 兼任的经验总结（原 in-loop Summarizer 职责）。
-
-        打分后做跨轮因果验证 + 复发检测 + lesson 富化，更新 conclusions.json，返回 lesson_ref。
-        逻辑见 Summarizer.summarize（成熟；distiller 跨 loop 蒸馏依赖其 conclusions.json 产物）。
-        """
-        return self._summarizer.summarize(**kwargs)
+        # 经验总结（原 in-loop Summarizer 职责，现 critic 工作流内由 note_experience 驱动）：
+        # 用 agent 写下的判断(sink["lessons"]) + 本轮 verdict 走规则落盘，更新 conclusions.json。
+        # 需 run_dir/outcome/sample_id（生产路径）；缺省（旧测试）跳过，向后兼容。总结失败不中断打分。
+        if inp.run_dir is not None and inp.outcome is not None and inp.sample_id:
+            try:
+                verdict.lesson_ref = self._summarizer.summarize(
+                    run_dir=inp.run_dir, round=inp.round, outcome=inp.outcome,
+                    verdict=verdict, sample_id=inp.sample_id,
+                    prev_verdict=inp.prev_verdict, prev_delta_note=inp.prev_delta_note,
+                    config=config, agent_lessons=sink.get("lessons"),
+                )
+            except Exception as e:  # noqa: BLE001  总结失败不中断打分闭环
+                print(f"[critic] 经验总结失败({type(e).__name__}: {str(e)[:150]})，跳过", flush=True)
+        return verdict
 
     # --- 辅助 ---
 
     def _build_user_content(
         self, target: Path, generated: list[Path], spec, meaning: str | None = None,
         extra_hints: list[str] | None = None, reference_ids: list[str] | None = None,
+        prev_delta_note: str | None = None, run_dir: Path | None = None,
+        sample_id: str | None = None,
     ) -> list[dict] | str:
         """初始 HumanMessage：喂图说明 + 每维度**逐项 checklist** + 评分指令 + 生成图与 target(image_url)。
 
@@ -224,6 +262,31 @@ class Critic:
                 "即使下列 checklist 未明确写出，也**必须在对应 spirit_* 维度判不通过 / 给低分**，并在 reason 写明你发现的偏差。\n"
                 "你要主动发现 checklist 之外的偏差(参考集是纯线条抽象、零解剖细节；生成图出现任何写实细节就是不一致)，不要只盯列出的项。\n\n"
             ) + task
+        # 经验总结上下文：让 critic 打分时看到历史经验 + 上轮改动，写出更准的 note_experience。
+        # 连续失败维度（判 escalated 时参考）+ 已沉淀经验（避免重复无效思路）+ 上轮改动（验证对象）。
+        if run_dir is not None and sample_id:
+            try:
+                kb = load_conclusions(run_dir, sample_id=sample_id)
+            except Exception:  # noqa: BLE001
+                kb = None
+            exp_ctx: list[str] = []
+            if kb is not None:
+                streaks = {d: s for d, s in kb.fail_streaks.items() if s > 0}
+                if streaks:
+                    exp_ctx.append(
+                        "【连续失败维度（疑似模型能力上限，写 note_experience 时该维度判 escalated）】"
+                        + "、".join(f"{d}({s}轮)" for d, s in sorted(streaks.items(), key=lambda kv: -kv[1]))
+                    )
+                try:
+                    exp_hist = _format_experience(run_dir)
+                except Exception:  # noqa: BLE001
+                    exp_hist = ""
+                if exp_hist and "暂无已验证经验" not in exp_hist:
+                    exp_ctx.append("【本题已沉淀经验（参考，写 note_experience 时避免重复无效思路）】\n" + exp_hist)
+            if prev_delta_note:
+                exp_ctx.append(f"【上轮改动（note_experience 的验证对象：判断该改动是否有效）】{prev_delta_note}")
+            if exp_ctx:
+                task += "\n\n" + "\n\n".join(exp_ctx)
         text = _images_block(target, generated) + "\n\n" + task
         images = list(generated) + ([target] if target.exists() else [])
         return _build_multimodal_content(text, images)

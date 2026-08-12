@@ -44,7 +44,7 @@ def main() -> int:
     ap.add_argument("--loop-id", default=None, help="显式 loop_id（覆盖 --tag）")
     ap.add_argument("--note", default=None, help="写入 meta.json 的备注")
     ap.add_argument("--model", default=None,
-                    help="生图 model_id（默认 settings.model_seedream_pro）；如 gemini-3.1-flash-image / gpt-image-2-03 / qwen-image-2.0-pro")
+                    help="生图 model_id（默认 settings.model_gemini_image）；如 gemini-3.1-flash-image / gpt-image-2-03 / qwen-image-2.0-pro")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -63,7 +63,7 @@ def main() -> int:
 
     store = RunStore.create(
         loop_id, args.bench,
-        model=args.model or settings.model_seedream_pro,
+        model=args.model or settings.model_gemini_image,
         settings=settings,
         note=args.note or f"img-iter-ops auto run, target {args.rounds} rounds",
     )

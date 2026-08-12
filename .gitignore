@@ -44,3 +44,9 @@ models/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime server log
+data/web_server.log
+
+# Claude Code local session artifacts (worktree storage)
+.claude/worktrees/

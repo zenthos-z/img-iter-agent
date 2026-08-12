@@ -33,6 +33,41 @@ from ..models import (
 
 
 # ---------------------------------------------------------------------------
+# agent 活动流事件（events.jsonl）
+# ---------------------------------------------------------------------------
+
+
+def read_events_since(run_dir: Path, since: int = 0) -> tuple[list[dict], int]:
+    """读 ``run_dir/events.jsonl``，返回 ``(since 之后的行, 总行数)``。
+
+    since = 文件行号游标（1-based 计数，0 起始过滤）。seq 用文件行号语义、emitter 不写 seq，
+    故即便 web 重启后新 emitter 追加，游标仍单调不错位。文件不存在 → ``([], 0)``。
+    不依赖内存 LoopHandle——CLI/脚本起的 loop（web 内存无 handle）也能读。
+    """
+    p = Path(run_dir) / "events.jsonl"
+    if not p.exists():
+        return [], 0
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return [], 0
+    events: list[dict] = []
+    total = 0
+    for line in text.splitlines():
+        total += 1
+        if total <= since:
+            continue
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            events.append(json.loads(s))
+        except json.JSONDecodeError:  # noqa: PERF203  坏行跳过（不丢其他行）
+            continue
+    return events, total
+
+
+# ---------------------------------------------------------------------------
 # human_scores（人工排序）读写
 # ---------------------------------------------------------------------------
 

@@ -148,22 +148,19 @@ def build_graph(
         # 人工提示词：从 config 读，按 agent 过滤（仅 critic 的）
         _hints = ((config.get("configurable") or {}).get("human_hints")) or []
         _critic_hints = [h["text"] for h in _hints if h.get("agent") == "critic" and h.get("text")]
-        verdict = critic.evaluate(CriticInput(
-            sample=sample, generated_images=gen_imgs, weights=weights,
-            meaning=outcome.meaning, reference_ids=list(outcome.reference_ids),
-        ), config=config, extra_hints=_critic_hints or None)
-        # 经验总结（原独立 summarizer_node 职责，现 critic 兼任）+ trajectory 写入。
-        # 取上轮 verdict + 上轮改动说明，做跨轮因果验证；critic.summarize_round 内部更新
-        # conclusions.json 并返回 lesson_ref（distiller 跨 loop 蒸馏依赖该产物）。
+        # 经验总结上下文：上轮 verdict + 上轮改动说明，供 critic 在 note_experience 里做跨轮因果验证。
         all_verdicts: list[CriticVerdict] = state.get("verdicts", [])
         prev_verdict = all_verdicts[-2] if len(all_verdicts) >= 2 else None
         prev_delta_note = _prev_delta_note(run_dir)
-        lesson_ref = critic.summarize_round(
-            run_dir=run_dir, round=state["round"], outcome=outcome,
-            verdict=verdict, sample_id=sample_id,
-            prev_verdict=prev_verdict, prev_delta_note=prev_delta_note, config=config,
-        )
-        # 写 trajectory
+        # evaluate 内部完成打分 + 经验总结（note_experience 工具 → Summarizer 落盘），
+        # verdict.lesson_ref 就绪（distiller 跨 loop 蒸馏依赖的 conclusions.json 已更新）。
+        verdict = critic.evaluate(CriticInput(
+            sample=sample, generated_images=gen_imgs, weights=weights,
+            meaning=outcome.meaning, reference_ids=list(outcome.reference_ids),
+            run_dir=run_dir, round=state["round"], outcome=outcome, sample_id=sample_id,
+            prev_verdict=prev_verdict, prev_delta_note=prev_delta_note,
+        ), config=config, extra_hints=_critic_hints or None)
+        # 写 trajectory（lesson_ref 由 evaluate 内的经验总结回填到 verdict 上）
         rec = AttemptRecord(
             attempt_id=outcome.attempt_id, run_id=run_store.meta.run_id if run_store.meta else "",
             round=state["round"], sample_id=sample_id, bench_id=bench.bench.bench_id,
@@ -172,7 +169,7 @@ def build_graph(
             prompt=outcome.prompt, reference_image_refs=list(outcome.reference_image_refs),
             reference_ids=list(outcome.reference_ids),
             size=outcome.size, output_image_refs=list(outcome.output_image_refs),
-            verdict=verdict, lesson_ref=lesson_ref, delta_note=outcome.delta_note,
+            verdict=verdict, lesson_ref=verdict.lesson_ref, delta_note=outcome.delta_note,
             meaning=outcome.meaning,
         )
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)

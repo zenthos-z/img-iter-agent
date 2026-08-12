@@ -27,8 +27,10 @@ data/benchmarks/<bench>/
 ### 3. LLM 起草 content_spec（核心，由你/Claude 完成）
 脚本只复制了模板（`assets/content_spec.template.json`，含 6 维度骨架 + 占位符）。现在要根据**产品图 + 用户口述**，把每个维度的 checklist 填成针对该产品的具体判定项。
 
-**起草要点（决定经验闭环质量）：**
-- **二分维度（consistency/product_structure/artifact_defect/commercial_focus）的每一项必须可二分判定**（✓/✗ 明确无歧义）。例：S4 别写「结构合理」，写「仍是长条折叠形态（非普通床，对照参考）」——Critic 才能客观判。
+**⚠️ 两层标准设计**：通用底线（consistency C1-C5 含**视图完整性**、product_structure **开放式**结构还原、artifact_defect、commercial_focus）在 manifest check_items，所有 sample 自动继承——sample **不写二分维度**。sample 只填：① 连续维度 material/color 的 points；② constraints.must_keep/must_avoid（给 generator 的还原指引，含特定结构）。
+
+**起草要点（决定经验闭环质量 + 泛化性）：**
+- **二分维度（consistency/product_structure/artifact_defect/commercial_focus）的每一项必须可二分判定**（✓/✗ 明确无歧义）。**但绝不写死特定结构**——S4 别写「长条折叠形态」这类绑定参考图的特征，应写开放式对比「整体造型轮廓忠实还原参考图，对照 target 自由判断」：让 Critic 动态对比参考图，而非机械查"折叠关节在不在"。写死特定结构 = 设计缺陷（lesson 沉淀绑定该 sample、无法泛化）。**特定结构（折叠关节/弧形床头板等）只进 `constraints.must_keep`**（给 generator 的还原指引）。
 - **连续维度（material_texture/color_accuracy）填具体 `points`**，让 LLM 知道打分看哪些点。例：material 的 points = ["金属框架质感(非塑料)", "织物有编织纹理(非光滑面)"]。
 - **`must_avoid` 写该产品最易翻车的失真**（经验闭环靠它聚焦）。例：折叠椅写「折叠结构变形为普通床腿」「三视角不一致」。
 - **A4「接地阴影」项别漏**——历史经验里「悬浮感」是反复出现的关键缺陷（见 `data/experience/.../general.json`）。
@@ -43,8 +45,9 @@ data/benchmarks/<bench>/
 
 ## 校验（跑之前确认）
 - 每个 `samples/<s>/target.jpg` 存在
-- 每个 content_spec.json 的 checklist id 连续（C1-C4/S1-S4/A1-A4/B1-B3）且 check 文本非占位
-- manifest.json 无残留 TODO
+- content_spec.json 的 checklist **只含连续维度**（material_texture/color_accuracy）的 points；**不含二分维度**（consistency/product_structure/artifact_defect/commercial_focus 由 manifest 继承）
+- constraints.must_keep/must_avoid 含该产品的特定结构 + 易翻车点（给 generator）
+- manifest.json 无残留 TODO；check_items 含 C5（视图完整性）+ 开放式 product_structure（S1/S4 不绑定具体形态）
 - 维度名与 manifest score_dimensions 一致（Critic 按这些 dim 打分）
 
 ## 全新场景（非家具白底）怎么办

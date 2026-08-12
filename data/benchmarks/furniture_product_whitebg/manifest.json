@@ -17,7 +17,7 @@
       "weight_init": 0.25,
       "ref_needed": true,
       "scoring_type": "binary",
-      "check_items": ["C1 三视图是同一产品", "C2 三视图颜色一致", "C3 侧视宽=正视宽(几何一致)", "C4 各视图高度比例一致"]
+      "check_items": ["C1 三视图是同一产品", "C2 三视图颜色一致", "C3 侧视与正视几何尺寸一致(不预设具体形态)", "C4 各视图高度比例一致", "C5 每个视图完整呈现整个产品(正视/侧视/立体各自完整,无截断/不显示局部)"]
     },
     {
       "dim": "product_structure",
@@ -25,7 +25,7 @@
       "weight_init": 0.22,
       "ref_needed": true,
       "scoring_type": "binary",
-      "check_items": ["S1 部件数量与参考一致", "S2 无部件穿模/重叠", "S3 无部件缺失", "S4 关键形态正确(如弧形/折叠结构)"]
+      "check_items": ["S1 整体结构忠实还原参考图(对照target自由对比各部件形态/数量/位置/比例)", "S2 无部件穿模/重叠", "S3 无部件缺失/多余", "S4 整体造型轮廓忠实还原参考图(对照target判断,不预设具体形态)"]
     },
     {
       "dim": "material_texture",

@@ -64,6 +64,7 @@ class Summarizer:
         prev_verdict: CriticVerdict | None = None,
         prev_delta_note: str | None = None,
         config: RunnableConfig | None = None,
+        agent_lessons: list[dict] | None = None,
     ) -> str:
         """做 Critic 驱动的经验闭环验证，更新 conclusions.json，返回其相对 run 目录路径。
 
@@ -72,6 +73,10 @@ class Summarizer:
             prev_verdict: 上一轮的 Critic 判定（验证上轮改动的"后"证据来源）。
             prev_delta_note: 上一轮 Generator 的改动说明（验证对象）。
                 两者需同时提供才能做跨轮验证；首轮无上轮则只登记本轮。
+            agent_lessons: critic agent 打分时通过 note_experience 工具写下的第一手经验判断
+                （[{dim, judgment: effective|ineffective|escalated, lesson}]）。非空时启用「agent 模式」：
+                用 agent 判断替代 judge_status 规则 + _llm_refine 富化（裁判理解最深最准）；为空走旧逻辑
+                （_verify_pending + _llm_refine），向后兼容。规则部分（fail_streaks/escalation/register/save）两种模式都跑。
         """
         kb = knowledge.load_conclusions(run_dir, sample_id=sample_id, loop_id=outcome.model)
 
@@ -79,10 +84,19 @@ class Summarizer:
         # 嵌套在 LangGraph summarizer 节点 run 之下（LangSmith 可观测）。
         ls_extra: Any = {"config": config} if config is not None else {}
 
-        # 1) 验证上轮的 pending 结论：用本轮 verdict 作为"后"证据判定 status。
-        #    只要上轮 verdict 在就能判（前后分差/项翻转是客观证据）——不依赖 prev_delta_note
-        #    是否被 generator 填写（deepseek 常空，不能让空 delta_note 饿死经验闭环）。
-        if prev_verdict is not None:
+        use_agent = bool(agent_lessons)  # critic 工作流模式：agent 已写下第一手判断
+
+        # 1) 验证上轮 pending 结论：
+        #    - agent 模式：_apply_agent_lessons 用裁判判断（judgment→status、lesson 直接写入）替代
+        #      judge_status 规则 + _llm_refine；critic_evidence 仍走 judge_status 的客观前后快照。
+        #    - 旧模式：_verify_pending 走 judge_status 规则（前后分差/项翻转）。不依赖 prev_delta_note
+        #      是否被 generator 填写（deepseek 常空，不能让空 delta_note 饿死经验闭环）。
+        if use_agent:
+            self._apply_agent_lessons(
+                kb, agent_lessons=agent_lessons or [],
+                prev_verdict=prev_verdict, cur_verdict=verdict, cur_round=round,
+            )
+        elif prev_verdict is not None:
             self._verify_pending(kb, prev_verdict=prev_verdict, cur_verdict=verdict,
                                  cur_round=round, prev_delta_note=prev_delta_note,
                                  langsmith_extra=ls_extra)
@@ -94,11 +108,15 @@ class Summarizer:
 
         # 3) 登记本轮的失败维度为新 pending 结论（待下轮 Critic 验证）。
         #    不再以 delta_note 为门槛——delta_note 空时，change 从 Critic 的失败项理由派生。
-        self._register_round_changes(kb, outcome=outcome, verdict=verdict, round=round,
-                                     streak_changes=streak_changes)
+        #    agent 模式下，把 agent 对该 dim 的 lesson 填进 pending（首轮裁判理解，下轮验证时更新）。
+        self._register_round_changes(
+            kb, outcome=outcome, verdict=verdict, round=round,
+            streak_changes=streak_changes,
+            agent_lessons=agent_lessons if use_agent else None,
+        )
 
-        # 4) 可选 LLM 富化（A）：用 effective/ineffective/escalated 上下文提炼可执行 lesson
-        if self.chat_model is not None and kb.conclusions:
+        # 4) 可选 LLM 富化（A）：仅旧模式跑；agent 模式下 agent 已写 lesson，跳过。
+        if not use_agent and self.chat_model is not None and kb.conclusions:
             self._llm_refine(kb, langsmith_extra=ls_extra)
 
         lesson_ref = str(knowledge.save_conclusions(run_dir, kb).relative_to(run_dir))
@@ -151,12 +169,72 @@ class Summarizer:
             })
         return results
 
+    @traceable(name="summarizer.apply_agent_lessons", run_type="chain")
+    def _apply_agent_lessons(
+        self, kb: knowledge.KnowledgeBase, *, agent_lessons: list[dict],
+        prev_verdict: CriticVerdict | None, cur_verdict: CriticVerdict, cur_round: int,
+    ) -> list[dict]:
+        """用 critic agent 的第一手判断验证上轮 pending 结论（agent 模式：替代 judge_status + _llm_refine）。
+
+        agent 在打分循环里调 note_experience 写下 [{dim, judgment, lesson}]。对 kb.pending() 每条按 dim
+        匹配 agent 判断：judgment→status（effective→verified_effective；ineffective/escalated→ineffective，
+        escalated 额外置 c.escalated=True），lesson 直接写入。critic_evidence 仍用 judge_status 的客观前后
+        快照（before/after/verdict_delta）——distiller 读 verdict_delta，客观不变；agent 只接管"有效性
+        判定 + lesson 文本"。找不到 agent 判断的 pending（agent 漏写）→ 回退 judge_status 规则，不饿死。
+
+        返回每条 pending 的判定作为 chain run output（trace 可见 agent 判断 vs 规则）。
+        """
+        by_dim: dict[str, dict] = {}
+        for al in agent_lessons:
+            d = al.get("dim")
+            if d and d not in by_dim:
+                by_dim[d] = al
+        results: list[dict] = []
+        for c in kb.pending():
+            al = by_dim.get(c.dim)
+            # 客观证据（前后快照）始终算（若有 prev_verdict）——与 agent 判断正交，distiller 依赖它
+            if prev_verdict is not None:
+                status_rule, evidence, lesson_rule = knowledge.judge_status(prev_verdict, cur_verdict, c.dim)
+            else:
+                status_rule, evidence, lesson_rule = None, None, None
+            if al is not None:
+                judgment = al.get("judgment")
+                c.status = (
+                    "verified_effective" if judgment == "effective" else "ineffective"
+                )  # ineffective / escalated 都归 ineffective（escalated 叠加标记，与 status 正交）
+                if judgment == "escalated":
+                    c.escalated = True
+                lesson_text = (al.get("lesson") or "").strip()
+                if lesson_text:
+                    c.lesson = lesson_text
+            else:
+                # agent 漏写该 dim → 回退 judge_status 规则
+                c.status = status_rule or "ineffective"
+                if c.lesson is None and lesson_rule:
+                    c.lesson = lesson_rule
+            if evidence is not None:
+                evidence.tested_round = cur_round
+                c.critic_evidence = evidence
+            c.verified_round = cur_round
+            results.append({
+                "dim": c.dim, "change": c.change, "status": c.status,
+                "agent_judgment": (al or {}).get("judgment"),
+                "verdict_delta": evidence.verdict_delta if evidence else None,
+            })
+        return results
+
     def _register_round_changes(
         self, kb: knowledge.KnowledgeBase, *, outcome: GenOutcome,
         verdict: CriticVerdict, round: int,
         streak_changes: dict[str, str] | None = None,
+        agent_lessons: list[dict] | None = None,
     ) -> None:
-        """把本轮 delta_note 登记为新 pending 结论（按失败维度拆分）。"""
+        """把本轮 delta_note 登记为新 pending 结论（按失败维度拆分）。
+
+        agent 模式下（agent_lessons 非空）：把 agent 对该 dim 的第一手 lesson 填进新 pending
+        （首轮裁判理解，下轮验证时由 _apply_agent_lessons 更新）。
+        """
+        agent_by_dim = {al.get("dim"): al for al in (agent_lessons or []) if al.get("dim")}
         # 本轮针对的失败维度（来自 Critic 判定）
         failed_dims = {
             d.dim for d in verdict.dimensions
@@ -170,9 +248,12 @@ class Summarizer:
             # change：优先用 generator 的 delta_note（具体改动叙述）；空则从 Critic 失败项派生
             # （保证空 delta_note 时经验闭环仍登记结论，不被饿死）。
             change = outcome.delta_note or finding or f"{dim} 改进"
+            al = agent_by_dim.get(dim)
+            agent_lesson = (al.get("lesson") or "").strip() if al else None
             c = knowledge.upsert_conclusion(
                 kb, dim=dim, finding=finding, change=change,
                 tags=[outcome.test_variable or "prompt"], created_round=round,
+                lesson=agent_lesson or None,
             )
             # 该 dim 已达升级阈值 → 新登记的结论直接打 escalated 标记
             if dim in escalated_dims:

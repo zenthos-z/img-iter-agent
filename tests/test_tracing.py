@@ -101,8 +101,8 @@ def _traceable_run_types(tree) -> list[str]:
 
 
 def test_loop_runner_has_no_manual_runtree():
-    """loop_runner 不应再手动拼 RunTree / tracing_context（改由 LangGraph 自动 trace +
-    metadata.loop_id 关联多轮）。"""
+    """loop_runner 不直接拼 RunTree / tracing_context：每轮 trace 的创建/收尾由 pipeline.runner 的
+    create_round_trace + round_trace_context 负责（把 RunTree 逻辑关在 runner.py 里），loop_runner 只调用它们。"""
     import ast
     tree = _parse("img_iter_agent.web.services.loop_runner")
 
@@ -232,3 +232,67 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
 
     # 断言：出图 tool run 名字 image_gen.*
     assert any(r["name"].startswith("image_gen.") for r in by_type["tool"])
+
+
+# ---------------------------------------------------------------------------
+# 4. 每轮一条独立 trace：create_round_trace 产独立 trace_id，名字标 bench/sample/loop/round
+# ---------------------------------------------------------------------------
+
+def test_round_trace_name_format():
+    """_round_trace_name：common case 不带后缀；loop_id 带 batch/tag 后缀时原样追加。"""
+    from img_iter_agent.pipeline.runner import _round_trace_name as n
+
+    assert n("furniture_product_whitebg", "s001",
+             "furniture_product_whitebg-s001", 3) == "furniture_product_whitebg/s001 R3"
+    assert n("furniture_product_whitebg", "s003",
+             "furniture_product_whitebg-s003-exp6", 5) == "furniture_product_whitebg/s003-exp6 R5"
+
+
+def test_each_round_is_separate_trace(captured_runs):
+    """每一轮各建一个独立 root（独立 trace_id）→ LangSmith 里是分开的多条 trace，而非一条 loop trace。
+
+    名字标 bench/sample/loop/round；loop_id/round 落在 extra.metadata（RunTree 无独立 metadata 字段，
+    走 extra.metadata），tags 含 loop:<id>/round:<n>，便于按 loop 过滤回放。round_trace_context
+    退出收尾（end+patch，patch 走 update_run 被 captured_runs fixture 静默，不触网）。
+    """
+    from img_iter_agent.pipeline.runner import create_round_trace, round_trace_context
+
+    loop_id = "furniture_product_whitebg-s001"
+    bench, sample, model = "furniture_product_whitebg", "s001", "gemini-test"
+
+    r1 = create_round_trace(loop_id, bench, sample, 1, model, "first")
+    with round_trace_context(r1):  # 模拟一轮 invoke（空 body；真实 graph run 会嵌套其下）
+        pass
+    r2 = create_round_trace(loop_id, bench, sample, 2, model, "resume")
+    with round_trace_context(r2):
+        pass
+
+    roots = [r for r in captured_runs if r.get("name")]
+    by_name = {r["name"]: r for r in roots}
+    assert "furniture_product_whitebg/s001 R1" in by_name
+    assert "furniture_product_whitebg/s001 R2" in by_name
+
+    # 两轮 root 各自独立 trace_id（不同）→ 两条独立 trace
+    assert by_name["furniture_product_whitebg/s001 R1"]["trace_id"] != \
+           by_name["furniture_product_whitebg/s001 R2"]["trace_id"]
+
+    # metadata 落在 extra.metadata
+    md1 = by_name["furniture_product_whitebg/s001 R1"]["extra"]["metadata"]
+    assert md1["loop_id"] == loop_id and md1["round"] == 1 and md1["bench_id"] == bench
+    # tags 关联 loop / round
+    assert "loop:furniture_product_whitebg-s001" in by_name["furniture_product_whitebg/s001 R1"]["tags"]
+    assert "round:2" in by_name["furniture_product_whitebg/s001 R2"]["tags"]
+
+
+def test_create_round_trace_noop_when_tracing_off(monkeypatch):
+    """LangSmith 未开启时 create_round_trace 返回 None（不建 RunTree、不触网），
+    round_trace_context(None) 直接 yield——整条 per-round trace 机制静默 no-op。"""
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+
+    from img_iter_agent.pipeline.runner import create_round_trace, round_trace_context
+
+    root = create_round_trace("b-s", "b", "s", 1, "m")
+    assert root is None
+    with round_trace_context(root):  # None → 不嵌套、不报错
+        pass

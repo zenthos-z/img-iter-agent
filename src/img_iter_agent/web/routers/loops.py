@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from ...config import get_settings
 from ..models import HintCreateRequest, HintOut, LoopControlRequest, LoopStartRequest
-from ..services.data_access import build_loop_detail
+from ..services.data_access import build_loop_detail, read_events_since
 from ..services.loop_runner import LoopBusyError, get_runner
 
 router = APIRouter()
@@ -76,6 +77,24 @@ def get_loop_status(loop_id: str) -> dict:
     }
 
 
+@router.get("/loops/{loop_id}/events")
+def get_loop_events(loop_id: str, since: int = 0) -> dict:
+    """活动流事件（前端轮询用）：读 events.jsonl，返回 since 之后的增量 + 总行数（下次游标）。
+
+    直接读文件、不依赖内存 LoopHandle——CLI/脚本起的 loop（web 内存无 handle）也能拿到事件。
+    """
+    if build_loop_detail(loop_id) is None:
+        raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在")
+    run_dir = get_settings().run_dir(loop_id)
+    events, total = read_events_since(run_dir, since)
+    return {
+        "loop_id": loop_id,
+        "events": events,
+        "total": total,
+        "controlled": get_runner().get(loop_id) is not None,
+    }
+
+
 # ---- 远程控制 ----
 
 
@@ -97,7 +116,7 @@ def resume_loop(loop_id: str, req: LoopControlRequest) -> dict:
     if not ok:
         handle = get_runner().get(loop_id)
         if handle is None:
-            raise HTTPException(status_code=404, detail=f"loop {loop_id} 不是 web 启动的")
+            raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在或不可续跑")
         raise HTTPException(
             status_code=409,
             detail=f"loop 当前 phase={handle.phase}，不能 resume（只在 awaiting_review 时可继续）",

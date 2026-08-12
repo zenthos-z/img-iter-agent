@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...agents.agent_config_loader import load_agent_model
 from ...agents.experience_distiller import ExperienceDistiller
 from ...config import Settings, get_settings
 from ...data.benchmark import load_benchmark
@@ -102,7 +103,12 @@ class DistillerRunner:
 
     def _distill(self, settings: Settings, bench_id: str, run_dirs: list[Path]):
         lb = load_benchmark(bench_id, settings=settings)
-        chat = build_chat_model(settings, role="summarizer")
+        # distiller 的 model 外部化到 data/agents_config/distiller.json（web 配置页可改）；
+        # 读不到回退 settings.summarizer_model（.env）。
+        chat = build_chat_model(
+            settings, role="summarizer",
+            model_override=load_agent_model("distiller", settings.summarizer_model),
+        )
         distiller = ExperienceDistiller(
             chat,
             run_dirs=run_dirs,

@@ -34,9 +34,8 @@ from ...data.runstore import RunStore, run_is_alive
 from ...pipeline.runner import (
     build_loop_context,
     close_checkpointer,
-    create_loop_trace,
-    end_loop_trace,
-    loop_trace_context,
+    create_round_trace,
+    round_trace_context,
 )
 
 
@@ -59,7 +58,6 @@ class LoopHandle:
     app: object | None = field(default=None, repr=False)
     cfg: dict | None = field(default=None, repr=False)
     store: RunStore | None = field(default=None, repr=False)
-    loop_root: object | None = field(default=None, repr=False)  # LangSmith loop trace root（web 跨请求 1-loop-1-trace）
     hints: list = field(default_factory=list)  # 当前生效的人工提示词（loop+sample 合并视图，运行中可改）
 
 
@@ -439,6 +437,8 @@ class LoopRunner:
     # --- 实际执行任务（在线程池里跑）---
     def _run_first_round(self, settings, lb, store, sample_id, *, resume_existing: bool = False):
         loop_id = store.run_dir.name
+        bench_id = lb.bench.bench_id
+        model = store.meta.model if store.meta else ""
 
         def task() -> None:
             handle = self.get(loop_id)
@@ -447,26 +447,25 @@ class LoopRunner:
                 handle.app = app
                 handle.cfg = cfg
                 handle.store = store  # 供 _post_invoke 在结束时调 store.finish()
-                # 建 loop trace root（web 跨请求 1-loop-1-trace）：所有轮 invoke 嵌套其下
-                handle.loop_root = create_loop_trace(
-                    loop_id, lb.bench.bench_id, sample_id,
-                    store.meta.model if store.meta else "",
-                )
-                inputs = {
-                    "round": 0,
-                    "model": store.meta.model if store.meta else "",
-                    "bench_id": lb.bench.bench_id,
-                    "sample_id": sample_id,
-                    "run_id": loop_id,
-                }
-                # 每次 invoke 包在 loop_trace_context 下 → graph run 嵌套到 loop trace root，
-                # 实现一个 loop（跨多轮 invoke/resume）一条 trace。round/phase 在 config metadata 辨认轮次。
-                with loop_trace_context(handle.loop_root):
+                # 本轮轮次号：新 loop=1；resume_existing=checkpoint round + 1
+                round_n = self._next_round(handle)
+                phase = "resume" if resume_existing else "first"
+                # 每轮一个独立 LangSmith trace root（名字标 bench/sample/loop/round），
+                # graph run 嵌套其下；invoke 返回即由 round_trace_context 收尾本轮 trace。
+                root = create_round_trace(loop_id, bench_id, sample_id, round_n, model, phase)
+                with round_trace_context(root):
                     if resume_existing:
                         # 已有 loop：续跑下一轮（interrupt 态 resume；END/finished 态自动重入跑新轮）
-                        state = self._invoke_round(handle, "continue")
+                        state = self._invoke_round(handle, "continue", round_n)
                     else:
-                        state = app.invoke(inputs, config=self._cfg_with_round(handle, 1, "first"))
+                        inputs = {
+                            "round": 0,
+                            "model": model,
+                            "bench_id": bench_id,
+                            "sample_id": sample_id,
+                            "run_id": loop_id,
+                        }
+                        state = app.invoke(inputs, config=self._cfg_with_round(handle, round_n, "first"))
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"首轮失败: {e}\n{traceback.format_exc()}")
@@ -475,9 +474,13 @@ class LoopRunner:
     def _run_resume(self, handle: LoopHandle, decision: str):
         def task() -> None:
             try:
-                with loop_trace_context(handle.loop_root):
-                    # interrupt 态 resume；若 loop 已 finished（END），_invoke_round 自动重入跑新轮
-                    state = self._invoke_round(handle, decision)
+                loop_id, bench_id, sample_id, model = self._trace_meta(handle)
+                round_n = self._next_round(handle)
+                # 每轮一个独立 trace root；invoke 返回即收尾。interrupt 态 resume；
+                # 若 loop 已 finished（END），_invoke_round 自动重入跑新轮。
+                root = create_round_trace(loop_id, bench_id, sample_id, round_n, model, "resume")
+                with round_trace_context(root):
+                    state = self._invoke_round(handle, decision, round_n)
                 self._post_invoke(handle, state)
             except Exception as e:  # noqa: BLE001
                 self._fail(handle, f"resume 失败: {e}\n{traceback.format_exc()}")
@@ -496,7 +499,35 @@ class LoopRunner:
         )
         return ctx.app, ctx.cfg
 
-    def _invoke_round(self, handle: LoopHandle, decision: str):
+    def _next_round(self, handle: LoopHandle) -> int:
+        """本轮要跑的轮次号（= checkpoint round + 1，最小 1）。
+
+        新 loop（空 checkpoint）→ 1；续跑 → N+1。trace 命名与 _cfg_with_round 共用同一值，
+        保证「trace 标的轮次」与「config metadata.round」一致。
+        """
+        try:
+            snap = handle.app.get_state(handle.cfg)
+            cur = (snap.values or {}).get("round") or 0
+        except Exception:  # noqa: BLE001  get_state 失败时退化为 handle.round / 0
+            cur = handle.round or 0
+        return max(1, cur + 1)
+
+    @staticmethod
+    def _trace_meta(handle: LoopHandle) -> tuple[str, str, str, str]:
+        """从 handle.cfg.metadata 取 (loop_id, bench_id, sample_id, model)，供 resume 轮 trace 命名。
+
+        handle.cfg 由 build_loop_context → make_loop_config 写入这四个字段，跨轮稳定（_cfg_with_round
+        每轮新建 dict 但不回写 handle.cfg），故任何时候读 handle.cfg.metadata 都拿得到。
+        """
+        md = (handle.cfg or {}).get("metadata") or {}
+        return (
+            md.get("loop_id") or handle.loop_id,
+            md.get("bench_id", ""),
+            md.get("sample_id", ""),
+            md.get("model", ""),
+        )
+
+    def _invoke_round(self, handle: LoopHandle, decision: str, round_n: int):
         """推进一轮的 invoke，自动适配线程当前态：
 
         - interrupt 态（awaiting_review）：``Command(resume=decision)`` 跑下一轮（常规续跑）。
@@ -504,16 +535,16 @@ class LoopRunner:
           改用「不带 round 的 inputs」从 START 重入 —— generator 里 ``round_n = state.round + 1``
           自增到 N+1，历史 images/verdicts/attempts 经 reducer 累加保留。这样「继续一个已结束的 loop」
           能真正追加新一轮（回归：tests/test_loop_runner_auto.py::test_continue_finished_loop_runs_next_round）。
+
+        round_n 由调用方（_run_first_round/_run_resume）经 _next_round 算好传入，与本轮 trace 名一致。
         """
         app, cfg = handle.app, handle.cfg
         try:
             snap = app.get_state(cfg)
             at_end = tuple(snap.next or ()) == ()
-            cur_round = (snap.values or {}).get("round") or 0
         except Exception:  # noqa: BLE001  get_state 失败时退化为按 interrupt 态 resume
             at_end = False
-            cur_round = handle.round or 0
-        cfg_r = self._cfg_with_round(handle, cur_round + 1, "resume")
+        cfg_r = self._cfg_with_round(handle, round_n, "resume")
         if at_end:
             return app.invoke(self._continue_inputs(handle), config=cfg_r)
         return app.invoke(Command(resume=decision), config=cfg_r)
@@ -551,7 +582,10 @@ class LoopRunner:
         return cfg
 
     def _post_invoke(self, handle: LoopHandle, state: dict) -> None:
-        """invoke 返回后判定 phase：到 END=finished，到 interrupt=awaiting_review。"""
+        """invoke 返回后判定 phase：到 END=finished，到 interrupt=awaiting_review。
+
+        本轮 LangSmith trace 已在 round_trace_context 退出时收尾（end+patch），这里只判定 phase。
+        """
         # 用 graph.get_state 拿权威状态
         try:
             snapshot = handle.app.get_state(handle.cfg)
@@ -563,7 +597,7 @@ class LoopRunner:
                 handle.interrupt_payload = (
                     interrupts[0].value if interrupts else None
                 )
-                # 自动连跑：还有剩余轮数则不等人工审批，直接 resume 进下一轮
+                # 自动连跑：还有剩余轮数则不等人工审批，直接 resume 进下一轮（新一轮 = 新 trace）
                 if handle.rounds_remaining > 0:
                     handle.rounds_remaining -= 1
                     handle.phase = "running"
@@ -573,11 +607,9 @@ class LoopRunner:
                     # 不自动 stop→END——保持 graph 挂在 interrupt，可由用户继续 N+1 轮或手动停止。
                     handle.phase = "awaiting_review"
             elif (snapshot.next or ()) == ():
-                # next 为空 = 到 END，结束 + 收尾 loop trace
+                # next 为空 = 到 END，结束
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 结束")
-                end_loop_trace(handle.loop_root)
-                handle.loop_root = None
             else:
                 # 还在执行中（一般不会，invoke 是同步跑到 interrupt/END）
                 handle.phase = "running"
@@ -586,15 +618,12 @@ class LoopRunner:
             if state.get("decision") == "stop":
                 handle.phase = "finished"
                 handle.store and handle.store.finish(note="web runner 停止")
-                end_loop_trace(handle.loop_root)
-                handle.loop_root = None
 
     def _fail(self, handle: LoopHandle, msg: str) -> None:
         handle.phase = "error"
         handle.last_error = msg
         _close_app_checkpointer(handle)  # error 不可 resume，关闭 checkpointer 避免 sqlite 连接泄漏
-        end_loop_trace(handle.loop_root, error=True, error_msg=msg)
-        handle.loop_root = None
+        # 本轮 trace 已由 round_trace_context 在异常传播时 end(error)+patch 收尾，这里不再处理。
         # 持久化错误到 meta.json（extras.last_error），重启后仍可见
         if handle.store is not None:
             try:

@@ -32,6 +32,29 @@ const NODE_LABEL = {
   human_review: { name: "等审批", desc: "等待人工裁决" },
 };
 
+// 节点分段指示（替代写死的假进度条）：生成 → 打分 → 审批，按 current_node 标记进行到哪一步。
+const NODE_SEGMENTS = [
+  { key: "generator", name: "生成" },
+  { key: "critic", name: "打分" },
+  { key: "human_review", name: "审批" },
+];
+
+function nodeSegmentIndex(currentNode) {
+  if (!currentNode) return -1;
+  if (currentNode === "summarizer") return 1; // 归入「打分」组
+  return NODE_SEGMENTS.findIndex((s) => s.key === currentNode);
+}
+
+function renderNodeSegments(currentNode) {
+  const cur = nodeSegmentIndex(currentNode);
+  return `<div class="node-segments">${NODE_SEGMENTS.map((s, i) => {
+    const cls = cur < 0 ? "" : i < cur ? "done" : i === cur ? "active" : "";
+    const mark = i < cur ? "✓ " : "";
+    const arrow = i < NODE_SEGMENTS.length - 1 ? `<span class="node-seg-arrow">›</span>` : "";
+    return `<span class="node-seg ${cls}">${mark}${esc(s.name)}</span>${arrow}`;
+  }).join("")}</div>`;
+}
+
 // 路由缓存
 window.__overviewCache = null;
 window.__loopCache = { current: null };
@@ -625,7 +648,7 @@ function renderRunningCards(active) {
       const nodeLine = node ? `<strong>${esc(node.name)}</strong> <span class="muted">${esc(node.desc)}</span>` : "执行中…";
       const remain = s && s.rounds_remaining > 0 ? ` · 剩 ${s.rounds_remaining} 轮` : "";
       const rnd = s && s.round != null ? `第 ${s.round} 轮 · ` : "";
-      body = `<div class="progress-track"><div class="progress-fill" style="width:60%"></div></div>
+      body = `${renderNodeSegments(s.current_node)}
         <div class="muted mt-2" style="font-size:12px">${rnd}${nodeLine}${remain}</div>
         <div class="mt-2"><a class="btn btn-secondary btn-sm" href="#/loop/${esc(loop.loop_id)}">查看详情</a></div>`;
     } else if (loop.status === "awaiting_review") {
@@ -649,9 +672,60 @@ function renderRunningCards(active) {
 // ============ 视图：loop 详情 ============
 let _loopPollTimer = null;
 let _distillPollTimer = null;
+let _activityLastTotal = 0; // events.jsonl 行号游标（当前 loop；切 loop 时重置）
+let _activityLLMCount = 0; // 当前 loop 的「思考」LLM 调用计数
+
+// 渲染单个工具事件为一行活动（限量：参数默认折叠进 <details>，只露工具名 + 一行摘要）
+function renderActivityTool(ev) {
+  const mark = ev.status === "running"
+    ? `<span class="act-spin">···</span>`
+    : ev.status === "error"
+    ? `<span class="act-err">✗</span>`
+    : `<span class="act-ok">✓</span>`;
+  const name = ev.tool
+    ? `<span class="badge badge-ghost mono act-tool">${esc(ev.tool)}</span>`
+    : `<span class="muted">工具</span>`;
+  let text = "";
+  if (ev.status === "done" && ev.result) text = esc(ev.result);
+  else if (ev.status === "running" && ev.args) {
+    text = esc(typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args));
+  } else if (ev.status === "error" && ev.result) text = esc(ev.result);
+  const dur = ev.duration_ms != null ? `<span class="act-dur">${ev.duration_ms}ms</span>` : "";
+  const hasArgs = ev.args && typeof ev.args === "object" && Object.keys(ev.args).length;
+  const detail = (ev.status !== "running" && hasArgs)
+    ? `<details class="act-detail"><summary>参数</summary><pre>${esc(JSON.stringify(ev.args, null, 2))}</pre></details>`
+    : "";
+  return `<div class="activity-item ${ev.status}">${mark}${name}<span class="act-text">${text}</span>${dur}${detail}</div>`;
+}
+
+// 增量拉取活动流事件并 append（LLM 调用折成计数，工具调用渲染为行）。复用 _loopPollTimer 那一拍。
+async function pollLoopActivity(loopId) {
+  const itemsEl = document.getElementById("act-items");
+  if (!itemsEl) return; // 不在 loop 详情页 / 非 running（无面板）
+  try {
+    const data = await api(`/loops/${loopId}/events?since=${_activityLastTotal}`);
+    const events = data && data.events ? data.events : [];
+    if (!events.length) return;
+    let llmDelta = 0;
+    let html = "";
+    for (const ev of events) {
+      if (ev.type === "tool") html += renderActivityTool(ev);
+      else if (ev.type === "llm" && ev.status === "done") llmDelta += 1;
+    }
+    if (html) itemsEl.insertAdjacentHTML("beforeend", html);
+    if (llmDelta) {
+      _activityLLMCount += llmDelta;
+      const c = document.getElementById("act-llm-count");
+      if (c) c.textContent = `思考 ${_activityLLMCount} 次`;
+    }
+    _activityLastTotal = data.total;
+  } catch (_) { /* 瞬时失败静默，下一拍自愈 */ }
+}
 
 async function viewLoop(loopId) {
   if (_loopPollTimer) { clearInterval(_loopPollTimer); _loopPollTimer = null; }
+  _activityLastTotal = 0;
+  _activityLLMCount = 0;
   setNavActive("");
   setTitle("loop 详情");
   const app = document.getElementById("app");
@@ -677,6 +751,9 @@ async function viewLoop(loopId) {
     // 人工提示词面板（异步填充）
     renderHintsPanel(loopId, loop.status);
 
+    // 活动流首拉（running 时立即填充；后续靠 _loopPollTimer 增量）
+    if (st === "running") pollLoopActivity(loopId);
+
     // prompt 事件委托（完整视图）
     app.addEventListener("click", (e) => {
       const t = e.target;
@@ -700,6 +777,9 @@ async function viewLoop(loopId) {
             const extra = s.rounds_remaining > 0 ? ` · 剩 ${s.rounds_remaining} 轮` : "";
             nodeEl.innerHTML = `<strong>${esc(n.name)}</strong> ${esc(n.desc)}${extra}`;
           }
+          const segEl = document.getElementById("node-segments");
+          if (segEl) segEl.innerHTML = renderNodeSegments(s.current_node);
+          await pollLoopActivity(loopId);
         } catch (_) {}
       }, 2000);
     }
@@ -762,9 +842,14 @@ function renderLoopFull(loop, loopId) {
   statusBody.push(`<span class="status-pill"><span class="dot ${loop.status}"></span>${esc(STATUS_LABEL[loop.status] || loop.status)}</span>`);
   statusBody.push(`<span class="muted mono">${esc(loop.model)}</span>`);
   if (loop.status === "running") {
-    statusBody.push(`<div class="progress-track"><div class="progress-fill" style="width:60%"></div></div>`);
+    statusBody.push(`<div id="node-segments" class="node-segments"></div>`);
     statusBody.push(`<span class="muted" id="cur-node" style="font-size:12px"><strong>运行中</strong></span>`);
   }
+
+  // Agent 活动流面板（仅 running 时显示；pollLoopActivity 增量填充）
+  const activityPanel = loop.status === "running"
+    ? `<div class="activity-stream card mt-3"><div class="activity-head"><strong>Agent 活动</strong> <span class="muted" id="act-llm-count">思考 0 次</span></div><div id="act-items" class="act-items"></div></div>`
+    : "";
 
   let html = `
     <div class="breadcrumb mb-3"><a href="#/">总览</a><span>/</span><span>${esc(loop.bench_id)}</span><span>/</span><span>${esc(loop.sample_id)}</span></div>
@@ -776,6 +861,7 @@ function renderLoopFull(loop, loopId) {
       <div class="control-actions">${controls.join("")}</div>
     </div>
     <div class="status-bar">${statusBody.join("")}</div>
+    ${activityPanel}
     ${errorAlert}
     ${review}
     ${targetCard}
@@ -1467,10 +1553,16 @@ function renderCfgForm(a) {
     ? `<label>benchmark（generator 技能随它切换；未蒸馏则裸跑）</label>
        <select id="cfg-bench" onchange="switchCfgBench(this.value)">${benchOpts}</select>`
     : "";
-  // —— 只读派生区：工具 / 技能 / 其他参数（后端 get_agent_config 返回，POST 不写）——
+  // —— 只读派生区：工具 / loop 内职责 / 技能 / 其他参数（后端 get_agent_config 返回，POST 不写）——
   const toolsHtml = (a.tools && a.tools.length)
     ? `<div class="chip-row">${a.tools.map((t) => `<span class="cfg-chip">${esc(t)}</span>`).join("")}</div>`
     : `<span class="muted">无（直接调用 LLM，不走工具）</span>`;
+  // loop 节点内兼任的非 LLM-tool 职责（如 critic 兼任的经验总结 summarize）。与 tools 分列，避免误当成 LLM 工具。
+  const dutiesHtml = (a.duties && a.duties.length)
+    ? `<ul class="cfg-skills">${a.duties.map(
+        (d) => `<li><strong>${esc(d.name)}</strong>${d.desc ? ` — <span class="muted">${esc(d.desc)}</span>` : ""}</li>`,
+      ).join("")}</ul>`
+    : `<span class="muted">无</span>`;
   let skillsHtml;
   if (a.agent === "critic") {
     skillsHtml = `<span class="muted">critic 不使用技能（靠 user message 注入的 rubric/checklist 判分）</span>`;
@@ -1491,24 +1583,30 @@ function renderCfgForm(a) {
         .join("")}</div>`
     : `<span class="muted">无</span>`;
 
+  // distiller 的「系统提示词」= skill-author authoring 阶段 prompt（编写技能包）；
+  // model 走 summarizer_model（.env 默认），保存后下次蒸馏生效。三个 agent 均可编辑。
+  const promptHint = a.agent === "distiller"
+    ? ' <span class="muted" style="font-size:11px">（技能包编写 skill-author 的 prompt；保存后下次蒸馏生效）</span>'
+    : "";
+
   document.getElementById("cfg-form").innerHTML = `
     <h2>${esc(_cfgAgent)} 配置</h2>
     ${benchSel}
-    <label>模型 id</label>
+    <label>模型 id${a.agent === "distiller" ? ' <span class="muted" style="font-size:11px">（蒸馏器 LLM，保存后下次蒸馏生效）</span>' : ""}</label>
     <input type="text" id="cfg-model" value="${esc(a.model)}">
-    <label>系统提示词${a.readonly ? ' <span class="muted" style="font-size:11px">（代码内置，仅展示）</span>' : ""}</label>
-    <textarea id="cfg-prompt"${a.readonly ? " readonly" : ""}>${esc(a.system_prompt)}</textarea>
+    <label>系统提示词${promptHint}</label>
+    <textarea id="cfg-prompt">${esc(a.system_prompt)}</textarea>
     <div class="row mt-3">
-      ${a.readonly
-        ? `<span class="muted">distiller 配置代码内置；model 走全局 settings.summarizer_model（.env 配）。</span>`
-        : `<button class="btn btn-primary" onclick="saveCfg()">保存</button>
-           <button class="btn btn-ghost" onclick="resetCfg()">恢复默认</button>
-           <span id="cfg-msg" class="muted"></span>`}
+      <button class="btn btn-primary" onclick="saveCfg()">保存</button>
+      <button class="btn btn-ghost" onclick="resetCfg()">恢复默认</button>
+      <span id="cfg-msg" class="muted"></span>
     </div>
 
     <section class="cfg-readonly">
       <h2>可用工具</h2>
       ${toolsHtml}
+      <h2>loop 内职责 <span class="muted" style="font-size:11px">（节点方法，非 LLM 工具）</span></h2>
+      ${dutiesHtml}
       <h2>技能 (skills)</h2>
       ${skillsHtml}
       <h2>其他参数</h2>
