@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
 # deepagents 默认注入、但窄域 agent 不需要的内置工具名。
-# （generate_image / query_experience / query_general_experience / query_rubric /
+# （generate_image / query_experience / query_rubric /
 #   list_runs / query_run / query_dim_history / query_conclusions 是各 agent 自己注册的，不在此列。）
 _NARROW_EXCLUDED: frozenset[str] = frozenset({
     "ls", "glob", "grep", "read_file", "read_file_lines", "read_media",
@@ -90,7 +90,8 @@ def narrow_tools_middleware() -> list[AgentMiddleware[Any, Any, Any]]:
 
 
 def invoke_with_retry(
-    agent: Any, payload: dict[str, Any], *, config: Any, label: str, retries: int = 3,
+    agent: Any, payload: dict[str, Any], *, config: Any, label: str, retries: int = 5,
+    require_structured: bool = True,
 ) -> tuple[dict[str, Any] | None, bool]:
     """跑一个 deepagent，失败（异常 **或** 无结构化输出）时重试，返回 (result, ok)。
 
@@ -98,18 +99,26 @@ def invoke_with_retry(
     ② 模型一次性不收敛（GraphRecursionError 或没产出 structured_response）。这类
     一次性 flake 被各 agent 的 `except` 直接吞成兜底（critic→全 0 安默认、generator→
     兜底 prompt），污染整轮数据。重试 + 退避扛过网关抖动（dmxapi 实测会间歇性 SSL EOF）；
-    仍失败才退兜底。ok=True 仅当拿到非空 structured_response。
+    仍失败才退兜底。
+
+    - ``require_structured=True``（默认，renovation/generator/critic）：ok=True 仅当拿到非空
+      ``structured_response``。
+    - ``require_structured=False``（全工具 authoring agent，无 ``response_format``）：ok=True 当
+      invoke 未抛异常（产物是 write_file 的副作用，无结构化输出可验）——调用方另行检查落盘文件。
     """
     for i in range(retries + 1):
         try:
             res = agent.invoke(payload, config=config)
-            sr = res.get("structured_response") if isinstance(res, dict) else None
-            if sr is not None:
-                return res, True
-            if i < retries:
-                print(f"[{label}] 无结构化输出，重试 {i + 1}/{retries}", flush=True)
+            if require_structured:
+                sr = res.get("structured_response") if isinstance(res, dict) else None
+                if sr is not None:
+                    return res, True
+                if i < retries:
+                    print(f"[{label}] 无结构化输出，重试 {i + 1}/{retries}", flush=True)
+                else:
+                    print(f"[{label}] 重试仍无结构化输出，退兜底", flush=True)
             else:
-                print(f"[{label}] 重试仍无结构化输出，退兜底", flush=True)
+                return res, True
         except Exception as e:  # noqa: BLE001  重试逻辑要吞所有异常
             msg = str(e).replace("\n", " ")[:200]
             if i < retries:
@@ -118,7 +127,7 @@ def invoke_with_retry(
             else:
                 print(f"[{label}] 重试仍异常({type(e).__name__}: {msg})，退兜底", flush=True)
         if i < retries:
-            time.sleep(2.0)  # 退避：扛 dmxapi 间歇性连接中断
+            time.sleep(min(2.0 * (2 ** i), 30.0))  # 指数退避 2,4,8,16,30s：扛 dmxapi 持续性连接抖动窗口（固定 2s 只覆盖 ~8s 窗口，撞持续抖动会 4 连失败退兜底）
     return None, False
 
 

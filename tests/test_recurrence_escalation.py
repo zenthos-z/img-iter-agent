@@ -99,3 +99,53 @@ def test_format_experience_has_escalated_group(tmp_path):
     assert "已升级" in out
     assert "连续失败 3 轮" in out
     assert "consistency" in out
+
+
+def test_render_conclusions_brief_empty():
+    """无 verified 经验（空库 / 只有 pending）→ 空串，调用方据此跳过注入。"""
+    from img_iter_agent.memory.knowledge import render_conclusions_brief
+
+    assert render_conclusions_brief(KnowledgeBase(sample_id="s")) == ""
+    kb = KnowledgeBase(sample_id="s")
+    upsert_conclusion(kb, dim="x", finding="f", change="c", created_round=1, status="pending")
+    assert render_conclusions_brief(kb) == ""
+
+
+def test_render_conclusions_brief_groups_and_prioritizes():
+    """ineffective/effective 分组渲染；failed_dims 命中的排前；lesson 去掉 [dim] 前缀。"""
+    from img_iter_agent.memory.knowledge import render_conclusions_brief
+
+    kb = KnowledgeBase(sample_id="s")
+    upsert_conclusion(kb, dim="consistency", finding="f", change="加同比例强调",
+                      created_round=1, status="ineffective",
+                      lesson="[consistency] 改动无效：微调 prompt 无效")
+    upsert_conclusion(kb, dim="color_accuracy", finding="f", change="强调浅绿",
+                      created_round=2, status="ineffective",
+                      lesson="[color_accuracy] 改动无效：仍色差")
+    upsert_conclusion(kb, dim="artifact_defect", finding="f", change="写接地阴影",
+                      created_round=2, status="verified_effective",
+                      lesson="[artifact_defect] 改动有效：A1/A4 消除")
+
+    out = render_conclusions_brief(kb, failed_dims=["color_accuracy"])
+    # 两组都在
+    assert "勿重复" in out and "保持" in out
+    # 三条 change 都进了
+    assert "加同比例强调" in out and "强调浅绿" in out and "写接地阴影" in out
+    # failed_dim 命中的 ineffective 排在另一个 ineffective 前面
+    assert out.index("强调浅绿") < out.index("加同比例强调")
+    # lesson 的 "[dim] " 前缀被剥（避免与行首 [dim] 重复），正文保留
+    assert "「强调浅绿」：改动无效" in out
+    assert "[color_accuracy] 改动无效" not in out
+
+
+def test_render_conclusions_brief_caps_groups():
+    """k_per_group 限制每组行数，避免大段（用户要求精简）。"""
+    from img_iter_agent.memory.knowledge import render_conclusions_brief
+
+    kb = KnowledgeBase(sample_id="s")
+    for i in range(6):
+        upsert_conclusion(kb, dim=f"d{i}", finding="f", change=f"c{i}",
+                          created_round=i, status="ineffective", lesson="无效")
+    out = render_conclusions_brief(kb, k_per_group=2)
+    # ineffective 行（"\n- [" 计）被 cap 到 2，而非全列 6 条
+    assert out.count("\n- [") == 2

@@ -19,7 +19,6 @@ from pydantic import BaseModel, Field
 from ...data.benchmark import Sample
 from ...generation.base import GenRequest, ModelFamily, SizeSpec
 from ...generation.router import Router
-from ...memory.experience import load_general_experience, render_experience_skill_md
 from ...memory.knowledge import load_conclusions
 
 
@@ -183,35 +182,6 @@ def make_query_experience_tool(*, run_dir: Path) -> BaseTool:
     return query_experience
 
 
-def make_query_general_experience_tool(data_root: Path | None, bench_id: str | None) -> BaseTool:
-    @tool
-    def query_general_experience(dim: str = "", category: str = "") -> str:
-        """查询【跨 loop 通用经验库】（多 run 蒸馏出的 dos/donts，跨题复用）。
-
-        比 query_experience 更通用：从许多 loop 综合出的先验知识，本题首次跑也用得上。
-        只返回 active 经验（refuted/superseded/archived 不消费）。
-        Args:
-            dim: 可选，只看某维度（如 'consistency'）。
-            category: 可选，只看某粗类（如 '材质色彩'，对应 system prompt 索引里的类目）。
-        无匹配经验时返回提示（可在总览点「重新蒸馏」生成）。
-        """
-        if data_root is None or bench_id is None:
-            return "（跨 loop 经验未配置：无 data_root/bench_id）"
-        exp = load_general_experience(data_root, bench_id)
-        lessons = [l for l in exp.lessons if l.status == "active"]
-        if dim:
-            lessons = [l for l in lessons if l.dim == dim]
-        if category:
-            lessons = [l for l in lessons if (l.category or "(未分类)") == category]
-        if not lessons:
-            return "（暂无匹配的跨 loop 通用经验；可在总览点「重新蒸馏」生成）"
-        return render_experience_skill_md(
-            exp.model_copy(update={"lessons": lessons}), frontmatter=False
-        ).strip()
-
-    return query_general_experience
-
-
 def make_generator_tools(
     *,
     router: Router,
@@ -220,12 +190,11 @@ def make_generator_tools(
     run_dir: Path,
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
-    data_root: Path | None = None,
-    bench_id: str | None = None,
 ) -> list[BaseTool]:
     """组装本轮 Generator 工具集。sink 由调用方持有，工具运行时回写生成结果元信息。
 
-    query_experience = 本 loop 单题经验；query_general_experience = 跨 loop 通用经验（先验）。
+    query_experience = 本 loop 单题经验（conclusions.json 全文钻取）。跨 loop 通用经验已改由
+    本 benchmark 的蒸馏技能包承载（SkillsMiddleware 加载），不再走工具。
     """
     # 参考：image_edit/multiview 用 target 作固定风格锚（fallback_refs）。
     # style_transfer：解禁——agent 可通过 generate_image(reference_images=[...]) 主动选参考子集
@@ -253,7 +222,6 @@ def make_generator_tools(
             aspect_ratio=aspect_ratio,
         ),
         make_query_experience_tool(run_dir=run_dir),
-        make_query_general_experience_tool(data_root, bench_id),
     ]
 
 
@@ -261,5 +229,4 @@ __all__ = [
     "make_generate_image_tool",
     "make_generator_tools",
     "make_query_experience_tool",
-    "make_query_general_experience_tool",
 ]

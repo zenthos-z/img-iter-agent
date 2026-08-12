@@ -157,7 +157,6 @@ def build_loop_context(
     generator = Generator(
         router, chat_model=gen_chat,
         skills_dir=generator_skills_source(settings.data_root, lb.bench.bench_id),
-        data_root=settings.data_root, bench_id=lb.bench.bench_id,
     )
     critic_chat = build_chat_model(settings, role="critic")
     critic = Critic(critic_chat, bench=lb.bench)

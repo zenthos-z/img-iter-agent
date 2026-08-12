@@ -36,10 +36,23 @@ AGENTS = ("generator", "critic", "distiller")
 
 # 每个 agent 的可用工具（只读展示用）。须与各 agent 的工具构造保持一致。
 _AGENT_TOOLS: dict[str, list[str]] = {
-    "generator": ["generate_image", "query_experience", "query_general_experience"],
+    "generator": ["generate_image", "query_experience"],
     "critic": ["query_rubric"],
     # distiller = skill-author 全工具 authoring agent（read_file/write_file/edit_file/ls/glob/grep/task）
     "distiller": ["read_file", "write_file", "edit_file", "ls", "glob", "grep"],
+}
+
+# agent 在 loop 节点内兼任的**非 LLM-tool 职责**（代码派生，只读展示）。
+# 与 _AGENT_TOOLS（deepagent 工具，LLM 循环里可调）严格区分：这些是 graph 节点调用的 Python 方法，
+# LLM 不可直接调用，但属于 agent 在 loop 中的能力画像，对用户透明展示，避免「以为没这能力」的误判。
+_AGENT_DUTIES: dict[str, list[dict]] = {
+    "critic": [
+        {
+            "name": "summarize（经验总结）",
+            "desc": "打分后兼做跨轮因果验证 + lesson 富化，更新 conclusions.json"
+                    "（兼原 in-loop summarizer 职责；distiller 跨 loop 蒸馏依赖该产物）",
+        },
+    ],
 }
 
 
@@ -224,6 +237,8 @@ def get_agent_config(
         "system_prompt": system_prompt,
         "model": model,
         "tools": list(_AGENT_TOOLS.get(agent, [])),
+        # loop 节点内兼任的非 LLM-tool 职责（如 critic 兼任的经验总结）；与 tools 分列，前端单独展示
+        "duties": [dict(d) for d in _AGENT_DUTIES.get(agent, [])],
         "skills": _list_skills(agent, bench_id, settings),
         "params": _agent_params(agent, settings, bench_id),
         # distiller 配置代码内置，仅展示（save 写文件但 distiller 不读）；前端据此禁用编辑

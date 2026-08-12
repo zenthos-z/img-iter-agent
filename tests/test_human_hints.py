@@ -161,7 +161,7 @@ def _text(content) -> str:
 
 def test_generator_build_user_content_appends_hints(og_setup):
     sample = og_setup.sample("s001")
-    gen = Generator(router=None, chat_model=None, data_root=None)  # data_root=None：不读经验文件
+    gen = Generator(router=None, chat_model=None)  # 只测 _build_user_content 拼接，不需 router/chat_model
     text = _text(gen._build_user_content(sample, 1, None, [], extra_hints=["画面中手应是连续扁平线条"]))
     assert "画面中手应是连续扁平线条" in text
     assert "人工补充要求" in text

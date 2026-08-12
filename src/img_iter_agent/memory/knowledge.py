@@ -273,12 +273,64 @@ def apply_escalation(kb: KnowledgeBase, *, cur_round: int) -> list[str]:
     return newly
 
 
+# ---------------------------------------------------------------------------
+# 精简渲染：供 Generator user message 自动注入（与 query_experience 工具的全文 _format_experience 区分）
+# ---------------------------------------------------------------------------
+
+
+def render_conclusions_brief(
+    kb: KnowledgeBase,
+    *,
+    failed_dims: list[str] | None = None,
+    k_per_group: int = 4,
+) -> str:
+    """精简渲染本题已验证经验，供 Generator 每轮 user message 自动注入。
+
+    区别于 ``query_experience`` 工具的 ``_format_experience``（全文 + escalated 分组 + 连续失败轮数）：
+    这里只给「一行一条」的精简摘要（用户要求「已提取过一次的」形式，非前端大段展示）——分
+    ineffective（勿重复）/ effective（保持）两组，``failed_dims`` 命中优先，每组 cap ``k_per_group``。
+    无 verified 经验 → ``""``（调用方据此跳过注入）。
+    """
+    groups = kb.verified_for_generator()
+    ineffective = groups["ineffective"]
+    effective = groups["effective"]
+    if not ineffective and not effective:
+        return ""
+    failed = set(failed_dims or [])
+
+    def _rank(cs: list[KnowledgeConclusion]) -> list[KnowledgeConclusion]:
+        # failed_dims 命中优先；再按 created_round 近期优先（降序）
+        return sorted(cs, key=lambda c: (c.dim not in failed, -((c.created_round or 0))))
+
+    def _line(c: KnowledgeConclusion) -> str:
+        change = c.change or "(无改动说明)"
+        lesson = (c.lesson or "").strip()
+        # lesson 形如 "[dim] 改动无效（…）：why" —— 去掉 "[dim] " 前缀避免与行首重复
+        prefix = f"[{c.dim}] "
+        if lesson.startswith(prefix):
+            lesson = lesson[len(prefix):]
+        tail = f"：{lesson}" if lesson else ""
+        return f"- [{c.dim}] 「{change}」{tail}"
+
+    lines = ["【本题已验证经验（机器验证，直接遵循）】"]
+    in_top = _rank(ineffective)[:k_per_group]
+    if in_top:
+        lines.append("勿重复（已判无效，换思路）：")
+        lines.extend(_line(c) for c in in_top)
+    ef_top = _rank(effective)[:k_per_group]
+    if ef_top:
+        lines.append("保持（已验证有效，勿丢）：")
+        lines.extend(_line(c) for c in ef_top)
+    return "\n".join(lines)
+
+
 __all__ = [
     "ESCALATION_THRESHOLD",
     "KnowledgeBase",
     "apply_escalation",
     "judge_status",
     "load_conclusions",
+    "render_conclusions_brief",
     "save_conclusions",
     "update_fail_streaks",
     "upsert_conclusion",

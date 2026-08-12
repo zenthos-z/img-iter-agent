@@ -1,4 +1,4 @@
-"""通用经验 v2 单测：策略性消费（select_lessons / index）+ 翻新状态链 + 人工兜底(mutate) + 向后兼容。"""
+"""通用经验 v2 单测：翻新状态链 + 人工兜底(mutate) + 向后兼容。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from img_iter_agent.memory.experience import (
     GeneralExperience,
     RenoItem,
     RenovationPlan,
-    render_experience_index,
-    select_lessons,
 )
 from img_iter_agent.web.services.data_access import mutate_lesson
 from img_iter_agent.web.models import LessonEdit
@@ -37,55 +35,6 @@ def test_old_lesson_backcompat_autofills():
     assert raw.status == "active"
     assert raw.applies_when == "always"
     assert raw.category == ""
-
-
-# ---- render_experience_index：恒定行数、仅 active ----
-
-
-def test_index_compact_and_active_only():
-    exp = _exp([
-        _lesson("a", "d1", 0.9, category="材质"),
-        _lesson("b", "d2", 0.5, category="材质"),
-        _lesson("c", "d3", 0.7, category="结构", status="refuted"),  # 非活跃不进索引
-    ])
-    idx = render_experience_index(exp)
-    assert "材质" in idx and "结构" not in idx  # refuted 不进
-    assert idx.count("\n") <= 3  # 标题 + 至多 max_lines 行（这里 2 类→2 行+标题）
-
-
-# ---- select_lessons：R1 起步 / R>1 失败命中 ----
-
-
-def test_select_r1_prefers_construction_and_always():
-    exp = _exp([
-        _lesson("a", "d1", 0.9, applies_when="construction"),
-        _lesson("b", "d2", 0.95, applies_when="fix"),  # R1 不选 fix
-        _lesson("c", "d3", 0.8, applies_when="always"),
-    ])
-    sel = select_lessons(exp, round=1, k=4)
-    dims = {l.dim for l in sel}
-    assert dims == {"d1", "d3"}  # construction + always，排除 fix
-    assert sel[0].dim == "d1" or sel[0].confidence >= 0.8  # 按置信降序
-
-
-def test_select_r_over_1_matches_failed_dims_first():
-    exp = _exp([
-        _lesson("a", "artifact_defect", 0.7, applies_when="fix"),
-        _lesson("b", "consistency", 0.95, applies_when="always"),
-        _lesson("c", "material_texture", 0.9, applies_when="always"),
-    ])
-    sel = select_lessons(exp, round=2, failed_dims=["artifact_defect"], k=4)
-    assert sel[0].dim == "artifact_defect"  # 命中优先
-    assert len(sel) <= 4
-
-
-def test_select_excludes_non_active():
-    exp = _exp([
-        _lesson("a", "d1", 0.99, status="refuted"),
-        _lesson("b", "d2", 0.5, status="active"),
-    ])
-    sel = select_lessons(exp, round=1, k=4)
-    assert [l.dim for l in sel] == ["d2"]
 
 
 # ---- _merge_renovation：keep/revise/retire/new 状态链 ----

@@ -134,59 +134,29 @@ def test_generate_round_fallback_when_agent_fails(setup):
     assert (store.run_dir / outcome.output_image_refs[0]).exists()
 
 
-def test_query_general_experience_reads_cross_loop_store(tmp_path):
-    """query_general_experience 工具读跨 loop general.json；None 配置回「未配置」。"""
-    from img_iter_agent.agents.tools.generator_tools import make_query_general_experience_tool
-    from img_iter_agent.memory.experience import (
-        DistilledLesson,
-        GeneralExperience,
-        save_general_experience,
-    )
-
-    data_root = tmp_path
-    bench_id = "furniture_product_whitebg"
-    save_general_experience(data_root, bench_id, GeneralExperience(
-        bench_id=bench_id, summary="跨题：阴影有效",
-        lessons=[DistilledLesson(
-            dim="artifact_defect", insight="加接地阴影普遍有效",
-            dos=["写明接地阴影"], donts=["忽略阴影"],
-            evidence=["run-x/round2"], confidence=0.8,
-        )],
-    ))
-
-    tool = make_query_general_experience_tool(data_root, bench_id)
-    out = tool.invoke({})
-    # 共享 renderer 输出：insight + dos 段 + donts 内容 + 置信度
-    assert "加接地阴影" in out and "应该这样做" in out and "忽略阴影" in out and "0.80" in out
-    # 按 dim 过滤：命中 / 未命中
-    assert "加接地阴影" in tool.invoke({"dim": "artifact_defect"})
-    assert "暂无" in tool.invoke({"dim": "consistency"})
-    # None 配置 → 未配置提示
-    assert "未配置" in make_query_general_experience_tool(None, None).invoke({})
-
-
-def test_generator_passes_data_root_bench_id_to_tools(setup, monkeypatch):
-    """Generator 收到 data_root+bench_id 后，工具集含可读 general.json 的 query_general_experience。"""
-    from img_iter_agent.memory.experience import (
-        DistilledLesson,
-        GeneralExperience,
-        save_general_experience,
-    )
-
-    lb, store = setup
-    # 写一份跨 loop 经验到该 setup 的 data_root
-    save_general_experience(store.run_dir.parents[1], lb.bench.bench_id, GeneralExperience(
-        bench_id=lb.bench.bench_id, summary="跨题先验",
-        lessons=[DistilledLesson(dim="general", insight="白底三视图要接地阴影",
-                                 dos=["grounded shadow"], confidence=0.7)],
-    ))
+def test_build_user_content_injects_conclusions_brief(setup):
+    """round>1 时 _build_user_content 把 in-loop 经验精简摘要（conclusions_brief）拼进 user message；空摘要不注入。"""
+    lb, _store = setup
     gen = Generator(
-        _FakeRouter(), chat_model=FakeToolCallingChatModel(responses=_gen_responses([("p1", "d1")])),
-        skills_dir=None, data_root=store.run_dir.parents[1], bench_id=lb.bench.bench_id,
+        _FakeRouter(), chat_model=FakeToolCallingChatModel(responses=[]),
+        skills_dir=None,
     )
-    # 触发一次 generate_round（驱动工具集构建）；不崩即说明 data_root/bench_id 透传成功
-    outcome = gen.generate_round(
-        sample=lb.sample("s001"), out_dir=store.run_dir / "out", run_dir=store.run_dir, round=1,
+    sample = lb.sample("s001")
+    brief = (
+        "【本题已验证经验（机器验证，直接遵循）】\n"
+        "勿重复（已判无效，换思路）：\n"
+        "- [consistency] 「加同比例强调」：改动无效：微调无效"
     )
-    assert outcome.prompt == "p1"
-    assert (store.run_dir / outcome.output_image_refs[0]).exists()
+    content = gen._build_user_content(
+        sample, round=2, prior_feedback=PriorFeedback(), reference_images=[],
+        escalated_warnings=None, conclusions_brief=brief,
+    )
+    assert isinstance(content, str)
+    assert "【本题已验证经验" in content
+    assert "勿重复" in content
+    # 空摘要 → 不出现该段
+    content_no = gen._build_user_content(
+        sample, round=2, prior_feedback=PriorFeedback(), reference_images=[],
+        conclusions_brief="",
+    )
+    assert "【本题已验证经验" not in content_no

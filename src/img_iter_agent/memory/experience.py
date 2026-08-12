@@ -9,12 +9,13 @@ effective/ineffective）区分：
   - `<data_root>/experience/<bench_id>/general.json` —— 结构化源（自描述：含 scene/dimensions）。
   - `<data_root>/experience/<bench_id>/SKILL.md`    —— 可移植载体（deepagents 原生 skill）。
 
-消费形式（v2：策略性输入，避免库膨胀→注意力分散）：
-  - system prompt 只常驻 `render_experience_index`（每 category 一行，恒定 ~6 行）。
-  - 每轮 user message 按 `select_lessons` 注入 ≤K 条选定详情（R1=construction/always；R>1=failed_dims 命中）。
-  - 工具 `query_general_experience` 钻取。
+消费形式：
+  - **loop 内不再直接消费 general.json**——跨 loop 知识改由蒸馏技能包（`<bench>/<slug>/SKILL.md`，
+    含 `references/lessons.md`）承载，Generator 经 SkillsMiddleware 按需加载。
+  - 本模块只保留 general.json 的 schema + 读写 + 技能包渲染（render_experience_skill_md /
+    render_lessons_reference_md）；旧的「system prompt 索引 + user message 选定注入」消费层已删除。
 
-lesson 状态机（v2 翻新）：active / refuted / superseded / archived。消费侧只取 active；
+lesson 状态机（v2 翻新）：active / refuted / superseded / archived。渲染只取 active；
 翻新时 refuted/superseded 仍可见（避免被重新生成）。
 """
 
@@ -177,75 +178,12 @@ def slugify_bench(bench_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 策略性消费：索引 + 选择（v2 输入轴）
+# active 过滤（供下方渲染器 render_experience_skill_md / render_lessons_reference_md 复用）
 # ---------------------------------------------------------------------------
 
 
 def _active(exp: GeneralExperience) -> list[DistilledLesson]:
     return [l for l in exp.lessons if l.status == "active"]
-
-
-def render_experience_index(exp: GeneralExperience, *, max_lines: int = 8) -> str:
-    """精简索引：每个 category 一行（最高置信 active insight），供 system prompt 常驻。
-
-    恒定体量（≤max_lines 行），永不随库膨胀——避免全量 inline 稀释注意力。
-    无 active 经验时返回空串。
-    """
-    act = _active(exp)
-    if not act:
-        return ""
-    # 按 category 聚合，每类取最高置信代表
-    by_cat: dict[str, DistilledLesson] = {}
-    for l in act:
-        cat = l.category or "(未分类)"
-        cur = by_cat.get(cat)
-        if cur is None or l.confidence > cur.confidence:
-            by_cat[cat] = l
-    lines = ["**通用经验索引**（详情见 user message 或调 query_general_experience）："]
-    # 按置信降序，限行
-    for cat, l in sorted(by_cat.items(), key=lambda kv: -kv[1].confidence)[:max_lines]:
-        insight = (l.insight or "").replace("\n", " ").strip()
-        lines.append(f"- [{cat}] {l.dim}：{insight[:60]}（{int(l.confidence * 100)}%）")
-    return "\n".join(lines)
-
-
-def select_lessons(
-    exp: GeneralExperience,
-    *,
-    round: int,
-    failed_dims: list[str] | None = None,
-    k: int = 4,
-) -> list[DistilledLesson]:
-    """按本轮上下文选 ≤k 条 active 详情，注入 user message（策略性输入）。
-
-    - R1（round≤1）：applies_when ∈ {construction, always}，按 confidence 取 top-k。
-    - R>1：dim ∈ failed_dims 优先（fix 类更相关），不足补 always 高分。
-    - 永远排除非 active。
-    """
-    act = _active(exp)
-    if not act:
-        return []
-    failed_dims = failed_dims or []
-
-    def by_conf(xs):
-        return sorted(xs, key=lambda l: l.confidence, reverse=True)
-
-    if round <= 1:
-        pool = [l for l in act if l.applies_when in ("construction", "always")]
-        if not pool:  # 兜底：没有标记 construction 的，退化为全 active 高分
-            pool = act
-        return by_conf(pool)[:k]
-
-    # R>1
-    failed = {d for d in failed_dims}
-    hit = [l for l in act if l.dim in failed]
-    # 失败命中里 fix 类优先，再按置信
-    hit.sort(key=lambda l: (l.applies_when != "fix", -l.confidence))
-    chosen = hit[:k]
-    if len(chosen) < k:
-        rest = [l for l in act if l not in chosen and l.applies_when == "always"]
-        chosen += by_conf(rest)[: k - len(chosen)]
-    return chosen
 
 
 # ---------------------------------------------------------------------------
@@ -329,19 +267,6 @@ def _append_lesson(lines: list[str], ls: DistilledLesson) -> None:
     if ls.evidence:
         lines.append(f"*证据：{'; '.join(ls.evidence)}*")
         lines += [""]
-
-
-def render_lessons_detail(lessons: list[DistilledLesson]) -> str:
-    """渲染一批 lesson 的详情正文（dos/donts/confidence/applies_when），供 user message 按上下文注入。
-
-    与 SKILL.md 同源（复用 _append_lesson），但只渲染给定子集——策略性输入用。
-    """
-    if not lessons:
-        return ""
-    lines: list[str] = []
-    for ls in lessons:
-        _append_lesson(lines, ls)
-    return "\n".join(lines).rstrip()
 
 
 def render_lessons_reference_md(exp: GeneralExperience) -> str:
@@ -590,12 +515,9 @@ __all__ = [
     "load_general_experience",
     "new_lesson_id",
     "prepare_skill_package",
-    "render_experience_index",
     "render_experience_skill_md",
-    "render_lessons_detail",
     "render_lessons_reference_md",
     "save_general_experience",
-    "select_lessons",
     "skill_package_dir",
     "slugify_bench",
     "validate_skill_md",
