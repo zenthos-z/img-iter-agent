@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..models import HintCreateRequest, HintOut, LoopControlRequest, LoopStartRequest
 from ..services.data_access import build_loop_detail
-from ..services.loop_runner import get_runner
+from ..services.loop_runner import LoopBusyError, get_runner
 
 router = APIRouter()
 
@@ -128,3 +128,30 @@ def delete_loop_hint(loop_id: str, hint_id: str) -> None:
     ok = get_runner().remove_hint(loop_id, hint_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"hint {hint_id} 不存在")
+
+
+# ---- 删除（loop / 单轮 attempt）----
+
+
+@router.delete("/loops/{loop_id}", status_code=204)
+def delete_loop(loop_id: str) -> None:
+    """删除整个 loop（run 目录 + loop 内经验 conclusions.json 等），不动跨 loop 蒸馏 skill 包。"""
+    try:
+        ok = get_runner().delete_loop(loop_id)
+    except LoopBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在")
+
+
+@router.delete("/loops/{loop_id}/attempts/{attempt_id}", status_code=204)
+def delete_attempt(loop_id: str, attempt_id: str) -> None:
+    """删除 loop 内一轮：trajectory 移除该行 + 删 out/<id>/ + 更新 index.json + 移除人工排序。"""
+    try:
+        ok = get_runner().delete_attempt(loop_id, attempt_id)
+    except LoopBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not ok:
+        raise HTTPException(
+            status_code=404, detail=f"loop {loop_id} 或轮次 {attempt_id} 不存在"
+        )

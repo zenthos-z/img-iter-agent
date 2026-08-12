@@ -976,6 +976,31 @@ input:focus, select:focus, textarea:focus {
 
 .config-form { min-width: 0; }
 
+/* Agent 设置：只读派生区（工具/技能/参数），与上方可编辑区用虚线分隔。
+   kv 网格复用 .trace-params + .param/.pk/.pv；次要文字复用 .muted。 */
+.cfg-readonly {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+.cfg-readonly h2 { margin-top: 16px; }
+.cfg-readonly h2:first-child { margin-top: 0; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.cfg-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  background: var(--muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--foreground);
+}
+
+.cfg-skills { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cfg-skills li { font-size: 12px; line-height: 1.5; }
+
 /* Modal */
 .modal {
   position: fixed;
@@ -1631,3 +1656,71 @@ input:focus, select:focus, textarea:focus {
 .hint-row .hint-text { flex: 1; min-width: 0; font-size: 13px; word-break: break-word; white-space: pre-wrap; }
 .hint-row .badge { font-size: 11px; }
 .badge-ghost { background: transparent; color: var(--muted-foreground); border: 1px dashed var(--border); }
+
+/* ============ Benchmark 管理页 ============ */
+.bench-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.bench-table th, .bench-table td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.bench-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted-foreground); font-weight: 600; }
+.bench-table tr:last-child td { border-bottom: none; }
+.bench-table .muted { color: var(--muted-foreground); }
+.ref-dot { color: var(--accent); }
+
+.consume-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.consume-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--secondary); }
+.consume-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.file-tree { margin-top: 6px; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+.tree-row { padding: 2px 0; color: var(--muted-foreground); white-space: pre-wrap; word-break: break-all; }
+.tree-row.dir { color: var(--foreground); }
+
+/* 新增 benchmark 表单（modal） */
+.cb-section-title { font-size: 13px; font-weight: 600; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.dim-editor-row, .sample-editor-row {
+  padding: 10px; margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--secondary);
+}
+.dim-editor-row label, .sample-editor-row label { font-size: 11px; color: var(--muted-foreground); display: block; margin-top: 6px; margin-bottom: 2px; }
+.dim-editor-row input, .dim-editor-row textarea, .dim-editor-row select,
+.sample-editor-row input { font: inherit; padding: 5px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); box-sizing: border-box; }
+
+/* ============ 节点分段指示（替代写死的假进度条）============ */
+.node-segments { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 6px 0 2px; }
+.node-seg {
+  font-size: 11px; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--border); color: var(--muted-foreground); background: var(--card);
+}
+.node-seg.done { color: var(--success-text); border-color: var(--success-border); background: var(--success-subtle); }
+.node-seg.active { color: var(--foreground); border-color: var(--foreground); background: var(--secondary); font-weight: 600; }
+.node-seg-arrow { color: var(--border-strong); font-size: 11px; }
+
+/* ============ Agent 活动流 ============ */
+.activity-stream { padding: 10px 12px; }
+.activity-head { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+.act-items { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.activity-item {
+  display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; padding: 4px 6px; border-radius: var(--radius-sm);
+  border: 1px solid transparent; background: var(--secondary);
+}
+.activity-item.running { background: var(--warn-subtle); border-color: var(--warn-border); }
+.activity-item.error { background: var(--destructive); color: var(--destructive-foreground); }
+.act-mark { font-weight: 700; min-width: 14px; line-height: 1.4; }
+.act-spin { color: var(--warn-text); }
+.act-ok { color: var(--success); }
+.act-err { color: var(--destructive); }
+.activity-item.error .act-ok,
+.activity-item.error .act-err,
+.activity-item.error .act-spin,
+.activity-item.error .act-dur,
+.activity-item.error .act-text { color: var(--destructive-foreground); }
+.act-tool { font-size: 11px; }
+.act-text { color: var(--muted-foreground); flex: 1; min-width: 0; word-break: break-word; line-height: 1.5; }
+.act-dur { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); }
+.act-detail { width: 100%; margin-top: 2px; }
+.act-detail summary { cursor: pointer; font-size: 11px; color: var(--muted-foreground); }
+.activity-item.error .act-detail summary { color: var(--destructive-foreground); }
+.act-detail pre {
+  margin: 4px 0 0; padding: 6px; max-height: 160px; overflow: auto;
+  background: var(--card); color: var(--foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+}

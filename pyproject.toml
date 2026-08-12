@@ -34,6 +34,9 @@ dependencies = [
     # 可视化打分台 (Step 6, 前后端解耦)
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    # benchmark 新建走 multipart（表单字段 + 维度/题目 JSON + target 图上传），
+    # Starlette 的 request.form() 需要 python-multipart。
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

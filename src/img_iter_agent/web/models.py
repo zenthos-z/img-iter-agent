@@ -290,3 +290,29 @@ class LoopControlRequest(BaseModel):
     """继续/停止一个 loop。"""
 
     decision: str = "continue"  # continue / stop / 任意调整方向文本
+
+
+# ---------------------------------------------------------------------------
+# benchmark 管理（新增 benchmark 表单）
+# ---------------------------------------------------------------------------
+
+
+class DimensionIn(BaseModel):
+    """新增 benchmark 表单里的一条维度定义（对应 manifest 的 score_dimensions[]）。"""
+
+    dim: str
+    desc: str | None = None
+    weight_init: float = Field(default=0.0, ge=0.0, le=1.0)
+    ref_needed: bool = False
+    scoring_type: str = "binary"  # binary / continuous
+    check_items: list[str] | None = None  # 仅二分维度（manifest 的 check_items，二分 checklist 真源）
+    rubric_ref: str | None = None  # 仅连续维度
+
+
+class SampleIn(BaseModel):
+    """新增 benchmark 表单里的一道考题（对应 manifest 的 samples[] 一条）。"""
+
+    sample_id: str
+    product: str | None = None
+    category: str | None = None
+    difficulty_note: str | None = None

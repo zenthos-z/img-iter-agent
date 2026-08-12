@@ -9,6 +9,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import threading
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -27,7 +30,7 @@ from ...data.human_hints import (
     save_loop_hints,
     save_sample_hints,
 )
-from ...data.runstore import RunStore
+from ...data.runstore import RunStore, run_is_alive
 from ...pipeline.runner import (
     build_loop_context,
     close_checkpointer,
@@ -35,6 +38,10 @@ from ...pipeline.runner import (
     end_loop_trace,
     loop_trace_context,
 )
+
+
+class LoopBusyError(RuntimeError):
+    """loop 正在运行，不能删除（router 映射 409）。"""
 
 
 @dataclass
@@ -67,6 +74,119 @@ class LoopRunner:
     def get(self, loop_id: str) -> LoopHandle | None:
         with self._lock:
             return self._handles.get(loop_id)
+
+    # --- 运行态判定（删除守卫用）---
+    def is_running(self, loop_id: str) -> bool:
+        """该 loop 是否正在运行：内存 handle.phase=running / running.pid 存活 / 外部进程 ps 扫描。"""
+        handle = self.get(loop_id)
+        if handle is not None and handle.phase == "running":
+            return True
+        settings = get_settings()
+        if run_is_alive(settings.run_dir(loop_id)):
+            return True
+        from .data_access import _detect_running_loop_ids
+
+        return loop_id in _detect_running_loop_ids()
+
+    # --- 删除（loop / 单轮 attempt）---
+    def delete_loop(self, loop_id: str) -> bool:
+        """删除整个 loop：run 目录（含 loop 内经验 conclusions.json 等）+ 内存 handle/checkpointer。
+
+        返回 True=已删；False=loop 不存在；在跑抛 ``LoopBusyError``（router 映射 409）。
+        **不动** ``data/experience/<bench>/``（跨 loop 蒸馏 skill，per-bench）。
+        """
+        settings = get_settings()
+        run_dir = settings.run_dir(loop_id)
+        if not run_dir.exists():
+            return False
+        if self.is_running(loop_id):
+            raise LoopBusyError(f"loop {loop_id} 正在运行，不能删除")
+        handle = self.get(loop_id)
+        if handle is not None:
+            _close_app_checkpointer(handle)
+            with self._lock:
+                self._handles.pop(loop_id, None)
+        shutil.rmtree(run_dir)
+        return True
+
+    def delete_attempt(self, loop_id: str, attempt_id: str) -> bool:
+        """删除 loop 内一轮（attempt）：trajectory 移除该行 + 删 out/<id>/ + 更新 index.json + 移除人工排序。
+
+        返回 True=已删；False=loop/attempt 不存在；在跑抛 ``LoopBusyError``。
+        不回卷 LangGraph checkpoint（trajectory 是展示真源；finished loop 无影响）。
+        """
+        settings = get_settings()
+        run_dir = settings.run_dir(loop_id)
+        if not run_dir.exists():
+            return False
+        if self.is_running(loop_id):
+            raise LoopBusyError(f"loop {loop_id} 正在运行，不能删除轮次")
+
+        traj_path = run_dir / "trajectory.jsonl"
+        sample_id: str | None = None
+        kept: list[str] = []
+        found = False
+        if traj_path.exists():
+            for line in traj_path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:  # noqa: BLE001  坏行原样保留（不丢数据）
+                    kept.append(line)
+                    continue
+                if sample_id is None:
+                    sample_id = obj.get("sample_id")
+                if obj.get("attempt_id") == attempt_id:
+                    found = True
+                    continue
+                kept.append(line)
+        if not found:
+            return False
+
+        # 原子写回 trajectory（保留未删行的原始内容）
+        tmp = run_dir / "trajectory.jsonl.tmp"
+        tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        os.replace(tmp, traj_path)
+
+        # 删该轮产物目录
+        out_dir = run_dir / "out" / attempt_id
+        if out_dir.exists():
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+        # 更新 index.json（{"attempts": [...]}，过滤该 attempt_id）
+        index_path = run_dir / "index.json"
+        if index_path.exists():
+            try:
+                idx = json.loads(index_path.read_text(encoding="utf-8"))
+                if isinstance(idx, dict):
+                    attempts = idx.get("attempts")
+                    if isinstance(attempts, list):
+                        idx["attempts"] = [
+                            a for a in attempts if isinstance(a, dict) and a.get("attempt_id") != attempt_id
+                        ]
+                        index_path.write_text(
+                            json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
+            except Exception:  # noqa: BLE001  index 损坏不影响 trajectory 删除
+                pass
+
+        # 移除该 trace 的人工排序值（trace_id == attempt_id）
+        if sample_id:
+            sp = settings.runs_dir / "_human_scores" / f"{sample_id}.json"
+            if sp.exists():
+                try:
+                    data = json.loads(sp.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        data["ranks"] = [
+                            r for r in data.get("ranks", [])
+                            if isinstance(r, dict) and r.get("trace_id") != attempt_id
+                        ]
+                        sp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+        return True
 
     # --- 启动（一题一条：同 sample 已有 loop 则续跑，否则新建）---
     def start(

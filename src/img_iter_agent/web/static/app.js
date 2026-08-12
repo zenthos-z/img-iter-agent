@@ -724,6 +724,9 @@ function renderLoopFull(loop, loopId) {
   } else if (loop.status === "finished") {
     controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
   }
+  if (loop.status !== "running") {
+    controls.push(`<button class="btn btn-danger" onclick="deleteLoop('${esc(loopId)}')">删除 loop</button>`);
+  }
 
   let review = "";
   if (loop.status === "awaiting_review" && loop.interrupt_payload) {
@@ -808,6 +811,7 @@ function renderLoopFull(loop, loopId) {
               <div class="prompt-tools">
                 <button class="btn btn-ghost btn-sm" data-ptog="${i}">查看 prompt</button>
                 ${i > 0 ? `<button class="btn btn-ghost btn-sm" data-pdiff="${i}">对比第${loop.traces[i - 1].round}轮</button>` : ""}
+                ${loop.status !== "running" ? `<button class="btn btn-danger btn-sm" onclick="deleteAttempt('${esc(loopId)}','${esc(t.trace_id)}',${t.round})">删除该轮</button>` : ""}
               </div>
               <div class="prompt-box" id="prompt-box-${i}" hidden><pre>${esc(t.prompt || "(空)")}</pre></div>
             </div>
@@ -840,6 +844,9 @@ function renderLoopCompact(loop, loopId) {
     controls.push(`<button class="btn btn-danger" onclick="resumeLoop('${esc(loopId)}','stop')">停止并采用</button>`);
   } else if (loop.status === "finished") {
     controls.push(`<button class="btn btn-primary" onclick="resumeLoop('${esc(loopId)}','continue')">继续跑</button>`);
+  }
+  if (loop.status !== "running") {
+    controls.push(`<button class="btn btn-danger" onclick="deleteLoop('${esc(loopId)}')">删除 loop</button>`);
   }
 
   let errorAlert = "";
@@ -885,6 +892,7 @@ function renderLoopCompact(loop, loopId) {
             <div class="hero-sub" id="compact-hero-sub"></div>
           </div>
           <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(loop.bench_id)}/${esc(loop.sample_id)}">去排序</a>
+          ${loop.status !== "running" ? `<button class="btn btn-danger btn-sm" onclick="deleteCompactCurrentRound('${esc(loopId)}')">删除当前轮</button>` : ""}
         </div>
       </div>
 
@@ -1076,6 +1084,36 @@ async function resumeLoop(loopId, decision) {
     toast(decision === "stop" ? "已停止 loop" : "已继续 loop", "success");
     viewLoop(loopId);
   } catch (e) { handleError(e, "操作失败"); }
+}
+
+// ---- 删除 loop / 删除单轮 attempt ----
+async function deleteLoop(loopId) {
+  if (!confirm(`确定删除 loop ${loopId}？\n该 loop 的所有轮次与 loop 内经验（conclusions.json 等）都会删除；跨 loop 蒸馏 skill 包保留。`)) return;
+  try {
+    await api(`/loops/${loopId}`, { method: "DELETE" });
+    toast(`已删除 loop ${loopId}`, "success");
+    location.hash = "#/";
+  } catch (e) { handleError(e, "删除失败"); }
+}
+
+async function deleteAttempt(loopId, traceId, round) {
+  if (!confirm(`删除第 ${round ?? "?"} 轮？该轮的图、prompt、评分都会移除。`)) return;
+  try {
+    await api(`/loops/${loopId}/attempts/${encodeURIComponent(traceId)}`, { method: "DELETE" });
+    toast(`已删除第 ${round ?? "?"} 轮`, "success");
+    viewLoop(loopId);
+  } catch (e) { handleError(e, "删除失败"); }
+}
+
+// 紧凑模式：删当前选中轮（从 DOM 的 selected .trace-item 读 idx → 映射到 trace_id）
+function deleteCompactCurrentRound(loopId) {
+  const sel = document.querySelector("#compact-strip .trace-item.selected");
+  if (!sel) { toast("未选中轮次", "warn"); return; }
+  const idx = +sel.dataset.traceIdx;
+  const loop = window.__loopCache.current || {};
+  const t = (loop.traces || [])[idx];
+  if (!t || !t.trace_id) return;
+  deleteAttempt(loopId, t.trace_id, t.round);
 }
 
 // ============ 人工提示词面板（loop 详情页，运行中可增删） ============
@@ -1848,6 +1886,360 @@ async function copySkillMd(benchId) {
   } catch (e) { handleError(e, "复制失败（可能尚无 SKILL.md，先蒸馏）"); }
 }
 
+// ============ 视图：Benchmark 管理 ============
+async function viewBenchmarks() {
+  setNavActive("benchmarks");
+  setTitle("Benchmark 管理", `<button class="btn btn-primary" onclick="openCreateBenchForm()">＋ 新增 benchmark</button>`);
+  const app = document.getElementById("app");
+  app.innerHTML = skeleton(3);
+  try {
+    const data = await api("/benchmarks");
+    const benches = data.benches || [];
+    if (!benches.length) {
+      app.innerHTML = `<div class="empty"><div>还没有 benchmark</div><div class="muted">新建一个 benchmark，或在数据目录准备后刷新。</div><button class="btn btn-primary mt-2" onclick="openCreateBenchForm()">＋ 新增 benchmark</button></div>`;
+      return;
+    }
+    app.innerHTML = `<div class="row gap-3">${benches.map(renderBenchCard).join("")}</div>`;
+  } catch (e) {
+    handleError(e, "加载 benchmark 列表失败");
+    app.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderBenchCard(b) {
+  const skill = b.has_distill_skill ? `<span class="badge badge-success">已蒸馏 skill</span>` : "";
+  return `<div class="card card-padded" style="flex:1 1 320px;min-width:300px">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <h3 style="margin:0">${esc(b.bench_id)}</h3>${skill}
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:4px">${esc(b.description || b.scene || "")}</div>
+    <div class="mt-2">
+      <span class="badge">${b.n_samples} sample</span>
+      <span class="badge">${b.n_dims} 维度</span>
+      <span class="badge">${b.n_loops} loop</span>
+      ${b.task_type ? `<span class="badge badge-ghost">${esc(b.task_type)}</span>` : ""}
+    </div>
+    <div class="mt-2">
+      <a class="btn btn-secondary btn-sm" href="#/benchmarks/${encodeURIComponent(b.bench_id)}">查看结构 / 消费者</a>
+      <a class="btn btn-ghost btn-sm" href="#/">去总览</a>
+    </div>
+  </div>`;
+}
+
+async function viewBenchmarkDetail(benchId) {
+  setNavActive("benchmarks");
+  setTitle("Benchmark 详情", `<a class="btn btn-ghost btn-sm" href="#/benchmarks">← 返回</a>`);
+  const app = document.getElementById("app");
+  app.innerHTML = skeleton(3);
+  try {
+    const b = await api(`/benchmarks/${encodeURIComponent(benchId)}`);
+    window.__benchCache = b;
+    app.innerHTML = renderBenchmarkDetail(b);
+  } catch (e) {
+    handleError(e, "加载 benchmark 详情失败");
+    app.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderBenchmarkDetail(b) {
+  const dims = b.dimensions || [];
+  const samples = b.samples || [];
+  const task = b.task || {};
+
+  const dimRows = dims.map((d) => `<tr>
+    <td><strong>${esc(d.dim)}</strong>${d.ref_needed ? ' <span class="ref-dot" title="需参考图">●</span>' : ""}</td>
+    <td>${esc(d.desc || "")}</td>
+    <td>${fmt(d.weight_init, 2)}</td>
+    <td>${esc(d.scoring_type)}</td>
+    <td>${d.scoring_type === "binary" ? d.n_check_items : "—"}</td>
+  </tr>`).join("");
+
+  const sampleRows = samples.map((s) => `<tr>
+    <td><strong>${esc(s.sample_id)}</strong></td>
+    <td>${esc(s.product || "—")}</td>
+    <td>${esc(s.category || "—")}</td>
+    <td>${s.has_target ? "✓" : `<span class="muted">缺</span>`}</td>
+    <td>${s.n_loops}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteSample('${esc(b.bench_id)}','${esc(s.sample_id)}')">删除</button></td>
+  </tr>`).join("");
+
+  const tree = (b.file_tree || []).map((f) =>
+    `<div class="tree-row ${f.type}">${f.type === "dir" ? "📁" : "📄"} ${esc(f.path)}</div>`,
+  ).join("");
+
+  const consumers = (b.consumers || []).map((c) => `<div class="consume-item">
+    <div class="consume-name">${esc(c.name)} <span class="badge badge-ghost">${esc(c.signal || "")}</span></div>
+    <div class="muted" style="font-size:12px">${esc(c.desc || "")}</div>
+  </div>`).join("");
+
+  return `
+    <div class="breadcrumb mb-3"><a href="#/benchmarks">Benchmark 管理</a><span>/</span><span>${esc(b.bench_id)}</span></div>
+    <div class="page-header"><div class="title-block">
+      <h1>${esc(b.bench_id)}</h1>
+      <div class="muted" style="font-size:12px">${esc(b.scene || "")}${b.description ? " · " + esc(b.description) : ""}</div>
+    </div></div>
+
+    <div class="card card-padded mt-2">
+      <h2>基本信息</h2>
+      <div class="trace-params">
+        <div class="param"><span class="pk">场景</span><span class="pv">${esc(b.scene || "—")}</span></div>
+        <div class="param"><span class="pk">评分方法</span><span class="pv">${esc(b.scoring_method || "—")}</span></div>
+        <div class="param"><span class="pk">任务类型</span><span class="pv">${esc(task.type || "—")}</span></div>
+        <div class="param"><span class="pk">视图</span><span class="pv">${esc((task.views || []).join(", ") || "—")}</span></div>
+        <div class="param"><span class="pk">对比型维度</span><span class="pv">${esc((b.comparative_dims || []).join(", ") || "—")}</span></div>
+      </div>
+    </div>
+
+    <div class="card card-padded mt-3">
+      <h2>评分维度（${dims.length}）</h2>
+      <table class="bench-table"><thead><tr><th>维度</th><th>说明</th><th>权重</th><th>类型</th><th>check 项</th></tr></thead>
+        <tbody>${dimRows || `<tr><td colspan="5" class="muted">无</td></tr>`}</tbody></table>
+      <div class="muted" style="font-size:11px;margin-top:6px">● = 需 target 参考图（对比型维度）</div>
+    </div>
+
+    <div class="card card-padded mt-3">
+      <h2>题目 samples（${samples.length}）</h2>
+      <table class="bench-table"><thead><tr><th>sample</th><th>产品</th><th>品类</th><th>target</th><th>loop</th><th></th></tr></thead>
+        <tbody>${sampleRows || `<tr><td colspan="6" class="muted">无</td></tr>`}</tbody></table>
+    </div>
+
+    <div class="card card-padded mt-3">
+      <h2>内容被谁消费</h2>
+      <div class="consume-list">${consumers}</div>
+    </div>
+
+    <div class="card card-padded mt-3">
+      <h2>目录结构</h2>
+      <div class="file-tree">${tree || '<div class="muted">空</div>'}</div>
+    </div>`;
+}
+
+async function deleteSample(benchId, sampleId) {
+  if (!confirm(`确定删除 sample ${sampleId}？\n该题目的所有 loop、loop 内经验、人工提示词与人工排序都会删除；跨 loop 蒸馏 skill 包保留。`)) return;
+  try {
+    await api(`/benchmarks/${encodeURIComponent(benchId)}/samples/${encodeURIComponent(sampleId)}`, { method: "DELETE" });
+    toast(`已删除 sample ${sampleId}`, "success");
+    viewBenchmarkDetail(benchId);
+  } catch (e) { handleError(e, "删除失败"); }
+}
+
+// ---- 新增 benchmark 表单（modal）----
+const _FURNITURE_DIMS = [
+  { dim: "consistency", desc: "三视图跨张一致性：同产品/同色/几何比例一致", weight_init: 0.25, ref_needed: true, scoring_type: "binary",
+    check_items: "C1 三视图是同一产品\nC2 三视图颜色一致\nC3 侧视与正视几何尺寸一致(不预设具体形态)\nC4 各视图高度比例一致\nC5 每个视图完整呈现整个产品", rubric_ref: "" },
+  { dim: "product_structure", desc: "产品结构：部件数/位置/形态正确", weight_init: 0.22, ref_needed: true, scoring_type: "binary",
+    check_items: "S1 整体结构忠实还原参考图\nS2 无部件穿模/重叠\nS3 无部件缺失/多余\nS4 整体造型轮廓忠实还原参考图", rubric_ref: "" },
+  { dim: "material_texture", desc: "材质还原度(对照参考)，连续分", weight_init: 0.18, ref_needed: true, scoring_type: "continuous", check_items: "", rubric_ref: "rubric.md#材质纹理" },
+  { dim: "color_accuracy", desc: "颜色准确度(对照参考)，连续分", weight_init: 0.13, ref_needed: true, scoring_type: "continuous", check_items: "", rubric_ref: "rubric.md#颜色一致" },
+  { dim: "artifact_defect", desc: "无瑕疵：无变形/失真/模糊/伪影/悬浮", weight_init: 0.12, ref_needed: false, scoring_type: "binary",
+    check_items: "A1 直线无弯曲\nA2 对称结构对称\nA3 无模糊/拼接痕\nA4 接地有阴影(不悬浮)", rubric_ref: "" },
+  { dim: "commercial_focus", desc: "商业可用：主体突出/白底干净/构图合规", weight_init: 0.10, ref_needed: false, scoring_type: "binary",
+    check_items: "B1 主体居中突出\nB2 背景纯白干净\nB3 留白构图符合平台规范", rubric_ref: "" },
+];
+let _benchDims = [];
+let _benchSamples = [];
+
+function openCreateBenchForm() {
+  _benchDims = JSON.parse(JSON.stringify(_FURNITURE_DIMS));
+  _benchSamples = [{ sample_id: "s001", product: "", category: "" }];
+  openModal(renderCreateBenchForm());
+  renderDimEditor();
+  renderSampleEditor();
+}
+
+function renderCreateBenchForm() {
+  return `<h1>新增 benchmark</h1>
+    <div class="muted">填写元数据、评分维度、题目，并上传每个题目的 target 参考图。生成 manifest.json + rubric.md + content_spec 脚手架。</div>
+    <div class="newloop-form mt-3">
+      <label>bench_id <span class="muted" style="font-size:11px">（目录名，仅字母数字 _ . -）</span></label>
+      <input type="text" id="cb-bench" placeholder="如 furniture_product_whitebg">
+      <label>场景描述</label>
+      <input type="text" id="cb-scene" placeholder="如 白底产品三视图（产品还原度导向）">
+      <label>说明</label>
+      <textarea id="cb-desc" rows="2" placeholder="本 benchmark 聚焦的还原度难点（可选）"></textarea>
+      <div class="row" style="gap:8px">
+        <div style="flex:1"><label>任务预设</label>
+          <select id="cb-task" onchange="onTaskPresetChange()">
+            <option value="three_view_whitebg_single_image">三视图白底</option>
+            <option value="style_transfer">风格迁移</option>
+            <option value="custom">自定义</option>
+          </select></div>
+        <div style="flex:1"><label>评分方法</label>
+          <select id="cb-scoring">
+            <option value="hybrid_with_rank_calibration">混合评分 + 排序校准</option>
+            <option value="binary">纯二分</option>
+            <option value="continuous">纯连续</option>
+          </select></div>
+      </div>
+      <label>视图（逗号分隔）</label>
+      <input type="text" id="cb-views" value="front,side,perspective">
+
+      <div class="cb-section-title mt-3">评分维度</div>
+      <div id="cb-dims"></div>
+      <button class="btn btn-ghost btn-sm" onclick="addBenchDim()">＋ 添加维度</button>
+
+      <div class="cb-section-title mt-3">题目 samples</div>
+      <div id="cb-samples"></div>
+      <button class="btn btn-ghost btn-sm" onclick="addBenchSample()">＋ 添加题目</button>
+
+      <div class="row mt-3">
+        <button class="btn btn-primary" id="cb-submit" onclick="submitCreateBench()">创建 benchmark</button>
+        <button class="btn btn-ghost" data-close>取消</button>
+      </div>
+    </div>`;
+}
+
+function onTaskPresetChange() {
+  const t = document.getElementById("cb-task").value;
+  const v = document.getElementById("cb-views");
+  if (t === "three_view_whitebg_single_image") v.value = "front,side,perspective";
+  else if (t === "style_transfer") v.value = "";
+}
+
+function syncDimsFromDom() {
+  document.querySelectorAll("#cb-dims .dim-editor-row").forEach((row, i) => {
+    if (!_benchDims[i]) return;
+    row.querySelectorAll(".cb-dim").forEach((inp) => {
+      const k = inp.dataset.k;
+      let val = inp.value;
+      if (k === "weight_init") val = parseFloat(val) || 0;
+      if (k === "ref_needed") val = (val === "true");
+      _benchDims[i][k] = val;
+    });
+  });
+}
+
+function addBenchDim() {
+  syncDimsFromDom();
+  _benchDims.push({ dim: "", desc: "", weight_init: 0, ref_needed: false, scoring_type: "binary", check_items: "", rubric_ref: "" });
+  renderDimEditor();
+}
+
+function removeBenchDim(i) {
+  syncDimsFromDom();
+  _benchDims.splice(i, 1);
+  renderDimEditor();
+}
+
+function renderDimEditor() {
+  syncDimsFromDom();
+  const el = document.getElementById("cb-dims");
+  if (!el) return;
+  el.innerHTML = _benchDims.map((d, i) => `<div class="dim-editor-row">
+    <div class="row" style="gap:6px;align-items:flex-end">
+      <div style="flex:2"><label>维度名</label><input class="cb-dim" data-i="${i}" data-k="dim" value="${esc(d.dim)}"></div>
+      <div style="flex:1"><label>权重</label><input class="cb-dim" data-i="${i}" data-k="weight_init" type="number" step="0.01" min="0" max="1" value="${d.weight_init}"></div>
+      <div style="flex:1"><label>类型</label><select class="cb-dim" data-i="${i}" data-k="scoring_type" onchange="renderDimEditor()"><option value="binary"${d.scoring_type === "binary" ? " selected" : ""}>二分</option><option value="continuous"${d.scoring_type === "continuous" ? " selected" : ""}>连续</option></select></div>
+      <div style="flex:1"><label>需参考图</label><select class="cb-dim" data-i="${i}" data-k="ref_needed"><option value="true"${d.ref_needed ? " selected" : ""}>是</option><option value="false"${!d.ref_needed ? " selected" : ""}>否</option></select></div>
+      <button class="btn btn-ghost btn-sm" onclick="removeBenchDim(${i})">×</button>
+    </div>
+    <label>说明</label><input class="cb-dim" data-i="${i}" data-k="desc" value="${esc(d.desc || "")}">
+    <label>check_items <span class="muted" style="font-size:11px">（二分维度；每行一项，如 "C1 ..."）</span></label>
+    <textarea class="cb-dim" data-i="${i}" data-k="check_items" rows="3">${esc(d.check_items || "")}</textarea>
+    <label>rubric_ref <span class="muted" style="font-size:11px">（连续维度）</span></label>
+    <input class="cb-dim" data-i="${i}" data-k="rubric_ref" value="${esc(d.rubric_ref || "")}">
+  </div>`).join("");
+}
+
+function syncSamplesFromDom() {
+  document.querySelectorAll("#cb-samples .sample-editor-row").forEach((row, i) => {
+    if (!_benchSamples[i]) return;
+    row.querySelectorAll(".cb-sample").forEach((inp) => {
+      if (_benchSamples[i]) _benchSamples[i][inp.dataset.k] = inp.value;
+    });
+  });
+}
+
+function addBenchSample() {
+  syncSamplesFromDom();
+  _benchSamples.push({ sample_id: "", product: "", category: "" });
+  renderSampleEditor();
+}
+
+function removeBenchSample(i) {
+  syncSamplesFromDom();
+  _benchSamples.splice(i, 1);
+  renderSampleEditor();
+}
+
+function renderSampleEditor() {
+  syncSamplesFromDom();
+  const el = document.getElementById("cb-samples");
+  if (!el) return;
+  el.innerHTML = _benchSamples.map((s, i) => `<div class="sample-editor-row">
+    <div class="row" style="gap:6px;align-items:flex-end">
+      <div style="flex:1"><label>sample_id</label><input class="cb-sample" data-i="${i}" data-k="sample_id" value="${esc(s.sample_id)}"></div>
+      <div style="flex:2"><label>产品</label><input class="cb-sample" data-i="${i}" data-k="product" value="${esc(s.product || "")}"></div>
+      <div style="flex:1"><label>品类</label><input class="cb-sample" data-i="${i}" data-k="category" value="${esc(s.category || "")}"></div>
+      <button class="btn btn-ghost btn-sm" onclick="removeBenchSample(${i})">×</button>
+    </div>
+    <label>target 参考图 <span class="muted" style="font-size:11px">（对比型维度评判锚；可选，支持 jpg/png）</span></label>
+    <input type="file" accept="image/*" class="cb-target">
+  </div>`).join("");
+}
+
+async function submitCreateBench() {
+  syncDimsFromDom();
+  syncSamplesFromDom();
+  const benchId = document.getElementById("cb-bench").value.trim();
+  const scene = document.getElementById("cb-scene").value.trim();
+  const description = document.getElementById("cb-desc").value.trim();
+  const scoringMethod = document.getElementById("cb-scoring").value;
+  const taskType = document.getElementById("cb-task").value;
+  const views = document.getElementById("cb-views").value.trim();
+  if (!benchId) { toast("请填 bench_id", "warn"); return; }
+  if (!_benchDims.length || !_benchSamples.length) { toast("至少需要一个维度和一道题目", "warn"); return; }
+  const sids = _benchSamples.map((s) => s.sample_id.trim()).filter(Boolean);
+  if (sids.length !== _benchSamples.length || new Set(sids).size !== sids.length) {
+    toast("每个题目需有唯一非空 sample_id", "warn"); return;
+  }
+
+  const dimensions = _benchDims.map((d) => ({
+    dim: (d.dim || "").trim(),
+    desc: (d.desc || "").trim() || null,
+    weight_init: d.weight_init,
+    ref_needed: !!d.ref_needed,
+    scoring_type: d.scoring_type,
+    check_items: d.scoring_type === "binary"
+      ? (d.check_items || "").split("\n").map((x) => x.trim()).filter(Boolean) : null,
+    rubric_ref: d.scoring_type === "continuous" ? ((d.rubric_ref || "").trim() || null) : null,
+  }));
+
+  const fd = new FormData();
+  fd.append("bench_id", benchId);
+  fd.append("scene", scene);
+  fd.append("description", description);
+  fd.append("scoring_method", scoringMethod);
+  fd.append("task_type", taskType);
+  fd.append("views", views);
+  fd.append("dimensions", JSON.stringify(dimensions));
+  fd.append("samples", JSON.stringify(_benchSamples.map((s) => ({
+    sample_id: s.sample_id.trim(), product: (s.product || "").trim() || null, category: (s.category || "").trim() || null,
+  }))));
+
+  // 配对每个 sample 的 target 图（按行内 sample_id，避免编辑后错位）
+  document.querySelectorAll("#cb-samples .sample-editor-row").forEach((row) => {
+    const sidIn = row.querySelector('.cb-sample[data-k="sample_id"]');
+    const fileIn = row.querySelector(".cb-target");
+    const sid = (sidIn?.value || "").trim();
+    if (sid && fileIn?.files?.[0]) fd.append(`target_${sid}`, fileIn.files[0]);
+  });
+
+  const btn = document.getElementById("cb-submit");
+  btn.disabled = true; btn.textContent = "创建中…";
+  try {
+    const r = await fetch("/api/benchmarks", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => r.statusText)}`);
+    const data = await r.json();
+    closeModal();
+    toast("benchmark 已创建", "success");
+    location.hash = `#/benchmarks/${encodeURIComponent(data.bench_id)}`;
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "创建 benchmark";
+    handleError(e, "创建失败");
+  }
+}
+
 // ============ 路由 ============
 async function router() {
   const h = location.hash.slice(1) || "/";
@@ -1865,6 +2257,8 @@ async function router() {
       await viewScoring(decodeURIComponent(bench), decodeURIComponent(sample));
     } else if (h.startsWith("/loop/")) await viewLoop(decodeURIComponent(h.slice(6)));
     else if (h.startsWith("/experience/")) await viewExperience(decodeURIComponent(h.slice(12)));
+    else if (h === "/benchmarks") await viewBenchmarks();
+    else if (h.startsWith("/benchmarks/")) await viewBenchmarkDetail(decodeURIComponent(h.slice(12)));
     else if (h === "/config") await viewConfig();
     else document.getElementById("app").innerHTML = '<div class="empty">404</div>';
   } catch (e) {
