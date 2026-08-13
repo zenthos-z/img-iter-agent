@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -173,44 +175,92 @@ def generator_skills_source(data_root: Path, bench_id: str) -> Path | None:
     return None
 
 
-def generator_skill_fs(skills_dir: Path | str | None) -> tuple[Any, list, str] | None:
-    """为 Generator 构造**有界** FS，让标准 ``skills=`` 真正可用（deepagents 渐进披露依赖 read_file）。
+@dataclass(frozen=True)
+class GeneratorFs:
+    """Generator 的有界 FS 装配结果（backend + 权限 + 各挂载点的虚拟路径）。"""
 
-    Generator 本就接了 ``skills=[skills_dir]``，但 ``NarrowToolsMiddleware`` 剥了 ``read_file`` →
-    SkillsMiddleware 只能注入 skill 名/描述/路径、正文加载是半坏的。本 helper 给回一个**钉死在技能包内**的
-    read_file：``FilesystemBackend`` 锚定 ``experience/`` 根，``permissions`` 只允许读 ``<bench>/<slug>/**``、
-    拒绝其它一切（read-only，Generator 永不写）。技能包目录只有 ``.md``、无图，且 ls/glob/grep 仍被窄集中间件
-    剥掉 → 不可能重演旧版「空 sandbox 找图」死循环。
+    backend: Any
+    permissions: list
+    skills_sources: list[str] | None  # create_deep_agent(skills=...) 用；None=无技能包
+    article_path: str | None  # sample article.md 的虚拟路径（供 user message 指路）；None=无文章素材
+
+
+def generator_agent_fs(
+    skills_dir: Path | str | None, sample_dir: Path | str | None = None
+) -> GeneratorFs | None:
+    """为 Generator 构造**有界** FS（技能包 + sample 文章素材双挂载的通用版）。
+
+    在 ``generator_skill_fs``（仅技能包）基础上扩展：sample 目录含 ``article.md``（考题对应的文章
+    正文素材）时一并挂载，让 generator 用 read_file 读文章原文构思概念隐喻——文章路径由 user message
+    明确给出，一次命中；ls/glob/grep 仍被窄集中间件剥掉（无枚举能力），不会重演「空 sandbox 找图」死循环。
+
+    backend 根取各挂载点的公共祖先（典型 = ``data/``），virtual_mode=True 真实边界：路径穿越被拒、
+    解析结果必须落在根内。permissions 只读放行挂载子树、deny ``/**`` 兜底（Generator 永不写）。
 
     Args:
         skills_dir: ``generator_skills_source(...)`` 返回的 source 目录（``experience/<bench_id>/``）；
-            None/不存在/无 ``<slug>/SKILL.md`` → 返回 None（Generator 裸跑，无 skills/fs）。
+            None/不存在/无 ``<slug>/SKILL.md`` → 不挂技能包。
+        sample_dir: 当前考题的 ``samples/<sample_id>/`` 目录；含 article.md 才挂（否则忽略）。
+
+    Returns:
+        GeneratorFs；两个挂载点都为空 → None（Generator 裸跑，无 skills/fs）。
+    """
+    skill_src = Path(skills_dir) if skills_dir else None
+    slugs: list[str] = []
+    if skill_src is not None and skill_src.is_dir():
+        slugs = [s.name for s in skill_src.iterdir() if s.is_dir() and (s / "SKILL.md").exists()]
+    article_file = (Path(sample_dir) / "article.md") if sample_dir else None
+    has_article = article_file is not None and article_file.exists()
+
+    if not slugs and not has_article:
+        return None
+
+    from deepagents.backends.filesystem import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemPermission
+
+    mounts = [skill_src.resolve()] if slugs else []
+    if has_article:
+        assert article_file is not None
+        mounts.append(article_file.parent.resolve())
+    root = Path(os.path.commonpath([str(m) for m in mounts]))  # 双挂载典型 = data/
+    if root in mounts:  # 单挂载：commonpath 退化为挂载点本身，上提父目录保证 vpath 非空
+        root = root.parent
+
+    def _vpath(host_dir: Path) -> str:
+        return "/" + host_dir.relative_to(root).as_posix()
+
+    allow_paths: list[str] = []
+    skills_sources: list[str] | None = None
+    article_path: str | None = None
+    if slugs:
+        assert skill_src is not None
+        src_v = _vpath(skill_src.resolve())
+        allow_paths.extend(f"{src_v}/{s}/**" for s in slugs)
+        skills_sources = [src_v.lstrip("/")]  # SkillsMiddleware source = 根相对路径
+    if has_article:
+        sample_v = _vpath(article_file.parent.resolve())
+        allow_paths.append(f"{sample_v}/**")
+        article_path = f"{sample_v}/article.md"
+
+    backend = FilesystemBackend(root_dir=str(root))
+    permissions = [
+        FilesystemPermission(operations=["read"], paths=allow_paths, mode="allow"),
+        FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+    ]
+    return GeneratorFs(backend, permissions, skills_sources, article_path)
+
+
+def generator_skill_fs(skills_dir: Path | str | None) -> tuple[Any, list, str] | None:
+    """仅技能包的有界 FS（旧契约薄包装，委托 ``generator_agent_fs``）。
 
     Returns:
         ``(backend, permissions, skills_source_rel)``——供 ``create_deep_agent(backend=, permissions=,
         skills=[skills_source_rel])`` 直接用；或 None。
     """
-    if not skills_dir:
+    fs = generator_agent_fs(skills_dir, None)
+    if fs is None or not fs.skills_sources:
         return None
-    src = Path(skills_dir)
-    if not src.is_dir():
-        return None
-    # source 下所有含 SKILL.md 的 <slug> 技能包（通常一个；多个则一并放行）
-    slugs = [s.name for s in src.iterdir() if s.is_dir() and (s / "SKILL.md").exists()]
-    if not slugs:
-        return None
-    from deepagents.backends.filesystem import FilesystemBackend
-    from deepagents.middleware.filesystem import FilesystemPermission
-
-    root = src.parent  # experience/：锚定根，覆盖本 bench 技能包即可
-    source_rel = src.name  # <bench_id>：SkillsMiddleware 扫它发现 <slug>/
-    backend = FilesystemBackend(root_dir=str(root))
-    allow_paths = [f"/{source_rel}/{s}/**" for s in slugs]
-    permissions = [
-        FilesystemPermission(operations=["read"], paths=allow_paths, mode="allow"),
-        FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
-    ]
-    return backend, permissions, source_rel
+    return fs.backend, fs.permissions, fs.skills_sources[0]
 
 
 def slugify_bench(bench_id: str) -> str:
