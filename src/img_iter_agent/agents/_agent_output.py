@@ -13,9 +13,26 @@ from __future__ import annotations
 
 from typing import Literal
 
+from langchain.agents.structured_output import ProviderStrategy
 from pydantic import BaseModel, Field
 
 from ..memory.schema import CriticItemJudgment
+
+
+def provider_structured(schema: type | dict) -> ProviderStrategy:
+    """把结构化输出 schema 包成 ``ProviderStrategy``，走 provider 原生 json_schema response_format。
+
+    根因：把裸 pydantic schema 直接传给 ``create_deep_agent(response_format=...)``（底层 langchain
+    ``create_agent``）时，会被包成 ``AutoStrategy``→``ToolStrategy``（function_calling 路径），后者
+    写死 ``tool_choice=<tool_name>``（object 形）。但 critic/generator/distiller 用的是 thinking 模型
+    (qwen3.7-flash)，供应商(dmxapi→DashScope)在 thinking 模式下拒绝 ``tool_choice`` 设为
+    required/object → 400 BadRequestError → agent 整轮失败退兜底（critic→评分全 0）。
+
+    ``ProviderStrategy`` 改走 ``response_format={"type": "json_schema", ...}``，**不设 tool_choice**，
+    绕开此限制（已用探针验证 qwen3.7-flash 经 dmxapi 支持 json_schema response_format）。对非 thinking
+    模型同样安全（json_schema 是标准 OpenAI response_format）。
+    """
+    return ProviderStrategy(schema)
 
 
 class GeneratorOutput(BaseModel):
@@ -56,4 +73,4 @@ class CriticAgentOutput(BaseModel):
     dimensions: list[CriticDimensionOutput] = Field(description="按 bench.score_dimensions 顺序的每维度评分")
 
 
-__all__ = ["CriticAgentOutput", "CriticDimensionOutput", "GeneratorOutput"]
+__all__ = ["CriticAgentOutput", "CriticDimensionOutput", "GeneratorOutput", "provider_structured"]
