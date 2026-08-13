@@ -39,7 +39,7 @@ from ._narrow_tools import (
     narrow_tools_middleware,
 )
 from .agent_config_loader import load_system_prompt
-from .tools.generator_tools import _size_from_str, make_generator_tools
+from .tools.generator_tools import _size_from_str, build_ref_registry, make_generator_tools
 
 # 代码默认 system prompt（data/agents_config/generator.md 缺失时回退）。
 # 短的「始终生效」角色放这里；更长的诀窍/流程在本 benchmark 的蒸馏技能包里（agent 按需读）。
@@ -155,10 +155,10 @@ class Generator:
         task = spec.task
         size_str = (task.output.get("size") if task and task.output else None) or "2K"
 
-        # 参考：image_edit/multiview 用 target 作风格锚；style_transfer 注入参考集多图供 agent 抽象风格共性。
-        # D2：style_transfer 解禁——agent 通过 generate_image(reference_images=[...]) 主动选参考子集传给生图 API
-        # （make_generator_tools 建 ref_registry）；默认 [] = 纯文生图。reference_images 这里只是 agent 看到的上下文。
-        reference_images: list[Path] = []  # agent 在 user content 里看到的参考（≠传给 API 的）
+        # reference_images = agent 在 user content 里**看到**的参考图（仅供理解考题，≠ 传给生图 API 的）。
+        # 真正传不传参考图由 agent 调 generate_image(reference_images=[...]) 决定（全模式自决）：
+        # image_edit 不再自动塞 target——agent 看到靶图，但必须显式传 ['target'] 才会用作生图参考。
+        reference_images: list[Path] = []
         gen_mode = "text_to_image"
         if task and task.mode == "style_transfer":
             refs = [sample.sample_dir / a for a in (task.input_assets or [])]
@@ -375,6 +375,24 @@ class Generator:
         # 与 escalated_warnings 互补：警告给「换思路」指令，摘要给「具体试过什么、为何无效/有效」明细。
         if conclusions_brief:
             text += "\n\n" + conclusions_brief
+
+        # 参考图素材清单 + image_edit 默认提示：让 agent 知道能给 generate_image 传什么（全模式 agent 自决）
+        ref_registry = build_ref_registry(sample)
+        if ref_registry:
+            _mode = sample.spec.task.mode if sample.spec.task else None
+            _mode_hint = ""
+            if _mode in ("image_edit", "multiview"):
+                _mode_hint = (
+                    "\n本题为 image_edit 类任务（需还原 target 产品）：**建议**把 target 作为参考图，"
+                    "调 generate_image(reference_images=['target'])；若刻意做纯文生图实验则传 [] "
+                    "（工具不会自动塞 target——不传就是不传）。"
+                )
+            text += (
+                "\n\n【参考图素材】generate_image(reference_images=[...]) 由你决定用哪几张参考图"
+                "（工具自动读取上传）；传 [] 或省略 = 纯文生图（不传任何参考图）。可用标识符：\n"
+                + "\n".join(f"- {k}" for k in ref_registry)
+                + _mode_hint
+            )
 
         # 动作空间 A · 可选生图模型（model 杠杆）：让 agent 知道能选哪些 model_id
         if available_models:

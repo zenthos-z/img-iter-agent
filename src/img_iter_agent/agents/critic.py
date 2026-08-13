@@ -24,7 +24,7 @@ from langchain_core.runnables import RunnableConfig
 
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
-from ..generation.image_io import resized_data_uri
+from ..generation.image_io import _CRITIC_VIEW_MAX_DIM, resized_data_uri
 from ..memory.knowledge import load_conclusions
 from ..memory.schema import (
     Benchmark,
@@ -49,7 +49,13 @@ _DEFAULT_CRITIC_SYS = (
     "『改动是否有效(effective/ineffective/escalated) + 可执行 lesson』，沉淀到经验知识库供后续轮次复用；"
     "你作为裁判对『为什么有效/无效』理解最深最准，这是本职之一，务必执行（首轮无上轮对比时仍可记录本轮新发现的问题与 lesson）；"
     "可用 query_experience 查已沉淀的历史经验辅助判断、避免重复无效思路；"
-    "(3) 最后结构化输出每个维度的评分（不要自己算加权和/还原度，权重不在你手上）。"
+    "(3) 最后结构化输出每个维度的评分（不要自己算加权和/还原度，权重不在你手上）。\n"
+    "【反阿谀/反幻觉（最高优先级）】只描述你确实在两张图上看到的，严禁凭『这类产品通常有』脑补 "
+    "target/生成图里不存在的部件（抽屉、床头柜、面板数量等）——这是最常见的虚高分来源。reason 必须"
+    "引用能在图上指出的具体点（如『床头板顶部弧度一致』『左数第二根立柱偏左』）；只用『完全对应/高度吻合』"
+    "却说不出生成图与 target 具体哪些点匹配 → 视为没认真比对 → 判不通过/给低分。打 product_structure 前"
+    "先独立列出 target 部件清单、再列生成图部件清单、再逐件比对，发现多件/少件/形态偏差/穿模即判不通过。"
+    "二分维度逐项非过即不过；连续维度有瑕疵 ≤0.6。宁可误判不通过，不可放水判通过。"
 )
 
 
@@ -81,8 +87,14 @@ class CriticInput:
 # ---------------------------------------------------------------------------
 
 
-def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str:
-    """构造 OpenAI 兼容的多模态 content：text + 图片(data-URI)。无图时返回纯文本。"""
+def _build_multimodal_content(
+    text: str, images: list[Path], *, max_dim: int = _CRITIC_VIEW_MAX_DIM,
+) -> list[dict] | str:
+    """构造 OpenAI 兼容的多模态 content：text + 图片(data-URI)。无图时返回纯文本。
+
+    默认用高清 ``_CRITIC_VIEW_MAX_DIM``——critic 要做结构/部件逐件比对，小图会把瑕疵糊掉导致放水。
+    trace 体积由 LangSmith 上传侧 compress_images_in_trace 压，不靠这里缩。
+    """
     if not images:
         return text
     parts: list[dict] = [{"type": "text", "text": text}]
@@ -90,7 +102,7 @@ def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str
         if Path(p).exists():
             parts.append({
                 "type": "image_url",
-                "image_url": {"url": resized_data_uri(Path(p))},
+                "image_url": {"url": resized_data_uri(Path(p), max_dim=max_dim)},
             })
     return parts
 

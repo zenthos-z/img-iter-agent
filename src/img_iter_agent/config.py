@@ -91,7 +91,37 @@ def get_settings() -> Settings:
         # LangSmith SDK 读 os.environ（非 pydantic 字段），此处从 .env 同步过去。
         # 首次构造 settings 时注入一次，确保 tracing 在任何 LLM 调用前生效。
         _sync_langsmith_env(_settings)
+        # 预热 langsmith cached client 挂图片压缩（必须在任何 tracing 前调一次：
+        # get_cached_client 是单例，仅首次 init_kwargs 生效）。
+        _warm_langsmith_client()
     return _settings
+
+
+def _warm_langsmith_client() -> None:
+    """预热 langsmith cached client，挂上 compress_images_in_trace。
+
+    所有 trace（含 langchain 自动 trace 的带图 LLM 调用）上传前会过这个压缩函数，把大 data-URI 图
+    缩成小图——**模型仍看 critic 消息里的高清原图**，只有上报到 LangSmith 的副本被压（避免带图 trace
+    撑到十几 MB 上传超时）。tracing 未开启则跳过。预热失败不阻断（退回无压缩 trace）。
+    """
+    import os
+
+    tracing_on = (
+        os.environ.get("LANGSMITH_TRACING", "").lower() == "true"
+        or os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
+    )
+    if not tracing_on:
+        return
+    try:
+        from langsmith.run_trees import get_cached_client
+
+        from .generation.image_io import compress_images_in_trace
+        get_cached_client(
+            hide_inputs=compress_images_in_trace,
+            hide_outputs=compress_images_in_trace,
+        )
+    except Exception:  # noqa: BLE001, S110  预热失败不阻断
+        pass
 
 
 def _sync_langsmith_env(_unused: Settings = None) -> None:
