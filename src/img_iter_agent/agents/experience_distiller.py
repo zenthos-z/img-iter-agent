@@ -41,6 +41,7 @@ from ..memory.experience import (
 )
 from ..memory.knowledge import load_conclusions
 from ..memory.schema import Benchmark
+from ._agent_output import provider_structured
 from ._narrow_tools import DISTILLER_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 
@@ -299,7 +300,7 @@ class ExperienceDistiller:
         agent = create_deep_agent(
             model=self.chat_model, tools=[],
             system_prompt=self.system_prompt,
-            response_format=RenovationPlan, checkpointer=None,
+            response_format=provider_structured(RenovationPlan), checkpointer=None,
             name="distiller_agent",  # 内层 agent run 名，与外层 experience_distiller trace 根区分
             middleware=narrow_tools_middleware(),
         )

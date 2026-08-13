@@ -30,7 +30,7 @@ from ..generation.image_io import file_to_data_uri
 from ..generation.router import Router
 from ..memory.experience import generator_skill_fs
 from ..memory.schema import CriticItemJudgment, TestVariable
-from ._agent_output import GeneratorOutput
+from ._agent_output import GeneratorOutput, provider_structured
 from ._narrow_tools import (
     AGENT_RECURSION_LIMIT,
     _GENERATOR_NARROW_EXCLUDED,
@@ -174,14 +174,14 @@ class Generator:
                 system_prompt=self.system_prompt,
                 skills=[_skills_source],
                 permissions=_permissions, backend=_backend,
-                response_format=GeneratorOutput, checkpointer=None, name="generator",
+                response_format=provider_structured(GeneratorOutput), checkpointer=None, name="generator",
                 middleware=narrow_tools_middleware(excluded=_GENERATOR_NARROW_EXCLUDED),
             )
         else:
             agent = create_deep_agent(
                 model=self.chat_model, tools=tools,
                 system_prompt=self.system_prompt,
-                response_format=GeneratorOutput, checkpointer=None, name="generator",
+                response_format=provider_structured(GeneratorOutput), checkpointer=None, name="generator",
                 middleware=narrow_tools_middleware(),
             )
 

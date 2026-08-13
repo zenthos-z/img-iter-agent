@@ -31,7 +31,7 @@ from ..memory.schema import (
     CriticVerdict,
     DimensionScore,
 )
-from ._agent_output import CriticAgentOutput
+from ._agent_output import CriticAgentOutput, provider_structured
 from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 from .tools.critic_tools import _effective_checklist, _load_creativity_overlay, make_critic_tools
@@ -163,7 +163,7 @@ class Critic:
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
-            response_format=CriticAgentOutput, checkpointer=None, name="critic",
+            response_format=provider_structured(CriticAgentOutput), checkpointer=None, name="critic",
             middleware=narrow_tools_middleware(),
         )
 
