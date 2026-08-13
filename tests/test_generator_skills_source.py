@@ -94,3 +94,69 @@ def test_skill_fs_readonly_denies_writes(tmp_path: Path) -> None:
     _backend, permissions, _rel = fs
     deny = [p for p in permissions if p.mode == "deny"][0]
     assert "write" in deny.operations, "兜底 deny 必须含 write——Generator 永不写"
+
+
+# ---------------------------------------------------------------------------
+# generator_agent_fs：技能包 + sample 文章素材 双挂载的通用有界 FS
+# ---------------------------------------------------------------------------
+
+
+def test_agent_fs_mounts_skill_and_article(tmp_path: Path) -> None:
+    """技能包 + article.md 并存 → 单 backend 锚定公共祖先(data/)，两个子树只读放行。"""
+    from img_iter_agent.memory.experience import generator_agent_fs
+
+    bench_id = "anthropic_og_style"
+    slug = slugify_bench(bench_id)
+    _make_skill_pkg(tmp_path, bench_id)
+    sample = tmp_path / "benchmarks" / bench_id / "samples" / "s006"
+    sample.mkdir(parents=True)
+    (sample / "article.md").write_text("# What 81,000 people want from AI\n\nbody", encoding="utf-8")
+
+    fs = generator_agent_fs(tmp_path / "experience" / bench_id, sample)
+    assert fs is not None
+    assert fs.skills_sources == [f"experience/{bench_id}"], "skills source = data 根相对路径"
+    assert fs.article_path == f"/benchmarks/{bench_id}/samples/s006/article.md"
+    assert str(fs.backend.cwd) == str(tmp_path), "backend 根 = 公共祖先（data_root）"
+    allow, deny = fs.permissions
+    assert allow.mode == "allow" and allow.operations == ["read"]
+    assert f"/experience/{bench_id}/{slug}/**" in allow.paths
+    assert f"/benchmarks/{bench_id}/samples/s006/**" in allow.paths
+    assert deny.mode == "deny" and deny.paths == ["/**"] and "write" in deny.operations
+
+
+def test_agent_fs_article_only_without_skills(tmp_path: Path) -> None:
+    """无技能包但有 article.md → 仍挂载（read_file 可读文章），skills_sources=None。"""
+    from img_iter_agent.memory.experience import generator_agent_fs
+
+    sample = tmp_path / "benchmarks" / "b" / "samples" / "s001"
+    sample.mkdir(parents=True)
+    (sample / "article.md").write_text("article body", encoding="utf-8")
+
+    fs = generator_agent_fs(None, sample)
+    assert fs is not None
+    assert fs.skills_sources is None
+    assert fs.article_path is not None and fs.article_path.endswith("article.md")
+    # 真实读取走通（backend + 虚拟路径）
+    res = fs.backend.read(fs.article_path)
+    assert not res.error and "article body" in (res.file_data or {}).get("content", "")
+
+
+def test_agent_fs_permission_boundary(tmp_path: Path) -> None:
+    """白名单外的虚拟路径（含越权读技能包邻居/根外）一律 deny。"""
+    from deepagents.middleware.filesystem import _check_fs_permission
+
+    from img_iter_agent.memory.experience import generator_agent_fs
+
+    bench_id = "anthropic_og_style"
+    _make_skill_pkg(tmp_path, bench_id)
+    sample = tmp_path / "benchmarks" / bench_id / "samples" / "s006"
+    sample.mkdir(parents=True)
+    (sample / "article.md").write_text("body", encoding="utf-8")
+
+    fs = generator_agent_fs(tmp_path / "experience" / bench_id, sample)
+    assert fs is not None
+    rules = fs.permissions
+    assert _check_fs_permission(rules, "read", fs.article_path) == "allow"
+    assert _check_fs_permission(rules, "read", "/etc/passwd") == "deny"
+    assert _check_fs_permission(rules, "read", "/experience/other_bench/x/SKILL.md") == "deny"
+    assert _check_fs_permission(rules, "write", fs.article_path) == "deny", "Generator 永不写"

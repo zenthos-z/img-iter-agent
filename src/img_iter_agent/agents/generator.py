@@ -28,9 +28,9 @@ from ..data.benchmark import Sample
 from ..generation.base import GenRequest, ModelFamily
 from ..generation.image_io import file_to_data_uri
 from ..generation.router import Router
-from ..memory.experience import generator_skill_fs
+from ..memory.experience import generator_agent_fs
 from ..memory.schema import CriticItemJudgment, TestVariable
-from ._agent_output import GeneratorOutput
+from ._agent_output import GeneratorOutput, provider_structured
 from ._narrow_tools import (
     AGENT_RECURSION_LIMIT,
     _GENERATOR_NARROW_EXCLUDED,
@@ -48,6 +48,8 @@ _DEFAULT_GENERATOR_SYS = (
     "你是生图提示词工程师。每轮按以下精简流程，不要发散：\n"
     "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项 + 【本题已验证经验】摘要）。"
     "参考图（若有）已直接附在消息里，**不要去文件系统找图**。\n"
+    "1b. 若用户消息给出【文章原文】路径：先 read_file 读完文章（长文用 offset/limit 翻页），"
+    "吃透核心概念再构思视觉隐喻，**不要凭训练记忆臆测文章内容**。\n"
     "2. 取经验（每个工具至多一次）：若挂载了本 benchmark 的经验技能包，按提示 read_file 它的 SKILL.md"
     "（必要时再读 references/lessons.md）取跨 loop 蒸馏的生成要点；round>1 时调一次 query_experience 取本题"
     " in-loop 经验全文（每轮 user message 也有结论摘要）。\n"
@@ -63,8 +65,8 @@ _DEFAULT_GENERATOR_SYS = (
     "['hand-abacus']）。Gemini 把它们作 inline_data 风格条件。**这是创意权衡**：0-2 张帮你锚定风格神韵；"
     ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
     "纯文生图(reference_images=[])是合法且常更原创的选择。可用标识符见用户消息。\n"
-    "你的核心工具：generate_image / query_experience。若挂载了经验技能包，还会自动出现 read_file"
-    "（仅限读该技能包的 SKILL.md / references，不可读其它路径）。"
+    "你的核心工具：generate_image / query_experience。若挂载了经验技能包或文章素材，还会自动出现 read_file"
+    "（仅限读用户消息指出的文章路径，及技能包的 SKILL.md / references，不可读其它路径）。"
 )
 
 
@@ -166,22 +168,25 @@ class Generator:
         # 跨 loop 蒸馏经验：标准 deepagents skills（progressive disclosure）。
         # skills_dir 非空（本 bench 已蒸馏）→ 接有界 FS：read_file 钉死在技能包内、放回 read_file（Generator 专用窄集），
         # 让 SkillsMiddleware 真能让模型 read_file SKILL.md。无技能包 → 裸跑（原 narrow 全集，剥 read_file）。
-        skill_fs = generator_skill_fs(self.skills_dir)
-        if skill_fs is not None:
-            _backend, _permissions, _skills_source = skill_fs
-            agent = create_deep_agent(
-                model=self.chat_model, tools=tools,
-                system_prompt=self.system_prompt,
-                skills=[_skills_source],
-                permissions=_permissions, backend=_backend,
-                response_format=GeneratorOutput, checkpointer=None, name="generator",
-                middleware=narrow_tools_middleware(excluded=_GENERATOR_NARROW_EXCLUDED),
-            )
+        # sample 含 article.md（考题文章正文素材）→ 一并挂载（只读），user message 给虚拟路径让 agent read_file。
+        agent_fs = generator_agent_fs(self.skills_dir, sample.sample_dir)
+        if agent_fs is not None:
+            agent_kwargs: dict[str, Any] = {
+                "model": self.chat_model, "tools": tools,
+                "system_prompt": self.system_prompt,
+                "response_format": provider_structured(GeneratorOutput),
+                "checkpointer": None, "name": "generator",
+                "middleware": narrow_tools_middleware(excluded=_GENERATOR_NARROW_EXCLUDED),
+                "permissions": agent_fs.permissions, "backend": agent_fs.backend,
+            }
+            if agent_fs.skills_sources:
+                agent_kwargs["skills"] = agent_fs.skills_sources
+            agent = create_deep_agent(**agent_kwargs)
         else:
             agent = create_deep_agent(
                 model=self.chat_model, tools=tools,
                 system_prompt=self.system_prompt,
-                response_format=GeneratorOutput, checkpointer=None, name="generator",
+                response_format=provider_structured(GeneratorOutput), checkpointer=None, name="generator",
                 middleware=narrow_tools_middleware(),
             )
 
@@ -201,6 +206,7 @@ class Generator:
             sample, round, prior_feedback, reference_images,
             escalated_warnings=escalated_warnings, conclusions_brief=conclusions_brief,
             extra_hints=extra_hints,
+            article_path=agent_fs.article_path if agent_fs is not None else None,
         )
         invoke_cfg = self._merge_recursion(config, AGENT_RECURSION_LIMIT)
 
@@ -288,13 +294,20 @@ class Generator:
         escalated_warnings: list[str] | None = None,
         conclusions_brief: str = "",
         extra_hints: list[str] | None = None,
+        article_path: str | None = None,
     ) -> list[dict] | str:
-        """构造初始 HumanMessage 内容：指令+约束(+上轮失败项)+本题已验证经验+经验闭环警告+参考图(image_url)。"""
+        """构造初始 HumanMessage 内容：指令+约束(+文章素材路径)+上轮失败项+本题已验证经验+经验闭环警告+参考图(image_url)。"""
         instr = (sample.spec.task.instruction if sample.spec.task else None) or "生成产品白底三视图素材图"
         constraints = self._extract_constraints(sample)
         text = instr
         if constraints:
             text += "\n约束: " + json.dumps(constraints, ensure_ascii=False)
+        if article_path:
+            text += (
+                "\n\n【文章原文】本题文章正文已挂载（只读），路径："
+                f"{article_path}\n构造 prompt 前**先 read_file 读它**（长文用 offset/limit 翻页读完整），"
+                "吃透文章核心概念后再构思视觉隐喻；**不要凭训练记忆臆测文章内容**。"
+            )
         if round > 1 and prior_feedback and prior_feedback.failed_items:
             fails = "\n".join(f"- [{it.id}] {it.reason}" for it in prior_feedback.failed_items)
             cont = ""
