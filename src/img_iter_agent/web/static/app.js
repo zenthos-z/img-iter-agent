@@ -750,6 +750,8 @@ async function viewLoop(loopId) {
 
     // 人工提示词面板（异步填充）
     renderHintsPanel(loopId, loop.status);
+    // Generator 本 loop 记忆面板（系统托管，可查看/编辑/清空）
+    renderMemoryPanel(loopId);
 
     // 活动流首拉（running 时立即填充；后续靠 _loopPollTimer 增量）
     if (st === "running") pollLoopActivity(loopId);
@@ -913,6 +915,7 @@ function renderLoopFull(loop, loopId) {
   }
 
   html += `<div id="hints-panel" class="mt-4"></div>`;
+  html += `<div id="memory-panel" class="mt-4"></div>`;
   return html;
 }
 
@@ -1026,6 +1029,7 @@ function renderLoopCompact(loop, loopId) {
       </details>` : ""}
 
       <div id="hints-panel"></div>
+      <div id="memory-panel" class="mt-4"></div>
     </div>`;
 }
 
@@ -1272,6 +1276,48 @@ async function removeLoopHint(loopId, hintId) {
     toast("已删除", "success");
     renderHintsPanel(loopId, window.__loopCache.current?.status);
   } catch (e) { handleError(e, "删除失败"); }
+}
+
+// ============ Generator 本 loop 记忆面板（系统托管，按 loop 隔离；查看/编辑/清空） ============
+// 记录 generator 每轮的动作（model/参数杠杆）+ Critic 结果，供下一轮选更合适的模型。
+// 系统每轮自动追加；此处可人工编辑（下一轮注入即生效）或清空重来。
+async function renderMemoryPanel(loopId) {
+  const el = document.getElementById("memory-panel");
+  if (!el) return;
+  let content = "";
+  try {
+    content = ((await api(`/loops/${loopId}/memory`)).content) || "";
+  } catch (_) { return; }
+  el.innerHTML = `<details class="card card-padded hints-card">
+    <summary class="bench-header">
+      <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+      <h3 style="margin:0">Generator 本 loop 记忆</h3>
+      <span class="muted" style="font-size:11px">系统每轮追加动作+结果；可编辑/清空</span>
+    </summary>
+    <textarea id="mem-text" class="mt-2" rows="10" style="width:100%;font-family:monospace;font-size:12px" placeholder="（尚无记忆——首轮 generator 出图后系统自动追加）">${esc(content)}</textarea>
+    <div class="mt-1" style="display:flex;gap:8px">
+      <button class="btn btn-primary btn-sm" onclick="saveMemoryPanel('${esc(loopId)}')">保存</button>
+      <button class="btn btn-danger btn-sm" onclick="clearMemoryPanel('${esc(loopId)}')">清空</button>
+    </div>
+  </details>`;
+}
+
+async function saveMemoryPanel(loopId) {
+  const ta = document.getElementById("mem-text");
+  if (!ta) return;
+  try {
+    await api(`/loops/${loopId}/memory`, { method: "PUT", body: JSON.stringify({ content: ta.value }) });
+    toast("记忆已保存，下一轮注入生效", "success");
+  } catch (e) { handleError(e, "保存失败"); }
+}
+
+async function clearMemoryPanel(loopId) {
+  if (!confirm("清空本 loop 的 generator 记忆？（系统托管文件重建为空，下一轮重新累积）")) return;
+  try {
+    await api(`/loops/${loopId}/memory`, { method: "DELETE" });
+    toast("已清空", "success");
+    renderMemoryPanel(loopId);
+  } catch (e) { handleError(e, "清空失败"); }
 }
 
 // ============ 视图：人工排序 ============

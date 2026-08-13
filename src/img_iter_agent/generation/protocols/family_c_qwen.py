@@ -36,15 +36,22 @@ def generate(req: GenRequest, *, client: DmxapiClient, model_id: str,
     for p in req.reference_images:
         content.append({"image": file_to_data_uri(Path(p))})
 
+    # C 族支持 negative_prompt + seed（见 input.parameters 字段文档）；其余族静默忽略。
+    params: dict = {
+        "size": to_size_str(req.size),
+        "n": req.n,
+        "watermark": False,
+    }
+    if req.negative_prompt:
+        params["negative_prompt"] = req.negative_prompt
+    if req.seed is not None:
+        params["seed"] = req.seed
+
     body = {
         "model": model_id,
         "input": {
             "messages": [{"role": "user", "content": content}],
-            "parameters": {
-                "size": to_size_str(req.size),
-                "n": req.n,
-                "watermark": False,
-            },
+            "parameters": params,
         },
     }
 

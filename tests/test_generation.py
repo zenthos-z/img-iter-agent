@@ -282,6 +282,41 @@ def test_route_respects_model_hint(tmp_path):
     assert d.family is ModelFamily.C_QWEN
 
 
+def test_route_model_id_is_highest_priority(tmp_path):
+    """动作空间 A 的 model 杠杆：agent 显式选 model_id → 压过 model_hint / 参考图 / 默认路由。"""
+    settings = _settings()
+    # 即便有参考图(默认会→B) + model_hint=C，model_id 选 Gemini 仍胜出
+    d = route(GenRequest(prompt="x", reference_images=[tmp_path / "r.png"],
+                         model_hint=ModelFamily.C_QWEN,
+                         model_id=settings.model_gemini_image), settings=settings)
+    assert d.family is ModelFamily.D_GEMINI
+    assert d.model_id == settings.model_gemini_image
+
+
+def test_route_model_id_unknown_raises():
+    """agent 选了不在已配置 4 族集合内的 model_id → ValueError（防误用未配置模型）。"""
+    settings = _settings()
+    with pytest.raises(ValueError, match="不在已配置"):
+        route(GenRequest(prompt="x", model_id="some-unconfigured-model"), settings=settings)
+
+
+def test_route_conversation_history_to_d(tmp_path):
+    """多轮改图（edit_previous→conversation_history 非空）→ D（唯一支持多轮）。"""
+    settings = _settings()
+    d = route(GenRequest(prompt="改图", conversation_history=[tmp_path / "prev.png"]),
+              settings=settings)
+    assert d.family is ModelFamily.D_GEMINI
+
+
+def test_route_model_id_beats_conversation_history(tmp_path):
+    """model_id 优先级高于 conversation_history：显式选 A 但带改图历史 → 路由 A
+    （edit_previous 与非 D 族冲突时，由工具层退化为重画并告警，路由层服从 model_id）。"""
+    settings = _settings()
+    d = route(GenRequest(prompt="x", conversation_history=[tmp_path / "prev.png"],
+                         model_id=settings.model_gpt_image), settings=settings)
+    assert d.family is ModelFamily.A_OPENAI
+
+
 def test_route_raises_when_model_id_missing(tmp_path):
     settings = _settings(model_seedream_pro="", model_gpt_image="", model_qwen_image="",
                          model_gemini_image="")

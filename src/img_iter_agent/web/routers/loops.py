@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from ...config import get_settings
-from ..models import HintCreateRequest, HintOut, LoopControlRequest, LoopStartRequest
+from ..models import HintCreateRequest, HintOut, LoopControlRequest, LoopStartRequest, MemoryWriteRequest
 from ..services.data_access import build_loop_detail, read_events_since
 from ..services.loop_runner import LoopBusyError, get_runner
 
@@ -147,6 +147,46 @@ def delete_loop_hint(loop_id: str, hint_id: str) -> None:
     ok = get_runner().remove_hint(loop_id, hint_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"hint {hint_id} 不存在")
+
+
+# ---- Generator 本 loop 记忆（系统托管，按 loop 隔离；前端查看/编辑/清空）----
+
+
+@router.get("/loops/{loop_id}/memory")
+def get_loop_memory(loop_id: str) -> dict:
+    """读 generator 本 loop 记忆原文（markdown，含头部）。loop 不存在 → 404。"""
+    if build_loop_detail(loop_id) is None:
+        raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在")
+    from ...memory.loop_memory import generator_memory_path, read_memory_raw
+
+    run_dir = get_settings().run_dir(loop_id)
+    content = read_memory_raw(run_dir)
+    return {
+        "loop_id": loop_id,
+        "content": content,
+        "exists": generator_memory_path(run_dir).exists(),
+    }
+
+
+@router.put("/loops/{loop_id}/memory")
+def put_loop_memory(loop_id: str, req: MemoryWriteRequest) -> dict:
+    """编辑（覆盖写）generator 本 loop 记忆。下一轮 generator 注入即生效。"""
+    if build_loop_detail(loop_id) is None:
+        raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在")
+    from ...memory.loop_memory import write_memory_raw
+
+    write_memory_raw(get_settings().run_dir(loop_id), req.content)
+    return {"loop_id": loop_id, "saved": True}
+
+
+@router.delete("/loops/{loop_id}/memory", status_code=204)
+def delete_loop_memory(loop_id: str) -> None:
+    """清空 generator 本 loop 记忆（重建空文件，保留头部）。"""
+    if build_loop_detail(loop_id) is None:
+        raise HTTPException(status_code=404, detail=f"loop {loop_id} 不存在")
+    from ...memory.loop_memory import reset_memory
+
+    reset_memory(get_settings().run_dir(loop_id))
 
 
 # ---- 删除（loop / 单轮 attempt）----

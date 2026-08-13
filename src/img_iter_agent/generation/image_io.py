@@ -7,6 +7,7 @@ URL 类型的响应图会被下载到本地存盘再返回路径。
 from __future__ import annotations
 
 import base64
+import io
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,6 +24,37 @@ def file_to_data_uri(path: Path) -> str:
     data = path.read_bytes()
     b64 = base64.b64encode(data).decode("ascii")
     return f"data:{mime};base64,{b64}"
+
+
+# 注入 agent HumanMessage 的图最长边（控制 LangSmith trace 体积 + 输入 token）。
+# 4.2MB PNG 原图经此缩放 → ~0.1MB JPEG，单轮 trace 从 ~14MB 降到 ~1MB，避免上传超时。
+_VIEW_MAX_DIM = 1280
+
+
+def resized_data_uri(path: Path, max_dim: int = _VIEW_MAX_DIM) -> str:
+    """读图 → 等比缩到最长边 max_dim → JPEG(q85) data-URI。
+
+    用于把图注入 agent 的 HumanMessage（critic / generator / distiller 共用）。
+    与 ``file_to_data_uri``（原图）相对：本函数缩放以控制体积，避免大图把 LangSmith
+    trace 撑到十几 MB 导致上传超时。缩放对「整体还原度」类评分无损（distiller 已验证）。
+    PIL 不可用或缩放失败时，退回原图 ``file_to_data_uri``（保证总有图可看）。
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return file_to_data_uri(path)
+    try:
+        im = Image.open(path).convert("RGB")
+        w, h = im.size
+        scale = max_dim / max(w, h)
+        if scale < 1:
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:  # noqa: BLE001
+        return file_to_data_uri(path)
 
 
 def guess_mime(path: Path) -> str:
@@ -93,4 +125,4 @@ def _download(url: str, dest_dir: Path, name_hint: str, index: int) -> Path:
     return out
 
 
-__all__ = ["file_to_data_uri", "guess_mime", "save_image_payload"]
+__all__ = ["file_to_data_uri", "guess_mime", "resized_data_uri", "save_image_payload"]

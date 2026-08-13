@@ -46,9 +46,15 @@ def _ratio_from_pixels(pixels: tuple[int, int] | None) -> str:
 
 def generate(req: GenRequest, *, client: DmxapiClient, model_id: str,
              out_dir: Path) -> GeneratedImage:
-    # parts：先文本，再各参考图（inline_data）
+    # parts：先文本，再各参考图（inline_data），再待编辑的历史图（edit_previous/conversation_history）
     parts: list[dict] = [{"text": req.prompt}]
     for p in req.reference_images:
+        mime = guess_mime(Path(p))
+        b64 = base64.b64encode(Path(p).read_bytes()).decode("ascii")
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    # 多轮改图（edit_previous）：把待编辑的历史图作 inline_data 传入——简化多轮
+    # （不带 thoughtSignature 的单轮编辑，让模型在上一版图基础上改；真正多轮签名留待后续）。
+    for p in req.conversation_history:
         mime = guess_mime(Path(p))
         b64 = base64.b64encode(Path(p).read_bytes()).decode("ascii")
         parts.append({"inline_data": {"mime_type": mime, "data": b64}})
@@ -90,7 +96,8 @@ def _materialize(resp: dict, model_id: str, endpoint: str, req: GenRequest,
         model=model_id,
         endpoint=endpoint,
         meta={"family": "D", "imageConfig": _image_config(req.size),
-              "had_reference": bool(req.reference_images)},
+              "had_reference": bool(req.reference_images),
+              "had_conversation_history": bool(req.conversation_history)},
     )
 
 

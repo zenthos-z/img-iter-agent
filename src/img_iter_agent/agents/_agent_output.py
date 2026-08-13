@@ -47,6 +47,15 @@ class GeneratorOutput(BaseModel):
         default="",
         description="本轮相对上轮改了什么（针对哪些失败项做了什么；引用经验库的结论）",
     )
+    strategy_note: str = Field(
+        default="",
+        description=(
+            "本轮【非 prompt 杠杆】的生图策略声明：选了哪个 model、edit_previous 是否在上一版上改图、"
+            "用了 negative_prompt/seed/steps 哪些。供记忆追加与蒸馏结构化捕获。"
+            "与 delta_note 互补——delta_note 讲 prompt 改动，strategy_note 讲 model/参数/改图模式。"
+            "纯 prompt 微调轮可留空。"
+        ),
+    )
 
 
 class CriticDimensionOutput(BaseModel):

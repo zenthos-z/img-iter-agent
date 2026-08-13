@@ -16,7 +16,7 @@ checkpointer 用 SqliteSaver（持久化，可断点续跑）；测试可用 InM
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -31,6 +31,7 @@ from ..data.runstore import RunStore
 from ..data.trajectory import TrajectoryReader, TrajectoryWriter
 from ..data.weights import load_weights
 from ..generation.base import ModelFamily
+from ..memory.loop_memory import append_round as memory_append_round
 from ..memory.schema import AttemptRecord, CriticVerdict
 from .state import CompiledGraph, RunState
 
@@ -161,6 +162,23 @@ def build_graph(
             prev_verdict=prev_verdict, prev_delta_note=prev_delta_note,
         ), config=config, extra_hints=_critic_hints or None)
         # 写 trajectory（lesson_ref 由 evaluate 内的经验总结回填到 verdict 上）
+        # 动作空间 A 的非 prompt 杠杆 → AttemptRecord（model_params + conversation_history_refs）：
+        # 让 distiller 看到「完整策略」而不止 prompt，从而能蒸馏 model/size/edit/params 类经验。
+        conv_history_refs = (
+            [outcome.baseline_ref] if outcome.edit_previous and outcome.baseline_ref else []
+        )
+        model_params: dict[str, Any] = {
+            "model_family": outcome.model_family,
+            "edit_previous": outcome.edit_previous,
+        }
+        if outcome.negative_prompt:
+            model_params["negative_prompt"] = outcome.negative_prompt
+        if outcome.seed is not None:
+            model_params["seed"] = outcome.seed
+        if outcome.steps is not None:
+            model_params["steps"] = outcome.steps
+        if outcome.strategy_note:
+            model_params["strategy_note"] = outcome.strategy_note
         rec = AttemptRecord(
             attempt_id=outcome.attempt_id, run_id=run_store.meta.run_id if run_store.meta else "",
             round=state["round"], sample_id=sample_id, bench_id=bench.bench.bench_id,
@@ -168,11 +186,18 @@ def build_graph(
             baseline_ref=outcome.baseline_ref, gen_mode=outcome.gen_mode,
             prompt=outcome.prompt, reference_image_refs=list(outcome.reference_image_refs),
             reference_ids=list(outcome.reference_ids),
-            size=outcome.size, output_image_refs=list(outcome.output_image_refs),
+            conversation_history_refs=conv_history_refs,
+            size=outcome.size, model_params=model_params,
+            output_image_refs=list(outcome.output_image_refs),
             verdict=verdict, lesson_ref=verdict.lesson_ref, delta_note=outcome.delta_note,
             meaning=outcome.meaning,
         )
         TrajectoryWriter(run_dir / "trajectory.jsonl").append(rec)
+        # 系统托管记忆（按 loop=run 隔离）：每轮追加「动作→结果」，供 generator 后续轮选更合适的模型。
+        # vs上轮用最近一轮 verdict（all_verdicts[-1]）；与 critic 自己的 prev_verdict([-2]) 用途不同、互不干扰。
+        _mem_prev = all_verdicts[-1] if all_verdicts else None
+        memory_append_round(run_dir, round_n=state["round"], outcome=outcome,
+                            verdict=verdict, prev_verdict=_mem_prev)
         return {"_verdict": verdict, "verdicts": [verdict], "attempts": [rec]}
 
     def human_review_node(state: RunState, config: RunnableConfig) -> dict:

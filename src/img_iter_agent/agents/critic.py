@@ -24,7 +24,7 @@ from langchain_core.runnables import RunnableConfig
 
 from ..data.benchmark import Sample
 from ..data.weights import recompute_restoration
-from ..generation.image_io import file_to_data_uri
+from ..generation.image_io import resized_data_uri
 from ..memory.knowledge import load_conclusions
 from ..memory.schema import (
     Benchmark,
@@ -90,7 +90,7 @@ def _build_multimodal_content(text: str, images: list[Path]) -> list[dict] | str
         if Path(p).exists():
             parts.append({
                 "type": "image_url",
-                "image_url": {"url": file_to_data_uri(Path(p))},
+                "image_url": {"url": resized_data_uri(Path(p))},
             })
     return parts
 

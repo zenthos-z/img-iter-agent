@@ -26,9 +26,10 @@ from pydantic import BaseModel, Field
 
 from ..data.benchmark import Sample
 from ..generation.base import GenRequest, ModelFamily
-from ..generation.image_io import file_to_data_uri
+from ..generation.image_io import resized_data_uri
 from ..generation.router import Router
 from ..memory.experience import generator_agent_fs
+from ..memory.loop_memory import load_memory_brief
 from ..memory.schema import CriticItemJudgment, TestVariable
 from ._agent_output import GeneratorOutput, provider_structured
 from ._narrow_tools import (
@@ -56,11 +57,16 @@ _DEFAULT_GENERATOR_SYS = (
     "3. 构造/改进**英文优先**的生图 prompt：保留用户消息里给出的所有考题约束；"
     "把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分；"
     "【本题已验证经验】里「勿重复」的改动绝对不要再试、「保持」的要延续。\n"
-    "4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图。\n"
+    "4. **只调一次** generate_image(...) 出图。按需用这些杠杆（不传=默认）：model_id（显式选生图模型，"
+    "见用户消息的可用集合；不同模型实际尺寸/比例行为不同）、edit_previous（True=在上一版图基础上改图，"
+    "仅 Gemini 生效、保留已画对的部分；非 D 族自动退化重画）、negative_prompt/seed（仅 Qwen 生效）、"
+    "steps（暂各族不支持）。\n"
     "5. 【收尾·强制，违反会导致本轮作废】generate_image 只返回文件路径、**没有任何评分或质量反馈**，"
     "因此**绝不能**为『改善结果』再出图。出图成功后，**下一步必须且只能**调用结构化输出工具 GeneratorOutput"
-    "（填 prompt + delta_note + meaning）结束本轮。**不要**在出图后停顿、**不要**输出纯文本就结束——"
-    "那样本轮会被判无结构化输出、触发重试、放大成一堆废图。\n"
+    "（填 prompt + delta_note + meaning + strategy_note）结束本轮。**不要**在出图后停顿、**不要**输出纯文本就结束——"
+    "那样本轮会被判无结构化输出、触发重试、放大成一堆废图。"
+    "**strategy_note**：若本轮用了非 prompt 杠杆（换了 model / edit_previous / negative_prompt / seed），"
+    "务必在此声明选了什么、为什么（结合【本 loop 历史动作记忆】与 Critic 反馈）；纯 prompt 微调轮可留空。\n"
     "6. 【风格迁移·参考图用法】generate_image 的 reference_images 参数可选，传参考图标识符子集（如 "
     "['hand-abacus']）。Gemini 把它们作 inline_data 风格条件。**这是创意权衡**：0-2 张帮你锚定风格神韵；"
     ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
@@ -95,6 +101,12 @@ class GenOutcome(BaseModel):
     improved_from_feedback: bool = False  # 本轮 prompt 是否基于上轮反馈改进
     delta_note: str | None = None  # 本轮相对上轮的改动说明（供经验闭环沉淀）
     meaning: str | None = None  # 一句话图片含义解释（风格神韵迁移场景；供 Critic 判概念表达）
+    # --- 动作空间 A 的非 prompt 杠杆（供 trajectory/记忆/蒸馏结构化捕获）---
+    edit_previous: bool = False  # 本轮是否走多轮改图（D 族 conversation_history；非 D 自动退化重画）
+    negative_prompt: str | None = None
+    seed: int | None = None
+    steps: int | None = None
+    strategy_note: str | None = None  # Generator 显式声明的本轮策略（GeneratorOutput.strategy_note）
 
 
 def _new_attempt_id(round: int) -> str:
@@ -161,9 +173,11 @@ class Generator:
         attempt_out.mkdir(parents=True, exist_ok=True)
 
         sink: dict[str, Any] = {}
+        # edit_previous 的改图目标：上轮生成图（baseline_ref 相对 run 目录）
+        prev_image: Path | None = (run_dir / baseline_ref) if baseline_ref else None
         tools = make_generator_tools(
             router=self.router, sample=sample, out_dir=attempt_out, run_dir=run_dir,
-            model_hint=model_hint, sink=sink,
+            model_hint=model_hint, sink=sink, prev_image=prev_image,
         )
         # 跨 loop 蒸馏经验：标准 deepagents skills（progressive disclosure）。
         # skills_dir 非空（本 bench 已蒸馏）→ 接有界 FS：read_file 钉死在技能包内、放回 read_file（Generator 专用窄集），
@@ -202,11 +216,14 @@ class Generator:
             except Exception:  # noqa: BLE001
                 conclusions_brief = ""
 
+        available_models = self._available_model_ids()
+        memory_brief = self._load_memory_brief(run_dir)
         user_content = self._build_user_content(
             sample, round, prior_feedback, reference_images,
             escalated_warnings=escalated_warnings, conclusions_brief=conclusions_brief,
             extra_hints=extra_hints,
             article_path=agent_fs.article_path if agent_fs is not None else None,
+            available_models=available_models, memory_brief=memory_brief,
         )
         invoke_cfg = self._merge_recursion(config, AGENT_RECURSION_LIMIT)
 
@@ -219,6 +236,7 @@ class Generator:
         prompt = (out.prompt or "").strip() or self._base_prompt_text(sample)
         delta_note = (out.delta_note or "").strip() or None
         meaning = (out.meaning or "").strip() or None
+        strategy_note = (out.strategy_note or "").strip() or None
 
         # 出图：agent 调了 generate_image → sink 有 ref；否则用 prompt 现场出图（兜底）
         if sink.get("ref"):
@@ -268,6 +286,12 @@ class Generator:
 
         improved = round > 1 and prior_feedback is not None and bool(prior_feedback.failed_items)
 
+        # 动作空间 A 的非 prompt 杠杆（仅 agent 真正调了 generate_image 时 sink 才有值；兜底出图为默认）
+        edit_previous_out = bool(sink.get("edit_previous"))
+        negative_prompt_out = sink.get("negative_prompt")
+        seed_out = sink.get("seed")
+        steps_out = sink.get("steps")
+
         return GenOutcome(
             attempt_id=attempt_id,
             test_variable="prompt" if round > 1 else None,
@@ -283,6 +307,11 @@ class Generator:
             model=model_used,
             model_family=model_family,
             improved_from_feedback=improved,
+            edit_previous=edit_previous_out,
+            negative_prompt=negative_prompt_out,
+            seed=seed_out,
+            steps=steps_out,
+            strategy_note=strategy_note,
         )
 
     # --- 辅助 ---
@@ -295,8 +324,10 @@ class Generator:
         conclusions_brief: str = "",
         extra_hints: list[str] | None = None,
         article_path: str | None = None,
+        available_models: list[str] | None = None,
+        memory_brief: str = "",
     ) -> list[dict] | str:
-        """构造初始 HumanMessage 内容：指令+约束(+文章素材路径)+上轮失败项+本题已验证经验+经验闭环警告+参考图(image_url)。"""
+        """构造初始 HumanMessage 内容：指令+约束(+文章素材路径)+上轮失败项+本题已验证经验+经验闭环警告+可选模型+记忆+参考图(image_url)。"""
         instr = (sample.spec.task.instruction if sample.spec.task else None) or "生成产品白底三视图素材图"
         constraints = self._extract_constraints(sample)
         text = instr
@@ -345,6 +376,18 @@ class Generator:
         if conclusions_brief:
             text += "\n\n" + conclusions_brief
 
+        # 动作空间 A · 可选生图模型（model 杠杆）：让 agent 知道能选哪些 model_id
+        if available_models:
+            text += (
+                "\n\n【可选生图模型 model_id】generate_image(model_id=...) 可显式选（限定以下已配置集合）：\n"
+                + "\n".join(f"- {m}" for m in available_models)
+                + "\n不传=按默认路由。不同模型实际尺寸/比例行为不同——三视图 16:9 宽幅只有 Gemini "
+                "生效，其余族落成方图。结合下方【本 loop 历史动作记忆】与 Critic 反馈，选更适合的模型。"
+            )
+        # 系统托管记忆（按 loop 隔离）：generator 之前在本 loop 做过的动作 + 结果
+        if memory_brief:
+            text += "\n\n【本 loop 历史动作记忆（你之前试过什么、结果如何）】\n" + memory_brief
+
         # 风格神韵迁移专属：要求 generator 产出一句话图片含义（供 Critic 判概念表达 + 最终图文方案文字）
         if sample.spec.task and sample.spec.task.mode == "style_transfer":
             text += (
@@ -362,7 +405,7 @@ class Generator:
         parts: list[dict] = [{"type": "text", "text": text}]
         for p in reference_images:
             if p.exists():
-                parts.append({"type": "image_url", "image_url": {"url": file_to_data_uri(p)}})
+                parts.append({"type": "image_url", "image_url": {"url": resized_data_uri(p)}})
         return parts
 
     def _base_prompt_text(self, sample: Sample) -> str:
@@ -373,6 +416,21 @@ class Generator:
         if constraints:
             base += "\n约束: " + json.dumps(constraints, ensure_ascii=False)
         return base
+
+    def _available_model_ids(self) -> list[str]:
+        """已配置的 4 族生图 model_id（agent 可选范围，与 router._model_id_for 一致）。
+
+        settings 缺失（如测试桩）→ 返回 []，agent 走默认路由（graceful 退化，不崩）。
+        """
+        s = getattr(self.router, "settings", None)
+        if s is None:
+            return []
+        return [m for m in (s.model_gpt_image, s.model_seedream_pro,
+                            s.model_qwen_image, s.model_gemini_image) if m]
+
+    def _load_memory_brief(self, run_dir: Path) -> str:
+        """读本 loop 的 generator 记忆正文（系统托管，按 loop 隔离）。委托 loop_memory.load_memory_brief。"""
+        return load_memory_brief(run_dir)
 
     def _extract_constraints(self, sample: Sample) -> dict:
         """从 content_spec 读原始 constraints 字段（若存在）。"""

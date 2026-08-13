@@ -292,6 +292,12 @@ class LoopControlRequest(BaseModel):
     decision: str = "continue"  # continue / stop / 任意调整方向文本
 
 
+class MemoryWriteRequest(BaseModel):
+    """编辑 generator 本 loop 记忆（系统托管，按 loop 隔离）的请求体。"""
+
+    content: str = ""  # 记忆原文（markdown）；空串 → 清空
+
+
 # ---------------------------------------------------------------------------
 # benchmark 管理（新增 benchmark 表单）
 # ---------------------------------------------------------------------------

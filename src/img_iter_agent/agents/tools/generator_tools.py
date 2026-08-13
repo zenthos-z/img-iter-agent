@@ -4,7 +4,10 @@
 = 新增一个 `make_*_tool` 工厂 + 在 generate_round 注册。不改外层图、不改 RunState。
 
 当前工具：
-  - generate_image(prompt, size)：包 Router.generate，出三视图并落盘。
+  - generate_image(prompt, size, reference_images, model_id, edit_previous,
+                   negative_prompt, seed, steps)：包 Router.generate，出三视图并落盘。
+    动作空间 A 的 8 个策略杠杆：prompt / size / reference_images / model_id /
+    edit_previous(多轮改图) / negative_prompt / seed / steps（各族尽力翻译，不支持静默忽略）。
   - query_experience(dim)：包经验知识库（conclusions.json），返回已验证有效/无效经验。
 """
 
@@ -76,8 +79,8 @@ def _format_experience(run_dir: Path, dim: str | None = None) -> str:
 class GenerateImageArgs(BaseModel):
     """generate_image 工具的参数 schema（显式 args_schema，避免 Gemini 严格后端拒 anyOf）。
 
-    reference_images 用 list[str] + default_factory=list（非 list[str] | None），生成干净的
-    array schema；[] = 纯文生图。详见 _agent_output.py:36-42 的 anyOf 教训。
+    可选字段一律用「空值哨兵」而非 Optional：str="" / int=-1 = 未设置，生成干净的单一 type schema
+    （与 reference_images=list[str] 同理；详见 _agent_output.py:36-42 的 anyOf 教训）。
     """
 
     prompt: str = Field(description="生图提示词（本轮最终采用的 prompt，应与结构化输出里的 prompt 一致）")
@@ -91,6 +94,33 @@ class GenerateImageArgs(BaseModel):
             "维度会扣分）。可用标识符见用户消息；未知标识符会被忽略并告警。"
         ),
     )
+    # --- 动作空间 A 的非 prompt 杠杆（哨兵默认值；各族尽力翻译，不支持静默忽略）---
+    model_id: str = Field(
+        default="",
+        description=(
+            "【可选】显式选生图模型 model_id（限定用户消息给出的已配置集合）；空=按默认路由。"
+            "不同模型实际尺寸/比例行为不同——三视图 16:9 宽幅只有 Gemini 生效，其余族落成方图。"
+        ),
+    )
+    edit_previous: bool = Field(
+        default=False,
+        description=(
+            "【可选】True=在上一版图基础上多轮改图（仅 D/Gemini 族生效；若实际用到非 D 族会自动"
+            "退化为重新生成并告警）。False(默认)=从零重新生成。微调（只改局部）建议 True。"
+        ),
+    )
+    negative_prompt: str = Field(
+        default="",
+        description="【可选】反向提示，要避免什么（如 'blurry, extra legs, distorted proportions'）。仅 Qwen 族生效，其余静默忽略；空=不设。",
+    )
+    seed: int = Field(
+        default=-1,
+        description="【可选】随机种子（可复现）。仅 Qwen 族生效，其余静默忽略；-1=不设。",
+    )
+    steps: int = Field(
+        default=-1,
+        description="【可选】采样步数。当前各族均不支持、静默忽略（预留扩展）；-1=不设。",
+    )
 
 
 def make_generate_image_tool(
@@ -103,27 +133,36 @@ def make_generate_image_tool(
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
     aspect_ratio: str | None = None,
+    prev_image: Path | None = None,
 ) -> BaseTool:
-    """生成三视图并落盘的工具。sink 用于把 model/family/ref/reference_ids 回传给 generate_round。
+    """生成三视图并落盘的工具。sink 用于把 model/family/ref/reference_ids/非prompt杠杆 回传给 generate_round。
 
     - fallback_refs：image_edit/multiview 模式下作固定风格锚的参考（如 target）；style_transfer 不用。
     - ref_registry：style_transfer 模式下「参考标识符(stem) → Path」映射，让 agent 通过工具参数
       `reference_images` 主动选参考子集（解禁）；为 None 表示该模式不由 agent 控制参考（用 fallback_refs）。
     - aspect_ratio：三视图等宽幅任务传 "16:9"，让 family D 用宽 aspectRatio（避免 1:1 把三视图挤变形）。
+    - prev_image：上一版生成图路径（baseline_ref 解析）。edit_previous=True 时作 conversation_history
+      传给 D 族多轮改图；为 None（首轮）则 edit_previous 退化为重新生成并告警。
     """
 
     @tool(args_schema=GenerateImageArgs)
     def generate_image(
         prompt: str, size: str = "2K", reference_images: list[str] | None = None,
+        model_id: str = "", edit_previous: bool = False,
+        negative_prompt: str = "", seed: int = -1, steps: int = -1,
     ) -> str:
         """生成一张三视图排版图并落盘到本轮目录。
 
         Args:
             prompt: 生图提示词（本轮最终采用的 prompt，应与最终结构化输出里的 prompt 一致）。
             size: 尺寸，如 '2K' 或 '2048x2048'；默认 '2K'（实际由考题决定，工具按传入值执行）。
-            reference_images: 风格迁移场景可选，传参考图标识符子集（如 ['hand-abacus']）。Gemini 把它们
-                作为 inline_data 风格条件；推荐 0-2 张，>2 张过度锚定 motif、压制原创（reference_independence
-                维度会扣分）。传 [] 或省略 = 纯文生图。未知标识符忽略并告警。
+            reference_images: 风格迁移场景可选，传参考图标识符子集（如 ['hand-abacus']）。传 []/省略 = 纯文生图。
+            model_id: 可选，显式选生图模型（限定用户消息给出的已配置集合）；空=按默认路由。
+                不同模型实际尺寸/比例行为不同（三视图 16:9 宽幅仅 Gemini 生效）。
+            edit_previous: 可选，True=在上一版图基础上改图（仅 D/Gemini 生效；非 D 自动退化重画并告警）。
+            negative_prompt: 可选，反向提示（仅 Qwen 生效，其余忽略）；空=不设。
+            seed: 可选，随机种子（仅 Qwen 生效）；-1=不设。
+            steps: 可选，采样步数（当前各族均不支持，静默忽略）；-1=不设。
         返回生成图相对 run 目录的路径。
         """
         size_spec = _size_from_str(size)
@@ -148,13 +187,39 @@ def make_generate_image_tool(
         else:
             refs_to_use = list(fallback_refs)
         sink["reference_ids"] = [p.stem for p in refs_to_use]  # 供 trajectory + creativity tuner
+
+        # 多轮改图（edit_previous）：把上一版图作 conversation_history 传入（仅 D 族消费）
+        conv_history: list[Path] = []
+        if edit_previous:
+            if prev_image is not None and prev_image.exists():
+                conv_history = [prev_image]
+            else:
+                sink.setdefault("warnings", []).append(
+                    "generate_image: edit_previous=True 但无上一版图可改（首轮或上轮未出图），改为重新生成"
+                )
+
         req = GenRequest(
             prompt=prompt,
             size=size_spec,
             reference_images=refs_to_use,
+            conversation_history=conv_history,
             model_hint=model_hint,
+            model_id=model_id or None,
+            negative_prompt=negative_prompt or None,
+            seed=seed if seed >= 0 else None,
+            steps=steps if steps >= 0 else None,
         )
         img = router.generate(req, out_dir=out_dir)
+
+        # edit_previous 退化检测：想改图但实际用了非 D 族 → 自动退化为重画，告警
+        effective_family = img.meta.get("family", "?")
+        edit_effective = edit_previous and bool(conv_history) and effective_family == "D"
+        if edit_previous and conv_history and effective_family != "D":
+            sink.setdefault("warnings", []).append(
+                f"generate_image: edit_previous=True 但实际用 {effective_family} 族（非 D），"
+                "多轮改图不可用，已退化为重新生成"
+            )
+
         ext = img.image_path.suffix or ".png"
         dest = out_dir / f"three_view{ext}"
         if img.image_path != dest:
@@ -162,7 +227,14 @@ def make_generate_image_tool(
         ref = str(dest.relative_to(run_dir))
         sink["ref"] = ref
         sink["model"] = img.model
-        sink["family"] = img.meta.get("family", "?")
+        sink["family"] = effective_family
+        # 动作空间 A 的非 prompt 杠杆落 sink（供 GenOutcome/trajectory/记忆捕获）
+        sink["edit_previous"] = edit_effective
+        sink["negative_prompt"] = negative_prompt or None
+        sink["seed"] = seed if seed >= 0 else None
+        sink["steps"] = steps if steps >= 0 else None
+        sink["model_id_chosen"] = model_id or None
+        sink["had_conversation_history"] = bool(img.meta.get("had_conversation_history"))
         return f"已生成三视图：{ref}"
 
     return generate_image
@@ -190,6 +262,7 @@ def make_generator_tools(
     run_dir: Path,
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
+    prev_image: Path | None = None,
 ) -> list[BaseTool]:
     """组装本轮 Generator 工具集。sink 由调用方持有，工具运行时回写生成结果元信息。
 
@@ -220,6 +293,7 @@ def make_generator_tools(
             ref_registry=ref_registry or None,
             model_hint=model_hint, sink=sink,
             aspect_ratio=aspect_ratio,
+            prev_image=prev_image,
         ),
         make_query_experience_tool(run_dir=run_dir),
     ]

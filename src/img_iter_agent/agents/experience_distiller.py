@@ -58,6 +58,9 @@ _DEFAULT_DISTILLER_SYS = (
     "每条 lesson 填齐：dim、insight、dos、donts、evidence（来源 run/轮）、confidence（0-1）、"
     "category（粗类，**复用上一版给出的 category 清单**，无合适项才新增）、"
     "applies_when（construction=首轮构造用 / fix=修复失败用 / always=通用）。\n"
+    "**不止 prompt——每轮档案含「策略杠杆」行（model/size/refs/edit_previous/negative_prompt/seed）："
+    "若某 dim 反复失败、直到换 model 或换 size、或用 edit_previous 改图才改善，应归纳成 model/参数/改图类"
+    " lesson（insight/dos/donts 里写清「什么场景该选什么模型/尺寸/改图模式」），而非一味 prompt 微调。**\n"
     "判定**眼见为实**：结合图真实质量 + Critic 逐项判断 + 验证过的 effective/ineffective + 近期失败率趋势"
     "（某 dim 仍高失败→相关 lesson 可能 revise/retire；已稳定→keep）。已废弃(refuted/archived)的旧 lesson"
     " **不要复活**，除非有强证据。不要调用任何工具，直接结构化输出 summary + renovation。"
@@ -330,6 +333,31 @@ class ExperienceDistiller:
                 segs.append(f"{d.dim}={d.value:.2f}({(d.raw or '')[:30]})")
         return " | ".join(segs)
 
+    def _strategy_line(self, r) -> str:
+        """把一轮的非 prompt 杠杆（model/size/refs/edit/params）压成一行——动作空间 A 全貌。
+
+        让蒸馏器能「跨轮对比策略」：例如某 dim 在换 model 或换 size 后才改善 → 可蒸馏出
+        model/size 类 lesson（而不止 prompt 微调）。读 AttemptRecord.model_params/reference_ids/size。
+        """
+        mp = r.model_params or {}
+        fam = mp.get("model_family", "?")
+        levers: list[str] = [
+            f"model={fam}/{r.model}",
+            f"size={r.size or '?'}",
+            f"refs={','.join(r.reference_ids) or '无'}",
+        ]
+        if mp.get("edit_previous"):
+            levers.append("edit_previous(改图)")
+        if mp.get("negative_prompt"):
+            levers.append(f"neg={mp['negative_prompt']}")
+        if mp.get("seed") is not None:
+            levers.append(f"seed={mp['seed']}")
+        if mp.get("steps") is not None:
+            levers.append(f"steps={mp['steps']}")
+        if mp.get("strategy_note"):
+            levers.append(f"策略={str(mp['strategy_note'])[:50]}")
+        return " | ".join(levers)
+
     def _run_dossier(self, rd: Path, recs: list) -> str:
         """单 loop 的逐轮文本档案：prompt + Critic 逐项 + 改动 + 验证结论 + 还原度。"""
         lines: list[str] = []
@@ -342,6 +370,7 @@ class ExperienceDistiller:
             prompt = (r.prompt or "").replace("\n", " ")[:160]
             delta = (r.delta_note or "").replace("\n", " ").strip()[:120] or "(无改动说明)"
             lines.append(f"  round {r.round}: 还原度={rest}")
+            lines.append(f"    策略杠杆: {self._strategy_line(r)}")
             lines.append(f"    prompt: {prompt}")
             lines.append(f"    Critic逐项: {self._critic_line(r.verdict)}")
             lines.append(f"    改动说明: {delta}")
@@ -372,7 +401,8 @@ class ExperienceDistiller:
         parts: list[dict] = [{"type": "text", "text":
             f"benchmark={self.bench.bench_id}，评分维度：{dims}。待分析 run：{run_ids}。\n"
             "任务=**带反馈的迭代翻新**：先看【上一版经验】与【近期趋势】，再结合下方每个 loop 的逐轮档案"
-            "（prompt + Critic 逐项判断 + 改动说明 + 验证结论）+ 最佳/最差轮生成图，"
+            "（策略杠杆 model/size/refs/edit/params + prompt + Critic 逐项判断 + 改动说明 + 验证结论）"
+            "+ 最佳/最差轮生成图，"
             "对上一版每条 active lesson 判 keep/revise/retire，并按需 new，结构化输出 summary + renovation。"
             "不要调用任何工具。"}]
 

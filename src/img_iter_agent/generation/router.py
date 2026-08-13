@@ -62,8 +62,27 @@ _DISPATCHERS = {
 
 
 def route(req: GenRequest, *, settings: Settings | None = None) -> RouteDecision:
-    """决定用哪族 + 哪个 model_id。"""
+    """决定用哪族 + 哪个 model_id。
+
+    优先级（高→低）：
+      0) ``req.model_id`` —— agent 显式选的生图 model_id（限定 .env 已配置的 4 族集合），
+         反查族后直接采用。**最高优先级**：edit_previous 若与非 D 族冲突，由调用方（工具层）
+         退化为重新生成并告警。
+      1) ``conversation_history`` 非空 → D（多轮改图，D 唯一支持）
+      2) ``model_hint`` 显式指定 → 服从
+      3) 有参考图 → B 优先（B 未配置则 A）
+      4) 纯文生图 → B 优先，其次 A、C
+    """
     s = settings or get_settings()
+
+    # 0) agent 显式选了 model_id → 服从（动作空间 A 的 model 杠杆）
+    if req.model_id:
+        fam = family_for_model_id(req.model_id, s)
+        if fam is None:
+            raise ValueError(
+                f"agent 选的 model_id={req.model_id!r} 不在已配置的 4 族集合内（检查 .env 生图 model 字段）"
+            )
+        return RouteDecision(family=fam, model_id=req.model_id, generate=_DISPATCHERS[fam])
 
     # 1) 多轮改图 → D
     if req.conversation_history:

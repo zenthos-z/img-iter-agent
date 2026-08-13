@@ -47,10 +47,17 @@ class GenRequest(BaseModel):
     prompt: str
     size: SizeSpec = Field(default_factory=lambda: SizeSpec(tier="2K"))
     reference_images: list[Path] = Field(default_factory=list)  # 非空→风格锚定
-    conversation_history: list[Path] = Field(default_factory=list)  # 非空→Gemini 多轮改图
-    model_hint: ModelFamily | None = None  # 偏好；None 时适配层按路由规则选
+    conversation_history: list[Path] = Field(default_factory=list)  # 非空→Gemini 多轮改图（edit_previous）
+    model_hint: ModelFamily | None = None  # 族偏好；None 时适配层按路由规则选
+    # agent 显式选的生图 model_id（限定 .env 已配置的 4 族集合）；非 None 时覆盖 model_hint/路由规则。
+    # router 用 family_for_model_id(model_id) 反查族，仍按族派发协议。
+    model_id: str | None = None
     quality: str = "high"
     n: int = 1
+    # --- 动作空间 A 的非 prompt 杠杆（各族尽力翻译，不支持的静默忽略）---
+    negative_prompt: str | None = None  # 反向提示
+    seed: int | None = None  # 可复现性
+    steps: int | None = None  # 采样步数
     # 三视图任务标记：生成多张视图（适配层据此决定是单图 n 还是多次调用）
     output_views: list[str] | None = None
 
