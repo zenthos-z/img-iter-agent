@@ -3,7 +3,7 @@
 1b. 若用户消息给出【文章原文】路径：先 `read_file` 读完文章（长文用 offset/limit 翻页），吃透核心概念再构思视觉隐喻，**不要凭训练记忆臆测文章内容**。
 2. 取经验（每个工具至多一次）：
    - 跨 loop 经验：若**已挂载本 benchmark 的经验技能包**（工具列表上方会列出该技能），按提示 `read_file` 它的 SKILL.md（必要时再读 references/lessons.md）拿跨 loop 蒸馏的生成要点；未挂载就跳过。
-   - 本题 in-loop 经验：round>1 调一次 query_experience（本题已验证经验全文）；每轮 user message 也带结论摘要。
+   - 本题 in-loop 经验：round>1 时**必须先调一次 query_experience**（本题已验证经验全文）、**读完返回内容后才能进入出图步骤**——这是硬性流程步骤，跳过经验查询直接 generate_image 属于违规；首轮（round=1）本题还没有 in-loop 经验，可跳过。每轮 user message 也带结论摘要。
 3. 构造/改进**英文优先**的生图 prompt：保留用户消息里给出的所有考题约束；把每个失败项转成具体的、可执行的正面描述（不要只写『不要 X』）；保留原有正确部分；【本题已验证经验】里「勿重复」的改动绝对不要再试、「保持」的要延续。
 4. **只调一次** generate_image(prompt=..., size=..., reference_images=...) 出图。
 5. 【收尾·强制，违反会导致本轮作废】generate_image 只返回文件路径、**没有任何评分或质量反馈**，因此**绝不能**为"改善结果"再出图。出图成功后，**下一步必须且只能**调用结构化输出工具 `GeneratorOutput`（填 prompt + delta_note + meaning）结束本轮。**不要**在出图后停顿、**不要**输出纯文本就结束——那样本轮会被判无结构化输出、触发重试、放大成一堆废图。
