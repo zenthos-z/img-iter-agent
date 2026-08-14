@@ -184,16 +184,20 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     lb = load_benchmark(bench_id, settings=settings)
     bench = lb.bench
 
-    # Critic：fake tool-calling chat model 驱动（回 CriticAgentOutput 结构化输出）
-    critic_dims = [
-        ({"dim": d.dim, "scoring_type": "binary", "items": []}
-         if d.scoring_type == "binary"
-         else {"dim": d.dim, "scoring_type": "continuous", "value": 0.8, "reason": "ok"})
-        for d in bench.score_dimensions
-    ]
+    # Critic：fake tool-calling chat model 驱动（回 CriticAgentOutput 具名字段结构化输出）
+    critic_args: dict = {}
+    for d in bench.score_dimensions:
+        if d.scoring_type == "binary":
+            cl = lb.sample("s001").spec.checklist.get(d.dim, [])
+            cl = cl if isinstance(cl, list) else []
+            critic_args[d.dim] = [
+                {"id": it.id, "passed": True, "reason": "mock"} for it in cl
+            ]
+        else:
+            critic_args[d.dim] = {"value": 0.8, "reason": "ok"}
     critic_chat = FakeToolCallingChatModel(responses=[
         AIMessage(content="", tool_calls=[{"name": "CriticAgentOutput", "type": "tool_call",
-                                           "id": "c1", "args": {"dimensions": critic_dims}}]),
+                                           "id": "c1", "args": critic_args}]),
     ])
 
     # 出图：真 Router + mock executor（走 _trace_image_call，回带 b64 的真实响应形状）

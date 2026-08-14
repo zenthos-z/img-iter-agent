@@ -3,7 +3,11 @@
 改造前是「逐维度单次 LLM 调用 + 手抠 JSON」；现在是一个真正的 tool-using agent：
   - 生成图 + target 直接注入初始 HumanMessage（多模态），agent 循环每步都看得到；
   - 可用工具 `query_rubric(dim_name)` 按需查某维度的判定标准；
-  - 用 `response_format=CriticAgentOutput` 约束最终输出（每维度原始评分）；
+  - 用 `response_format=build_critic_output_schema(bench)` 约束最终输出——每个维度一个
+    **具名 required 字段**（二分→items 逐项判定 / 连续→value+reason），结构上杜绝重复
+    维度、编造维度名，漏填在校验层即失败；
+  - 校验失败/语义问题（items 与 checklist 不对应、缺 value/reason）**不盲目重试**：
+    把具体错误反馈给模型续会话修正（`REPAIR_ROUNDS` 轮），仍失败才对可用部分宽松兜底；
   - 代码侧把原始评分映射成 `DimensionScore`，再用权重 `recompute_restoration` 算还原度
     （agent 不知道权重，不返回 restoration）——保住「权重变更不影响打分」的契约。
 
@@ -13,13 +17,16 @@ LangGraph 的 critic 节点。agent 跑飞时退安全默认评分，绝不中�
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from ..data.benchmark import Sample
@@ -31,8 +38,8 @@ from ..memory.schema import (
     CriticVerdict,
     DimensionScore,
 )
-from ._agent_output import CriticAgentOutput, provider_structured
-from ._narrow_tools import AGENT_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
+from ._agent_output import build_critic_output_schema, provider_structured
+from ._narrow_tools import AGENT_RECURSION_LIMIT, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
 from .tools.critic_tools import _effective_checklist, _load_creativity_overlay, make_critic_tools
 from .tools.generator_tools import _format_experience
@@ -138,6 +145,9 @@ class Critic:
         self.chat_model = chat_model
         self.bench = bench
         self.system_prompt = system_prompt or load_system_prompt("critic", _DEFAULT_CRITIC_SYS)
+        # 结构化输出 schema：按 bench 维度动态生成「每维度一个具名 required 字段」的
+        # CriticAgentOutput——杜绝重复维度/编造维度名，漏填在校验层即失败（详见模块 docstring）。
+        self._output_schema, self._dim_to_field = build_critic_output_schema(bench.score_dimensions)
         # 创造力标准 overlay（creativity_tuner 产物）：Critic 实例构建时读一次，覆盖种子 content_spec。
         # 每个 loop 子进程构建一次 → tuner 只在批与批之间生效（不污染在跑的 loop）。
         self._creativity_overlay = _load_creativity_overlay(bench.bench_id)
@@ -154,8 +164,9 @@ class Critic:
         """对一个 trace 打分，产出 CriticVerdict。
 
         所有维度都对照 target 评判。生成图 + target 以 image_url 注入初始 HumanMessage。
-        agent 用 response_format=CriticAgentOutput 约束最终输出；代码侧映射 + 算 restoration。
-        agent 跑飞 → 安全默认评分（不中断闭环）。
+        agent 用 response_format=具名字段 schema 约束最终输出；代码侧映射 + 算 restoration。
+        校验失败/语义问题 → 反馈给模型修正（REPAIR_ROUNDS 轮）；最终仍失败 → 逐维度安全
+        默认（不中断闭环）。
         """
         spec = inp.sample.spec
         target = inp.sample.target_path
@@ -175,15 +186,14 @@ class Critic:
         agent = create_deep_agent(
             model=self.chat_model, tools=tools,
             system_prompt=self.system_prompt,
-            response_format=provider_structured(CriticAgentOutput), checkpointer=None, name="critic",
+            response_format=provider_structured(self._output_schema), checkpointer=None, name="critic",
             middleware=narrow_tools_middleware(),
         )
 
-        result, _ok = invoke_with_retry(
-            agent, {"messages": [HumanMessage(content=user_content)]},
-            config=_merge_recursion(config, AGENT_RECURSION_LIMIT), label="critic",
+        out = self._invoke_with_repair(
+            agent, [HumanMessage(content=user_content)], spec=spec,
+            config=_merge_recursion(config, AGENT_RECURSION_LIMIT),
         )
-        out: CriticAgentOutput | None = (result.get("structured_response") if result else None)
 
         dim_scores = self._to_dimension_scores(out)
         restoration = recompute_restoration(dim_scores, inp.weights)
@@ -210,6 +220,169 @@ class Critic:
         return verdict
 
     # --- 辅助 ---
+
+    # 反馈修正轮数：校验失败/语义问题各最多给模型 REPAIR_ROUNDS 次带反馈的修正机会。
+    REPAIR_ROUNDS: int = 2
+    # 网关瞬时异常（SSL EOF/超时等）的同 payload 退避重试次数（与 invoke_with_retry 语义一致）。
+    _TRANSIENT_RETRIES: int = 5
+
+    def _invoke_with_repair(
+        self, agent, messages: list[BaseMessage], *, spec, config: dict,
+    ) -> Any:
+        """invoke agent 并处理结构化输出问题：**带反馈的修正回路**（区别于盲目退避重试）。
+
+        两类失败分开处理：
+        - **网关瞬时异常**（SSL EOF/超时/5xx）：同 payload 指数退避重试（旧
+          invoke_with_retry 语义，`_TRANSIENT_RETRIES` 次）——重试有效，因为不是模型的错。
+        - **结构化输出校验失败 / 语义问题**（缺维度、items 空、id 不对应、缺 value/reason）：
+          盲目重试大概率原样再错——改为把**具体错误**反馈给模型，续同一会话让它修正
+          （最多 ``REPAIR_ROUNDS`` 轮）。修正后拿全新输出重新校验。
+
+        全部失败时对最后一次坏输出做**宽松解析**逐维度兜底：能解析出的维度保留真实评分，
+        解析不出的维度才退安全默认（不是整轮全 0）。
+
+        Returns:
+            结构化输出（pydantic 实例 / 宽松解析出的 dict）或 None（完全无可用输出）。
+        """
+        msgs = list(messages)
+        last_bad_ai: AIMessage | None = None
+        out: Any = None
+        for attempt in range(self.REPAIR_ROUNDS + 1):
+            res, sr, feedback, bad_ai = self._invoke_once(agent, msgs, config=config)
+            last_bad_ai = bad_ai or last_bad_ai
+            if sr is not None:
+                errs = self._semantic_errors(sr, spec)
+                if not errs:
+                    return sr
+                out = sr  # 语义有问题但结构可用——兜底时按维度宽松 salvage
+                feedback = (
+                    "你的结构化评分存在以下问题，请逐项修正后重新输出**完整**的全部维度评分 JSON：\n"
+                    + "\n".join(f"- {e}" for e in errs)
+                )
+            if feedback is None:
+                # 瞬时异常重试全灭：无模型输出可反馈，直接走兜底
+                break
+            if attempt >= self.REPAIR_ROUNDS:
+                print(f"[critic] 修正 {self.REPAIR_ROUNDS} 轮仍有问题，退兜底：{feedback[:300]}",
+                      flush=True)
+                break
+            print(f"[critic] 结构化输出有问题，反馈修正（第 {attempt + 1}/{self.REPAIR_ROUNDS} 轮）："
+                  f"{feedback[:300]}", flush=True)
+            # 续会话：保留本轮全部消息（模型能看到自己刚犯的错）+ 反馈
+            msgs = list(res["messages"]) if res else msgs
+            if bad_ai is not None:
+                msgs = msgs + [bad_ai]  # 校验失败路径 agent 状态里没有那条坏消息，补回
+            msgs.append(HumanMessage(content=feedback))
+        # 宽松兜底：最后一次（语义有问题的）结构化输出优先；否则从坏 AI 消息里抠 JSON
+        if out is not None:
+            return out
+        return self._lenient_parse(last_bad_ai)
+
+    def _invoke_once(self, agent, messages: list[BaseMessage], *, config: dict):
+        """单次 invoke：瞬时异常退避重试；校验错误立即上抛为反馈（不盲目重试）。
+
+        Returns:
+            (result, structured_response, feedback, bad_ai)：
+            - 成功 → (res, sr, None, None)
+            - 校验失败 → (None, None, 反馈文本, 模型的坏 AIMessage)
+            - 瞬时异常重试全灭 → (None, None, None, None)
+        """
+        delay = 2.0
+        for i in range(self._TRANSIENT_RETRIES + 1):
+            try:
+                res = agent.invoke({"messages": messages}, config=config)
+                sr = res.get("structured_response") if isinstance(res, dict) else None
+                return res, sr, None, None
+            except StructuredOutputValidationError as e:
+                # 模型输出没通过 schema 校验（JSON 坏 / 缺 required 字段）：重试大概率原样再错，
+                # 把校验错误细节反馈给模型修正（不用退避——这不是网关抖动）。
+                return None, None, self._validation_feedback(e), e.ai_message
+            except Exception as e:  # noqa: BLE001  瞬时异常重试逻辑要吞所有异常
+                msg = str(e).replace("\n", " ")[:200]
+                if i < self._TRANSIENT_RETRIES:
+                    print(f"[critic] invoke 异常({type(e).__name__}: {msg})，"
+                          f"重试 {i + 1}/{self._TRANSIENT_RETRIES}", flush=True)
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                else:
+                    print(f"[critic] 重试仍异常({type(e).__name__}: {msg})，退兜底", flush=True)
+        return None, None, None, None
+
+    @staticmethod
+    def _validation_feedback(e: StructuredOutputValidationError) -> str:
+        """把 StructuredOutputValidationError 翻译成给模型的修正反馈（具体、可执行）。"""
+        src = str(e.source)[:500]
+        return (
+            "你上一条回复的结构化输出未通过 schema 校验，未被判分系统接受。错误详情：\n"
+            f"{src}\n"
+            "请对照错误重新输出**完整**的全部维度评分 JSON：每个维度一个字段（字段名见 "
+            "response_format schema，不要自造字段/数组），二分维度填逐项判定列表 "
+            "[{id, passed, reason}]，连续维度填 {value, reason}。只输出 JSON。"
+        )
+
+    def _semantic_errors(self, out: Any, spec) -> list[str]:
+        """结构化输出通过 schema 校验后的**语义**检查（schema 表达不了的规则）。
+
+        检查项（都可修复——反馈给模型修正）：
+        - 二分维度 items 为空（模型偷懒没逐项判）；
+        - items 的 id 集合与该维度生效 checklist 不一致（缺判/多判/自造 id——
+          通过率 = passed/len，缺一项分数就错）；
+        - 连续维度 reason 为空。
+        """
+        errs: list[str] = []
+        for ddef in self.bench.score_dimensions:
+            node = _node_get(out, self._dim_to_field[ddef.dim])
+            if node is None:
+                errs.append(f"缺少维度「{ddef.dim}」的评分字段")  # required 已拦，防御
+                continue
+            if ddef.scoring_type == "binary":
+                items = node if isinstance(node, list) else []
+                if not items:
+                    errs.append(
+                        f"二分维度「{ddef.dim}」的判定列表为空——须对每一项 checklist 给出 "
+                        f"{{id, passed, reason}} 判定"
+                    )
+                    continue
+                cl = _effective_checklist(spec, ddef.dim, self._creativity_overlay, bench=self.bench)
+                expected = [it.id for it in (cl if isinstance(cl, list) else [])]
+                if expected:
+                    got = [str(_item_get(it, "id")) for it in items]
+                    missing = sorted(set(expected) - set(got))
+                    extra = sorted(set(got) - set(expected))
+                    parts = []
+                    if missing:
+                        parts.append(f"缺判定 id: {missing}")
+                    if extra:
+                        parts.append(f"多出/自造 id: {extra}")
+                    if parts:
+                        errs.append(
+                            f"二分维度「{ddef.dim}」判定项与 checklist 不对应（{'；'.join(parts)}）——"
+                            f"必须逐项对应（应有 {expected}），不得合并/省略/自造"
+                        )
+            else:
+                reason = _node_get(node, "reason")
+                if not str(reason or "").strip():
+                    errs.append(f"连续维度「{ddef.dim}」缺 reason（须给一句评分理由）")
+        return errs
+
+    @staticmethod
+    def _lenient_parse(ai_msg: AIMessage | None) -> dict | None:
+        """兜底：从模型最后一条坏消息里宽松抠出 JSON dict（schema 校验不过也没关系）。
+
+        _to_dimension_scores 对 dict/pydantic 一视同仁、逐维度取用（取不到 → 安全默认），
+        所以哪怕只解析出一部分维度，其余维度也能逐个兜底而不是整轮全 0。
+        """
+        if ai_msg is None:
+            return None
+        content = ai_msg.content
+        text = content if isinstance(content, str) else "".join(
+            p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+        )
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     def _build_user_content(
         self, target: Path, generated: list[Path], spec, meaning: str | None = None,
@@ -248,7 +421,10 @@ class Critic:
             "items 数量必须等于列出的项数、id 逐项对应，**不得合并、不得省略**（通过率=通过项/总项，少一项分数就错）。"
             "连续维度：给 0-1 的 value + 一句 reason。\n"
             "**严格**：拿不准、有瑕疵、与 target 不完全一致时，倾向判不通过/给低分；只有确无问题才判通过。\n"
-            "维度清单：\n" + "\n".join(dim_lines) + "\n\n请结构化输出每个维度的评分。"
+            "维度清单：\n" + "\n".join(dim_lines)
+            + "\n\n最终结构化输出：每个维度一个字段（字段名=维度名，见 schema）——"
+            "二分维度填逐项判定列表，连续维度填 {value, reason}（两字段都必须填）。"
+            "同一维度只输出一次，不得重复、不得自造维度名。"
         )
         # 参考图使用情况：让 critic 能判 reference_independence（对照「实际传入」的参考，而非全 7 张）
         if reference_ids is not None:
@@ -303,26 +479,34 @@ class Critic:
         images = list(generated) + ([target] if target.exists() else [])
         return _build_multimodal_content(text, images)
 
-    def _to_dimension_scores(self, out: CriticAgentOutput | None) -> list[DimensionScore]:
-        """把 agent 输出映射成 DimensionScore 列表（按 bench 维度顺序，缺失→安全默认）。"""
-        by_dim = {d.dim: d for d in (out.dimensions if out else [])}
+    def _to_dimension_scores(self, out: Any) -> list[DimensionScore]:
+        """把 agent 结构化输出映射成 DimensionScore 列表（按 bench 维度顺序，缺失→安全默认）。
+
+        out 是具名字段 schema 的实例（或兜底宽松解析出的 dict）：每个 bench 维度对应一个
+        字段，直接按 ``_dim_to_field`` 取——**没有重复维度问题**（对象键唯一）。
+        某维度字段缺失/形态不对 → 该维度退安全默认，其余维度照常（部分 salvage）。
+        """
         scores: list[DimensionScore] = []
         for ddef in self.bench.score_dimensions:
-            o = by_dim.get(ddef.dim)
-            if o is None:
+            node = _node_get(out, self._dim_to_field[ddef.dim])
+            if node is None:
                 scores.append(self._safe_dim(ddef.dim, ddef.scoring_type))
                 continue
             if ddef.scoring_type == "binary":
-                items = o.items or []
-                value = (sum(1 for it in items if it.passed) / len(items)) if items else 0.0
+                items = node if isinstance(node, list) else []
+                value = (sum(1 for it in items if _item_get(it, "passed")) / len(items)) if items else 0.0
                 scores.append(DimensionScore(
                     dim=ddef.dim, scoring_type="binary", value=value, items=items,
                 ))
             else:
-                v = o.value if o.value is not None else 0.0
-                scores.append(DimensionScore(
-                    dim=ddef.dim, scoring_type="continuous", value=v, raw=o.reason or "",
-                ))
+                v = _node_get(node, "value")
+                if v is None:
+                    scores.append(self._safe_dim(ddef.dim, ddef.scoring_type))
+                else:
+                    scores.append(DimensionScore(
+                        dim=ddef.dim, scoring_type="continuous",
+                        value=min(max(float(v), 0.0), 1.0), raw=str(_node_get(node, "reason") or ""),
+                    ))
         return scores
 
     @staticmethod
@@ -330,6 +514,22 @@ class Critic:
         if scoring_type == "binary":
             return DimensionScore(dim=dim, scoring_type="binary", value=0.0, items=[])
         return DimensionScore(dim=dim, scoring_type="continuous", value=0.0, raw="(eval failed)")
+
+
+def _node_get(out: Any, key: str) -> Any:
+    """从结构化输出（pydantic 实例或 dict）里取字段，取不到返回 None（不抛）。"""
+    if out is None:
+        return None
+    if isinstance(out, dict):
+        return out.get(key)
+    return getattr(out, key, None)
+
+
+def _item_get(item: Any, key: str) -> Any:
+    """从一条判定项（CriticItemJudgment 实例或 dict）里取字段，取不到返回 None。"""
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key, None)
 
 
 __all__ = ["Critic", "CriticInput"]

@@ -11,10 +11,10 @@ Generator/Critic 各自的 deepagent 用 `response_format=<这里的数据类>` 
 
 from __future__ import annotations
 
-from typing import Literal
+import re
 
 from langchain.agents.structured_output import ProviderStrategy
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from ..memory.schema import CriticItemJudgment
 
@@ -92,28 +92,85 @@ class GeneratorOutput(BaseModel):
     )
 
 
-class CriticDimensionOutput(BaseModel):
-    """单个维度的评分（agent 原始产出，不含 restoration）。
+class CriticContinuousScore(BaseModel):
+    """连续维度的评分：value 与 reason **同在一条**，全 required。
 
-    字段一律非 Optional + 显式类型：Gemini 的 functionDeclaration schema 校验要求每个
-    property 都带 `type`，而 `X | None` 会生成无顶层 type 的 anyOf → 被严格后端 400 拒
-    （"schema didn't specify the schema type field"，dmxapi 会路由到不同严格度的后端故偶发）。
-    binary 维度用 items（value 留默认 0.0）；continuous 维度用 value + reason。
+    历史教训（2026-08-14 s002 R3）：旧的自由数组 schema 里，模型会把同一连续维度拆成
+    「有 value 没 reason」+「有 reason 没 value」两条重复输出，代码 last-wins 去重后好评
+    被记成 0 分。具名字段 schema 从结构上消灭重复；required 让漏填在解码/校验层就失败，
+    由 critic 的反馈修正回路处理，而不是悄悄落 0。
     """
 
-    dim: str = Field(description="维度名")
-    scoring_type: Literal["binary", "continuous"] = Field(description="该维度的评分类型")
-    # binary：逐项判定（通过率 = passed 数 / 总数，由代码算 value）
-    items: list[CriticItemJudgment] = Field(default_factory=list, description="二分维度的逐项判定")
-    # continuous：0-1 分 + 理由
-    value: float = Field(default=0.0, ge=0.0, le=1.0, description="连续维度的 0-1 分")
-    reason: str = Field(default="", description="连续维度的评分理由")
+    value: float = Field(ge=0.0, le=1.0, description="该连续维度的 0-1 分")
+    reason: str = Field(description="一句评分理由（必须引用图上具体可见的点）")
 
 
-class CriticAgentOutput(BaseModel):
-    """Critic agent 的最终交付：每个维度的评分。"""
+# create_model 的字段名不能撞 BaseModel 保留属性；维度名不是合法标识符时也加前缀。
+_RESERVED_FIELD_NAMES = frozenset({
+    "model_config", "model_fields", "model_computed_fields", "schema", "fields",
+    "json", "copy", "construct", "validate",
+})
 
-    dimensions: list[CriticDimensionOutput] = Field(description="按 bench.score_dimensions 顺序的每维度评分")
+
+def _dim_field_name(dim: str) -> str:
+    """维度名 → 合法且不与 BaseModel 保留属性冲突的 schema 字段名。"""
+    f = re.sub(r"\W", "_", dim, flags=re.UNICODE)
+    if not f or f[0].isdigit() or f in _RESERVED_FIELD_NAMES or not f.isidentifier():
+        f = f"d_{f}"
+    return f
 
 
-__all__ = ["CriticAgentOutput", "CriticDimensionOutput", "GeneratorOutput", "provider_structured"]
+def build_critic_output_schema(score_dimensions) -> tuple[type[BaseModel], dict[str, str]]:
+    """按 bench 维度动态生成 Critic 的结构化输出 schema：**每个维度一个具名字段**。
+
+    旧 schema 是 ``dimensions: list[CriticDimensionOutput]`` 自由数组——模型可塞任意条数、
+    重复维度、瞎编维度名（生产实测 6 维被塞成 9 条，last-wins 去重把好评压成 0 分）。
+    改成具名字段后：
+      - 重复维度 / 多余维度 / 编造维度名 → 结构上不可能（对象键唯一且固定）；
+      - 漏填（缺维度键、连续维度缺 value/reason）→ 全 required，校验直接失败，
+        走 critic 的反馈修正回路而不是悄悄落默认值。
+
+    字段类型按 scoring_type 定制：binary → ``list[CriticItemJudgment]``（逐项判定），
+    continuous → ``CriticContinuousScore``（value + reason）。字段一律非 Optional + 显式
+    类型：Gemini 原生 functionDeclaration 要求每个 property 都带顶层 `type`，`X | None`
+    的 anyOf 会被严格后端 400 拒（dmxapi 路由到不同严格度的后端故偶发）。
+
+    Returns:
+        (schema_model, dim_to_field)：schema_model 名为 ``CriticAgentOutput``（与
+        ProviderStrategy/response_format 及测试 fake 的 schema 名约定一致）；
+        dim_to_field 是 维度名→schema 字段名 的映射（字段名做过净化时用它映射回）。
+    """
+    fields: dict[str, tuple] = {}
+    dim_to_field: dict[str, str] = {}
+    for d in score_dimensions:
+        fname = _dim_field_name(d.dim)
+        dim_to_field[d.dim] = fname
+        if d.scoring_type == "binary":
+            fields[fname] = (
+                list[CriticItemJudgment],
+                Field(
+                    description=(
+                        f"二分维度「{d.dim}」：逐项判定列表，每项 {{id, passed, reason}}；"
+                        f"id 与题面列出的 checklist 项严格一一对应，项数相等，不得合并/省略/自造"
+                    ),
+                ),
+            )
+        else:
+            fields[fname] = (
+                CriticContinuousScore,
+                Field(
+                    description=(
+                        f"连续维度「{d.dim}」：{{value: 0-1 分, reason: 一句理由}}，两个字段都必须填"
+                    ),
+                ),
+            )
+    model = create_model("CriticAgentOutput", **fields)
+    return model, dim_to_field
+
+
+__all__ = [
+    "CriticContinuousScore",
+    "GeneratorOutput",
+    "build_critic_output_schema",
+    "provider_structured",
+]

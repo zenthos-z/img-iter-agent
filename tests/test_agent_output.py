@@ -9,33 +9,46 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from img_iter_agent.agents._agent_output import (
-    CriticAgentOutput,
     _dereference_defs,
+    build_critic_output_schema,
     provider_structured,
 )
 from img_iter_agent.calibration.creativity_tuner import CreativityRenovation
 
+_SYNTH_DIMS = [
+    SimpleNamespace(dim="consistency", scoring_type="binary"),
+    SimpleNamespace(dim="material_texture", scoring_type="continuous"),
+]
+
 
 def test_raw_pydantic_schema_has_defs():
     """前提确认：裸 pydantic schema 确实带 $defs/$ref（即被修复的根因）。"""
-    raw = json.dumps(CriticAgentOutput.model_json_schema())
+    model, _ = build_critic_output_schema(_SYNTH_DIMS)
+    raw = json.dumps(model.model_json_schema())
     assert "$defs" in raw and '"$ref"' in raw
 
 
 def test_provider_structured_flattens_defs():
-    """critic 的 schema 平化后无 $defs/$ref，且嵌套结构逐层完整。"""
-    js = provider_structured(CriticAgentOutput).schema_spec.json_schema
+    """critic 的 schema 平化后无 $defs/$ref，且嵌套结构逐层完整（具名字段形态）。"""
+    model, _ = build_critic_output_schema(_SYNTH_DIMS)
+    js = provider_structured(model).schema_spec.json_schema
     txt = json.dumps(js)
     assert "$defs" not in txt
     assert '"$ref"' not in txt
-    # 结构没被内联破坏：dimensions[].items[]（逐项判定）仍是完整 object
-    dim = js["properties"]["dimensions"]["items"]
-    assert dim["type"] == "object"
-    item = dim["properties"]["items"]["items"]
+    # 每维度一个具名字段：二分→items 列表（逐项判定完整 object），连续→value+reason
+    assert set(js["properties"]) == {"consistency", "material_texture"}
+    item = js["properties"]["consistency"]["items"]
     assert item["type"] == "object"
-    assert set(item["properties"]) >= {"id", "passed"}
+    assert set(item["properties"]) >= {"id", "passed", "reason"}
+    cont = js["properties"]["material_texture"]
+    assert cont["type"] == "object"
+    assert set(cont["properties"]) == {"value", "reason"}
+    assert set(cont["required"]) == {"value", "reason"}  # 漏填即校验失败 → 反馈修正
+    # 二分维度的 value/reason 字段不存在（字段按 scoring_type 定制，无含糊共用形状）
+    assert "value" not in item["properties"]
 
 
 def test_creativity_renovation_flattened():

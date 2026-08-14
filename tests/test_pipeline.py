@@ -42,26 +42,24 @@ class _FakeRouter(Router):
 
 
 def _critic_chat(lb) -> FakeToolCallingChatModel:
-    """构造驱动 Critic deepagent 的 canned 响应：一条 CriticAgentOutput（含全部维度评分）。
-    单条响应被多轮复用（fake 耗尽后重复最后一条）。"""
+    """构造驱动 Critic deepagent 的 canned 响应：一条 CriticAgentOutput（具名字段形态，
+    每维度一个字段）。单条响应被多轮复用（fake 耗尽后重复最后一条）。"""
     spec = lb.sample("s001").spec
     bench = lb.bench
-    dims = []
+    args: dict = {}
     for ddef in bench.score_dimensions:
         if ddef.scoring_type == "binary":
             items = spec.checklist.get(ddef.dim, [])
             items = items if isinstance(items, list) else []
-            judgments = [
+            args[ddef.dim] = [
                 {"id": it.id, "passed": i == 0, "reason": "mock"}
                 for i, it in enumerate(items)
             ]
-            dims.append({"dim": ddef.dim, "scoring_type": "binary", "items": judgments})
         else:
-            dims.append({"dim": ddef.dim, "scoring_type": "continuous",
-                         "value": 0.7, "reason": "mock"})
+            args[ddef.dim] = {"value": 0.7, "reason": "mock"}
     resp = AIMessage(content="", tool_calls=[{
         "name": "CriticAgentOutput", "type": "tool_call", "id": "c1",
-        "args": {"dimensions": dims},
+        "args": args,
     }])
     return FakeToolCallingChatModel(responses=[resp])
 

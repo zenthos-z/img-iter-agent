@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from img_iter_agent.agents.critic import Critic, CriticInput
 from img_iter_agent.data.benchmark import load_benchmark
@@ -40,32 +40,34 @@ def three_view_images(loaded, tmp_path) -> list[Path]:
 
 def _critic_agent_response(
     loaded, *, continuous: float = 0.75, empty_binary: tuple[str, ...] = (),
+    drop_dims: tuple[str, ...] = (), mangle_binary_ids: tuple[str, ...] = (),
 ) -> AIMessage:
-    """构造一条 AIMessage：tool_call=CriticAgentOutput，含全部维度评分。
+    """构造一条 AIMessage：tool_call=CriticAgentOutput，含全部维度评分（具名字段形态）。
 
-    二分维度：前 N-1 项 passed、最后一项不通过（与原 test_critic 同款）。
-    连续维度：value=continuous。empty_binary 里的二分维度强制 items=[]。
+    二分维度：前 N-1 项 passed、最后一项不通过。连续维度：{value, reason}。
+    empty_binary 里的二分维度强制 items=[]；drop_dims 整维度缺字段（模拟漏填）；
+    mangle_binary_ids 里的二分维度 id 全部改成自造 id（模拟 id 不对应）。
     """
     spec = loaded.sample("s001").spec
     bench = loaded.bench
-    dims = []
+    args: dict = {}
     for ddef in bench.score_dimensions:
+        if ddef.dim in drop_dims:
+            continue
         if ddef.scoring_type == "binary":
             items = [] if ddef.dim in empty_binary else spec.checklist.get(ddef.dim, [])
             items = items if isinstance(items, list) else []
             judgments = [
-                {"id": it.id, "passed": i < len(items) - 1, "reason": f"mock {it.id}"}
+                {"id": (f"X{i+1}" if ddef.dim in mangle_binary_ids else it.id),
+                 "passed": i < len(items) - 1, "reason": f"mock {it.id}"}
                 for i, it in enumerate(items)
             ]
-            dims.append({"dim": ddef.dim, "scoring_type": "binary", "items": judgments})
+            args[ddef.dim] = judgments
         else:
-            dims.append({
-                "dim": ddef.dim, "scoring_type": "continuous",
-                "value": continuous, "reason": "mock continuous",
-            })
+            args[ddef.dim] = {"value": continuous, "reason": "mock continuous"}
     return AIMessage(content="", tool_calls=[{
         "name": "CriticAgentOutput", "type": "tool_call", "id": "c1",
-        "args": {"dimensions": dims},
+        "args": args,
     }])
 
 
@@ -144,12 +146,16 @@ def test_critic_injects_target_and_generated_images(loaded, three_view_images):
 
 
 def test_critic_robust_to_empty_output(loaded, three_view_images):
-    """agent 回空 dimensions（结构性坏输出）→ 所有维度安全默认 0，restoration=0，不抛错。"""
+    """agent 持续回缺全部维度字段的坏输出 → 修正 2 轮仍失败 → 全维度安全默认 0，不抛错。
+
+    fake model 每次都回同一条坏消息（schema 校验失败）：反馈修正回路 2 轮无果后退兜底，
+    宽松解析抠不出任何维度 → 全 0。断言修正确实发生过（模型被反馈催了 2 次）。
+    """
     bench = loaded.bench
     weights = init_weights(bench)
     bad = AIMessage(content="", tool_calls=[{
         "name": "CriticAgentOutput", "type": "tool_call", "id": "c1",
-        "args": {"dimensions": []},
+        "args": {"consistency": []},  # 缺其余 5 个维度字段 → 校验失败
     }])
     chat = FakeToolCallingChatModel(responses=[bad])
     critic = Critic(chat, bench=bench)
@@ -160,6 +166,89 @@ def test_critic_robust_to_empty_output(loaded, three_view_images):
     for d in verdict.dimensions:
         assert d.value == 0.0
     assert verdict.restoration == 0.0
+    # 修正回路确实跑了：初始 + 2 轮修正 = 3 次 agent invoke
+    assert len(chat.calls) == 1 + critic.REPAIR_ROUNDS
+
+
+def test_critic_output_schema_named_fields(loaded):
+    """结构化 schema 是「每维度一个具名 required 字段」，没有自由数组——重复维度结构上不可能。"""
+    bench = loaded.bench
+    critic = Critic(FakeToolCallingChatModel(), bench=bench)
+    schema = critic._output_schema.model_json_schema()
+    props = set(schema.get("properties", {}))
+    assert props == {d.dim for d in bench.score_dimensions}
+    assert set(schema.get("required", [])) == props  # 全 required：漏填即校验失败
+    assert "dimensions" not in props  # 旧自由数组已不存在
+
+
+def test_critic_repairs_missing_dim_via_feedback(loaded, three_view_images):
+    """第一轮回丢了一个维度的输出 → 校验错误反馈给模型 → 第二轮补全 → 正常出分。"""
+    bench = loaded.bench
+    weights = init_weights(bench)
+    chat = FakeToolCallingChatModel(responses=[
+        _critic_agent_response(loaded, drop_dims=("color_accuracy",)),
+        _critic_agent_response(loaded),
+    ])
+    critic = Critic(chat, bench=bench)
+
+    verdict = critic.evaluate(CriticInput(
+        sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,
+    ))
+
+    # 第二轮修正成功：所有维度都有真实评分
+    color = next(d for d in verdict.dimensions if d.dim == "color_accuracy")
+    assert color.value == pytest.approx(0.75)
+    assert color.raw == "mock continuous"
+    # 反馈确实送达模型：第二次 invoke 的消息里含校验错误反馈
+    second_msgs = chat.calls[1]
+    fb = [m for m in second_msgs if isinstance(m, HumanMessage) and "未通过 schema 校验" in str(m.content)]
+    assert fb, "校验失败应反馈给模型让其修正"
+
+
+def test_critic_repairs_item_id_mismatch(loaded, three_view_images):
+    """二分维度 id 与 checklist 不对应（语义问题，schema 拦不住）→ 反馈修正 → 第二轮对齐。"""
+    bench = loaded.bench
+    weights = init_weights(bench)
+    chat = FakeToolCallingChatModel(responses=[
+        _critic_agent_response(loaded, mangle_binary_ids=("consistency",)),
+        _critic_agent_response(loaded),
+    ])
+    critic = Critic(chat, bench=bench)
+
+    verdict = critic.evaluate(CriticInput(
+        sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,
+    ))
+
+    consistency = next(d for d in verdict.dimensions if d.dim == "consistency")
+    s1 = loaded.sample("s001")
+    n = len(s1.spec.checklist["consistency"])
+    assert consistency.value == pytest.approx((n - 1) / n)  # 修正后的真实通过率
+    assert {it.id for it in consistency.items} == {it.id for it in s1.spec.checklist["consistency"]}
+    # 语义问题反馈里点出了 id 不对应
+    second_msgs = chat.calls[1]
+    fb = [m for m in second_msgs if isinstance(m, HumanMessage) and "不对应" in str(m.content)]
+    assert fb, "id 不对应应作为语义问题反馈给模型"
+
+
+def test_critic_salvages_valid_dims_on_persistent_semantic_error(loaded, three_view_images):
+    """语义问题修不好（fake 每次回同样的坏输出）→ 兜底保留可用维度，坏维度退 0 不拖垮全局。"""
+    bench = loaded.bench
+    weights = init_weights(bench)
+    chat = FakeToolCallingChatModel(responses=[
+        _critic_agent_response(loaded, empty_binary=("consistency",)),
+    ])
+    critic = Critic(chat, bench=bench)
+
+    verdict = critic.evaluate(CriticInput(
+        sample=loaded.sample("s001"), generated_images=three_view_images, weights=weights,
+    ))
+    consistency = next(d for d in verdict.dimensions if d.dim == "consistency")
+    assert consistency.value == 0.0
+    assert consistency.items == []
+    # 其他维度不受牵连（部分 salvage，而非整轮全 0）
+    color = next(d for d in verdict.dimensions if d.dim == "color_accuracy")
+    assert color.value == pytest.approx(0.75)
+    assert verdict.restoration > 0.0
 
 
 def test_critic_missing_checklist_items_default_zero(loaded, three_view_images):
