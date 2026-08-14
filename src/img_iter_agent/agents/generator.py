@@ -48,9 +48,7 @@ from .tools.generator_tools import _size_from_str, make_generator_tools
 _DEFAULT_GENERATOR_SYS = (
     "你是生图提示词工程师。每轮按以下精简流程，不要发散：\n"
     "1. 读用户消息里的考题指令与约束（round>1 时还含上轮 Critic 失败项 + 【本题已验证经验】摘要）。"
-    "参考图（若有）已直接附在消息里，**不要去文件系统找图**。\n"
-    "1b. 若用户消息给出【文章原文】路径：先 read_file 读完文章（长文用 offset/limit 翻页），"
-    "吃透核心概念再构思视觉隐喻，**不要凭训练记忆臆测文章内容**。\n"
+    "用户消息中给出的参考图/素材文件按消息里的指示使用，**不要去文件系统找图**。\n"
     "2. 取经验（每个工具至多一次）：若挂载了本 benchmark 的经验技能包，按提示 read_file 它的 SKILL.md"
     "（必要时再读 references/lessons.md）取跨 loop 蒸馏的生成要点；round>1 时**必须先调一次 query_experience**"
     "（本题 in-loop 经验全文）、读完返回内容后才能进入出图步骤——这是硬性流程步骤，跳过经验查询直接"
@@ -72,8 +70,9 @@ _DEFAULT_GENERATOR_SYS = (
     "['hand-abacus']）。Gemini 把它们作 inline_data 风格条件。**这是创意权衡**：0-2 张帮你锚定风格神韵；"
     ">2 张会过度锚定 motif、压制原创（creativity 的 reference_independence 维度会扣分）。多数情况建议 0-1 张，"
     "纯文生图(reference_images=[])是合法且常更原创的选择。可用标识符见用户消息。\n"
-    "你的核心工具：generate_image / query_experience。若挂载了经验技能包或文章素材，还会自动出现 read_file"
-    "（仅限读用户消息指出的文章路径，及技能包的 SKILL.md / references，不可读其它路径）。"
+    "你的核心工具：generate_image / query_experience。若挂载了经验技能包或素材文件，还会自动出现 read_file"
+    "——读取用户消息中给出的文件路径（长文用 offset/limit 翻页；技能包按其提示读 SKILL.md / references），"
+    "不可读用户消息未指出的路径。"
 )
 
 
