@@ -60,6 +60,9 @@ class LoopSummary(BaseModel):
     status: str = "unknown"  # running / awaiting_review / finished / error / unknown
     has_checkpoint: bool = False
     thumbnail: str | None = None  # 最新一张生成图的相对路径
+    # best/last_restoration 是否按当前生效权重（含人工校准回灌）重算过：
+    # 手动排序产生新权重后历史 loop 的分数随之更新（展示层重算，不动落盘数据）。
+    rescored: bool = False
 
 
 class SampleOverview(BaseModel):
@@ -104,6 +107,10 @@ class DimensionScoreOut(BaseModel):
 
 class VerdictOut(BaseModel):
     restoration: float
+    # restoration 是否按当前生效权重重算（trajectory 冻结值 ≠ 当前权重时 True）。
+    rescored: bool = False
+    # 重算前的落盘冻结分（rescored=False 时为 None）
+    restoration_original: float | None = None
     weights_used: dict[str, float]
     dimensions: list[DimensionScoreOut]
 

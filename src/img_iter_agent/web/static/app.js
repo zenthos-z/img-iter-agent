@@ -98,6 +98,11 @@ function imgURL(path, loop) {
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (n, d = 3) => (n == null ? "—" : Number(n).toFixed(d));
+// 按当前校准权重重算的分数标记：↻ 悬浮显示重算前的落盘原始分
+const rescoreFlag = (v) =>
+  v?.rescored
+    ? `<span class="rescore-flag" title="按当前校准权重重算（原始分 ${fmt(v.restoration_original)}）">↻</span>`
+    : "";
 
 // ---- Markdown 渲染（安全子集：标题/加粗/列表/任务列表）----
 function renderMarkdown(md) {
@@ -421,7 +426,9 @@ function renderSampleCard(bench, sample) {
   const loopChips = sample.loops
     .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])
     .map((l) => {
-      const best = l.best_restoration != null ? ` · 最佳 ${fmt(l.best_restoration)}` : "";
+      const best = l.best_restoration != null
+        ? ` · 最佳 ${fmt(l.best_restoration)}${l.rescored ? '<span class="rescore-flag" title="按当前校准权重重算">↻</span>' : ""}`
+        : "";
       return `<span class="loop-chip" onclick="location.hash='#/loop/${esc(l.loop_id)}'">
         <span class="dot ${l.status}"></span>
         ${esc(l.loop_id.replace(/.*-\d{4}-/, ""))}${best}
@@ -572,7 +579,7 @@ function renderLoopThumbCard(bench, sample, loop) {
         <strong>${loopShort}</strong>
         <span class="muted">${esc(sample.sample_id)}${sample.product ? " · " + esc(sample.product) : ""}</span>
       </div>
-      <div class="loop-thumb-meta">${loop.n_traces} trace · 最佳 ${best}</div>
+      <div class="loop-thumb-meta">${loop.n_traces} trace · 最佳 ${best}${loop.rescored ? '<span class="rescore-flag" title="按当前校准权重重算">↻</span>' : ""}</div>
       <div class="loop-thumb-actions">
         <a class="btn btn-secondary btn-sm" href="#/scoring/${esc(bench.bench_id)}/${esc(sample.sample_id)}">排序</a>
         ${RESUMABLE.includes(loop.status)
@@ -882,7 +889,7 @@ function renderLoopFull(loop, loopId) {
           <div class="trace-header">
             <span class="round">第 ${t.round} 轮</span>
             ${t.ts ? `<span class="muted" style="font-size:12px">${esc(t.ts)}</span>` : ""}
-            <span class="score ${scoreCls}">还原度 ${fmt(score)}</span>
+            <span class="score ${scoreCls}">还原度 ${fmt(score)}${rescoreFlag(t.verdict)}</span>
           </div>
           <div class="trace-content">
             ${img ? `<img class="trace-img" src="${imgURL(img, t.loop_id)}" data-lb="${imgURL(img, t.loop_id)}" alt="">` : '<div class="trace-img"></div>'}
@@ -957,7 +964,7 @@ function renderLoopCompact(loop, loopId) {
     return `<div class="trace-item ${i === bestIdx ? "selected current" : ""}" data-trace-idx="${i}" tabindex="0" role="button" aria-label="查看第 ${t.round} 轮">
       ${img ? `<img class="trace-thumb" src="${imgURL(img, t.loop_id)}" alt="">` : '<div class="trace-thumb"></div>'}
       <span class="trace-idx">#${t.round}</span>
-      ${score != null ? `<span class="trace-score">${fmt(score)}</span>` : ""}
+      ${score != null ? `<span class="trace-score">${fmt(score)}${rescoreFlag(t.verdict)}</span>` : ""}
       ${isBest ? `<span class="trace-tag best">最佳</span>` : ""}
     </div>`;
   }).join("");
@@ -1092,11 +1099,11 @@ function initLoopCompact(loop) {
     const best = loop.traces.reduce((best, tr) => ((tr.verdict?.restoration ?? -1) > (best.verdict?.restoration ?? -1) ? tr : best), loop.traces[0]);
     const isBest = t.trace_id === best.trace_id;
     const badge = document.getElementById("compact-hero-badge");
-    if (badge) badge.textContent = `#${t.round}${isBest ? " 最佳" : ""} · ${fmt(t.verdict?.restoration)}`;
+    if (badge) badge.textContent = `#${t.round}${isBest ? " 最佳" : ""} · ${fmt(t.verdict?.restoration)}${t.verdict?.rescored ? " ↻" : ""}`;
     const sub = document.getElementById("compact-hero-sub");
     if (sub) sub.textContent = `${esc(loop.model)} · ${t.ts || ""}`;
     const evalScore = document.getElementById("compact-eval-score");
-    if (evalScore) evalScore.textContent = fmt(t.verdict?.restoration);
+    if (evalScore) evalScore.innerHTML = `${fmt(t.verdict?.restoration)}${rescoreFlag(t.verdict)}`;
     const evalBody = document.getElementById("compact-eval-body");
     if (evalBody) evalBody.innerHTML = t.verdict ? renderDimList(t.verdict.dimensions) : '<div class="muted" style="padding:0 16px 16px">暂无评分</div>';
     const promptText = document.getElementById("compact-prompt-text");
@@ -1421,7 +1428,7 @@ function renderRankList() {
         ${img ? `<img class="rank-thumb" src="${imgURL(img, t.loop_id)}" data-lb="${imgURL(img, t.loop_id)}" alt="">` : '<div class="rank-thumb"></div>'}
         <span class="rank-meta">
           <span class="src">${esc(t.loop_short)} · 第${t.round}轮</span>
-          ${!blind && t.verdict ? `<br>AI 还原度 ${fmt(t.verdict.restoration)}` : ""}
+          ${!blind && t.verdict ? `<br>AI 还原度 ${fmt(t.verdict.restoration)}${rescoreFlag(t.verdict)}` : ""}
           ${t.human_rank != null ? `<br>历史人工排序: ${t.human_rank}` : ""}
         </span>
       </li>`;
