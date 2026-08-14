@@ -40,39 +40,100 @@ def _size_from_str(s: str) -> SizeSpec:
     return SizeSpec(tier="2K")
 
 
-def _format_experience(run_dir: Path, dim: str | None = None) -> str:
-    """读 conclusions.json，格式化已验证有效/无效/已升级经验。
+def _clip(s: str | None, n: int) -> str:
+    """压平并截断：经验渲染的条目是「指引」不是档案，全文动辄上千字符会灌爆上下文。"""
+    s = (s or "").strip().replace("\n", "；")
+    return s if len(s) <= n else s[: n - 1] + "…"
 
-    escalated 分组（B 复发检测）：该 dim 连续失败已撞模型能力上限，标注连续失败轮数，
-    提示 generator 勿再 prompt 微调、需换根本方向。
+
+# query_experience 有界渲染：分组条数上限 + 每条截断 + 总字符预算。
+# 背景：无界版实测 34 条结论 → 12 万字符一次性进上下文，模型没有余力完整判断考题要求。
+_EXP_GROUP_CAPS = {"escalated": 4, "ineffective": 6, "effective": 4}
+_EXP_ENTRY_CLIP = {"change": 80, "lesson": 160}
+_EXP_CHAR_BUDGET = 3500
+
+
+def _digest_section(digest: str, dim: str) -> str:
+    """从 digest 提取与 dim 相关的条目（带所在小节标题），保持原文、不做截断。"""
+    out: list[str] = []
+    header = ""
+    for line in digest.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            header = s
+            continue
+        if s and (f"[{dim}]" in s or dim in s):
+            if header and (not out or out[-1] != header):
+                out.append(header)
+            out.append(s)
+    return "\n".join(out)
+
+
+def _format_experience(run_dir: Path, dim: str | None = None) -> str:
+    """本题经验查询——**只读 LLM 压缩面（kb.digest）**，不读 raw conclusions 全文。
+
+    digest 由 summarizer 每轮增量重写（语义合并/证伪同步/浓缩），篇幅由压缩 prompt 约束
+    （≤800 字）——有界靠「源头就短」，消费侧不做字符截断。dim 参数 → 提取对应维度小节。
+    旧 run 无 digest（summarizer 尚未跑过新代码）→ 一次性有界兜底渲染，下一轮即被 digest 取代。
     """
     kb = load_conclusions(run_dir)
+    if kb.digest:
+        if not dim:
+            return kb.digest
+        section = _digest_section(kb.digest, dim)
+        return section or f"（digest 中无 [{dim}] 相关条目；不传 dim 可看全部摘要）"
+    # —— legacy 兜底（无 digest 的旧 run，仅过渡一轮）——
+    # 有界：分组上限+条目截断+总预算。raw 全文动辄 12 万字符，直接灌入会淹掉考题要求。
     groups = kb.verified_for_generator()
-    effective = groups["effective"]
+    effective = groups["effective"]  # 已只含 verified_effective（refuted 不会进）
     ineffective = groups["ineffective"]
-    escalated = groups.get("escalated", [])
+    escalated = [c for c in groups.get("escalated", []) if c.status != "refuted"]
     if dim:
         effective = [c for c in effective if c.dim == dim]
         ineffective = [c for c in ineffective if c.dim == dim]
         escalated = [c for c in escalated if c.dim == dim]
     if not effective and not ineffective and not escalated:
         return "（暂无已验证经验）"
+
+    def _recency_key(c: Any) -> tuple[int, int]:
+        return (c.verified_round or c.created_round or 0, c.created_round or 0)
+
+    sections: list[tuple[str, list[Any]]] = [
+        ("escalated", escalated), ("ineffective", ineffective), ("effective", effective),
+    ]
+    headers = {
+        "escalated": "【已升级（连续失败疑似模型上限，勿重复微调，需换根本方向）】",
+        "ineffective": "【已验证无效（勿重复，需换思路）】",
+        "effective": "【已验证有效（建议保持）】",
+    }
     lines: list[str] = []
-    if escalated:
-        lines.append("【已升级（连续失败疑似模型上限，勿重复微调，需换根本方向）】")
-        for c in escalated:
+    omitted = 0
+    used = 0
+    for key, cs in sections:
+        if not cs:
+            continue
+        ranked = sorted(cs, key=_recency_key, reverse=True)
+        cap = _EXP_GROUP_CAPS[key]
+        take, drop = ranked[:cap], ranked[cap:]
+        omitted += len(drop)
+        entries: list[str] = []
+        for c in take:
             streak = kb.fail_streaks.get(c.dim, 0)
-            lines.append(f"- [{c.dim}] (连续失败 {streak} 轮) {c.change} → {c.lesson}")
-    if effective:
-        lines.append("【已验证有效（建议保持）】")
-        for c in effective:
-            lines.append(f"- [{c.dim}] {c.change} → {c.lesson}")
-    if ineffective:
-        lines.append("【已验证无效（勿重复，需换思路）】")
-        for c in ineffective:
-            streak = kb.fail_streaks.get(c.dim, 0)
-            tag = f" (连续失败 {streak} 轮)" if streak > 0 else ""
-            lines.append(f"- [{c.dim}]{tag} {c.change} → {c.lesson}")
+            tag = (f" (连续失败 {streak} 轮)" if key == "escalated"
+                   else f" (连续失败 {streak} 轮)" if (key == "ineffective" and streak > 0) else "")
+            entry = (f"- [{c.dim}]{tag} 「{_clip(c.change, _EXP_ENTRY_CLIP['change'])}」"
+                     f"→ {_clip(c.lesson, _EXP_ENTRY_CLIP['lesson'])}")
+            # 总预算：装不下的条目直接省略（保条目完整可读，不在句中腰斩）
+            if used + len(entry) > _EXP_CHAR_BUDGET:
+                omitted += len(take) - len(entries)
+                break
+            entries.append(entry)
+            used += len(entry) + 1
+        if entries:
+            lines.append(headers[key])
+            lines.extend(entries)
+    if omitted > 0:
+        lines.append(f"（已省略 {omitted} 条较早经验；传 dim='维度名' 可精查单维度，全文见 lessons/conclusions.json）")
     return "\n".join(lines)
 
 
@@ -217,6 +278,25 @@ def make_generate_image_tool(
             steps: 可选，采样步数（当前各族均不支持，静默忽略）；-1=不设。
         返回生成图相对 run 目录的路径。
         """
+        # —— 出图熔断 ——
+        # 模型看不到生成的图、拿不到质量反馈，出图成功后常"换个 prompt 再试一版"打转
+        # （生产实测 round5 连续 4+ 次 generate_image，每次 45~350s，还撞 recursion_limit
+        # 后被 invoke_with_retry 整轮重放放大）。提示词的"只调一次"对 lite 模型不够硬，
+        # 这里工具级硬拦：成功一次后拒绝再出图、连续失败封顶，逼模型立即收尾出结构化结果。
+        if sink.get("ref"):
+            return (
+                f"本轮已成功生成图片（{sink['ref']}）。流程规定 generate_image 只成功调用一次，"
+                "再次出图已被拒绝。请立即停止调用任何工具，直接以最终回复输出 GeneratorOutput "
+                "JSON（prompt/meaning/delta_note/strategy_note）结束本轮。"
+            )
+        attempts = sink.get("generate_attempts", 0) + 1
+        sink["generate_attempts"] = attempts
+        if attempts > 3:
+            return (
+                f"generate_image 已连续失败 {attempts - 1} 次且无成功图，达到重试上限，不再出图。"
+                "请基于已有信息直接以最终回复输出 GeneratorOutput JSON"
+                "（prompt/meaning/delta_note/strategy_note）结束本轮。"
+            )
         size_spec = _size_from_str(size)
         if aspect_ratio:
             size_spec.ratio = aspect_ratio

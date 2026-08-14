@@ -30,6 +30,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from ..agents._agent_output import provider_structured
 from ..agents._narrow_tools import invoke_with_retry, narrow_tools_middleware
 from ..agents.agent_config_loader import load_system_prompt
 from ..config import Settings, get_settings
@@ -280,7 +281,11 @@ def run_renovator(
     sys_prompt = load_system_prompt("creativity-tuner", _DEFAULT_RENOVATOR_SYS)
     agent = create_deep_agent(
         model=chat_model, tools=[], system_prompt=sys_prompt,
-        response_format=CreativityRenovation, checkpointer=None, name="creativity-tuner",
+        # 裸 pydantic 会被包成 ToolStrategy（tool_choice 400 风险）且 schema 带 $defs/$ref
+        # （items 嵌 CreativityRenoItem）——dmxapi 路由到 Gemini 原生后端时被 400 拒。
+        # 走 provider_structured：json_schema response_format + 平化 $defs，与其余 agent 一致。
+        response_format=provider_structured(CreativityRenovation),
+        checkpointer=None, name="creativity-tuner",
         middleware=narrow_tools_middleware(),
     )
     result, _ok = invoke_with_retry(

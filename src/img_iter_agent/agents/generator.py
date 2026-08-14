@@ -211,8 +211,14 @@ class Generator:
             try:
                 from ..memory.knowledge import load_conclusions, render_conclusions_brief
                 _kb = load_conclusions(run_dir, sample_id=sample.sample_id)
-                _fdims = (prior_feedback.failed_dims if prior_feedback else None) or []
-                conclusions_brief = render_conclusions_brief(_kb, failed_dims=_fdims)
+                # 优先消费 LLM 压缩面（kb.digest，summarizer 每轮增量重写）：篇幅由压缩
+                # prompt 约束、语义已合并、证伪已同步——有界靠源头就短，不做字符截断。
+                # 无 digest（旧 run 首轮恢复）→ 退化机械渲染一次，下一轮 summarizer 即生成。
+                if _kb.digest:
+                    conclusions_brief = _kb.digest
+                else:
+                    _fdims = (prior_feedback.failed_dims if prior_feedback else None) or []
+                    conclusions_brief = render_conclusions_brief(_kb, failed_dims=_fdims)
             except Exception:  # noqa: BLE001
                 conclusions_brief = ""
 
