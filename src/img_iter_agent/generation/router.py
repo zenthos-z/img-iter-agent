@@ -124,14 +124,31 @@ class Router:
 
         出图本身的 tool 埋点在 client.py:_trace_image_call（run_type=tool），这里只多记
         一层映射（family/model_id/prompt→产物路径），便于在 LangSmith 关联请求与产物。
+
+        请求摘要放 `_do(req_summary)` 的**函数入参**——@traceable 把入参记为 run inputs，
+        LangSmith UI 的 Input 面板直接可见（含参考图/改图历史的**真实路径**；早期版本
+        `_do()` 无参 → inputs 恒为 null，参考图到底传没传在 UI 里根本看不到）。
         真实 GeneratedImage 通过 holder 旁路返回（与 client.py 的 _trace_image_call 同模式，
         避免把含 Path 的大对象塞进 trace output）。
         """
         ls_extra: Any = {"config": config} if config is not None else {}
         holder: dict[str, Any] = {}
 
+        req_summary = {
+            "prompt": req.prompt,
+            "reference_images": [str(p) for p in req.reference_images],
+            "conversation_history": [str(p) for p in req.conversation_history],
+            "size": {"tier": req.size.tier, "ratio": req.size.ratio,
+                     "pixels": req.size.pixels},
+            "model_hint": req.model_hint.value if req.model_hint else None,
+            "model_id": req.model_id,
+            "negative_prompt": req.negative_prompt,
+            "seed": req.seed,
+            "steps": req.steps,
+        }
+
         @traceable(name="router.generate", run_type="chain")
-        def _do() -> dict:
+        def _do(req_summary: dict) -> dict:
             decision = route(req, settings=self.settings)
             img = decision.generate(req, client=self.client, model_id=decision.model_id,
                                     out_dir=out_dir)
@@ -140,7 +157,7 @@ class Router:
                     "request_prompt": req.prompt, "output_path": str(img.image_path),
                     "model": img.model}
 
-        _do(langsmith_extra=ls_extra)
+        _do(req_summary, langsmith_extra=ls_extra)
         return holder["img"]
 
 

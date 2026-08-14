@@ -69,10 +69,31 @@ def test_image_gen_traces_as_tool_and_returns_real_response(captured_runs):
     # (c) 出图绝不能上报成 llm（否则污染模型调用面板）
     assert not any(r.get("run_type") == "llm" for r in captured_runs)
 
-    # (d) 请求体里的长字段被截断（不把整段 base64 塞进 trace）
+    # (d) 请求摘要记在 run inputs（LangSmith UI 的 Input 面板直接可见，不再是 null），
+    #     且长字段被截断（不把整段 base64 塞进 trace）
     b_run = next(r for r in tool_runs if r["name"].startswith("image_gen.B"))
-    req_meta = b_run["extra"]["metadata"]["req"]
-    assert req_meta["image"].startswith("<")  # 截断成 "<N chars>"
+    req_in = b_run["inputs"]["req"]
+    assert req_in["image"].startswith("<")  # 截断成 "<N chars>"
+
+
+def test_image_gen_truncates_nested_base64(captured_runs):
+    """嵌套在 list/dict 里的 base64（D 族 contents[].parts[].inline_data.data）也要截断——
+    早期版本只截顶层 str，base64 整段进 trace 体积爆炸。inputs 里能看到 prompt 与截断占位。"""
+    from img_iter_agent.generation.client import _trace_image_call
+    from img_iter_agent.generation.base import ModelFamily
+
+    body = {"contents": [{"role": "user", "parts": [
+        {"text": "a chair"},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "Q" * 5000}},
+    ]}]}
+    _trace_image_call(ModelFamily.D_GEMINI, "/v1beta/models/m:generateContent", body,
+                      lambda: {"candidates": []})
+
+    d_run = next(r for r in captured_runs if r["name"].startswith("image_gen.D"))
+    req_in = d_run["inputs"]["req"]
+    data = req_in["contents"][0]["parts"][1]["inline_data"]["data"]
+    assert data == "<5000 chars>"  # 深度截断，不是 5000 个字符的 base64
+    assert req_in["contents"][0]["parts"][0]["text"] == "a chair"
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +253,16 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
 
     # 断言：出图 tool run 名字 image_gen.*
     assert any(r["name"].startswith("image_gen.") for r in by_type["tool"])
+
+    # 断言：router.generate 的 inputs 可见完整请求摘要（prompt + 参考图路径 + 尺寸等），
+    # 而不是 null——参考图传没传要在 LangSmith UI 里直接能看到。
+    # （本测试走的是 generator 兜底出图路径：fake agent 的工具调用未产出 sink ref，
+    # image_edit 模式兜底自动 target 锚定 → reference_images 应含 target.jpg 真实路径。）
+    rg = next(r for r in captured_runs if r["name"] == "router.generate")
+    rs = rg["inputs"]["req_summary"]
+    assert rs["prompt"]
+    assert rs["reference_images"], "兜底出图应带 target 参考图，且路径要出现在 inputs"
+    assert rs["reference_images"][0].endswith("target.jpg")
 
 
 # ---------------------------------------------------------------------------

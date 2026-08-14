@@ -114,13 +114,31 @@ class DmxapiClient:
         )
 
 
+def _truncate_for_trace(value: Any, *, max_str: int = 200) -> Any:
+    """深度截断请求体里的长字符串（base64 图片等），dict/list 递归处理。
+
+    早期版本只截断**顶层**超长 str，但各族请求体的图片都在嵌套结构里（A 族 input[].image_url、
+    D 族 contents[].parts[].inline_data.data 是 list/dict）——base64 整段进 trace，体积爆炸。
+    """
+    if isinstance(value, str):
+        return f"<{len(value)} chars>" if len(value) > max_str else value
+    if isinstance(value, dict):
+        return {k: _truncate_for_trace(v, max_str=max_str) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_truncate_for_trace(v, max_str=max_str) for v in value]
+    return value
+
+
 def _trace_image_call(family: ModelFamily, path: str, req_body: dict, fn) -> dict[str, Any]:
     """出图调用埋点：作为 LangSmith 的 run_type="tool" run 上报，并把真实响应原样返回。
 
     生图是外部图像生成调用，**不是文本 LLM 调用**——不能用 run_type="llm"，否则会把
     一堆无 token/无模型语义的图像调用混进 LLM 面板，污染模型调用统计。用 tool 类型记录
-    协议族/路径/请求摘要（截断 base64，避免塞整张图进 trace）/响应键与耗时，与真正的
-    LLM 调用清晰区分。
+    协议族/路径/请求摘要/响应键与耗时，与真正的 LLM 调用清晰区分。
+
+    请求摘要放 `_do(req_summary)` 的**函数入参**——@traceable 把入参记为 run inputs，
+    LangSmith UI 的 Input 面板直接可见（早期版本放 metadata：inputs 恒为 null，摘要藏
+    在 metadata 里基本看不到）。长字符串（base64 图片）经 _truncate_for_trace 深度截断。
 
     注意：trace 的 output 只记响应摘要（resp_keys），但本函数**必须把真实响应原样返回**给
     dispatcher——后者要从中取 data[].b64_json/url 落盘。早期版本把摘要当返回值，导致生图
@@ -128,20 +146,18 @@ def _trace_image_call(family: ModelFamily, path: str, req_body: dict, fn) -> dic
     """
     from langsmith import traceable
 
-    # 记录请求体摘要（截断长字段，避免把整个 base64 图片塞进 trace）
-    body_summary = {k: (f"<{len(v)} chars>" if isinstance(v, str) and len(v) > 200 else v)
-                    for k, v in (req_body or {}).items()}
+    req_summary = _truncate_for_trace(req_body or {})
 
     holder: dict[str, Any] = {}
 
     @traceable(name=f"image_gen.{family.value}", run_type="tool")
-    def _do() -> dict:
+    def _do(req: dict) -> dict:
         resp = fn()
         holder["resp"] = resp
         # trace output 只记摘要，不塞整张 base64 图
         return {"status": "ok", "resp_keys": list(resp.keys()) if isinstance(resp, dict) else "n/a"}
 
-    _do(langsmith_extra={"metadata": {"family": family.value, "path": path, "req": body_summary}})
+    _do(req_summary, langsmith_extra={"metadata": {"family": family.value, "path": path}})
     return holder["resp"]
 
 
