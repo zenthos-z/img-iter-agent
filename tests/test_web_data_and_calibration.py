@@ -228,6 +228,94 @@ def test_calibration_fits_weights_from_ranks(tmp_path):
     assert abs(sum(res.weights.values()) - 1.0) < 1e-4  # Σw=1
 
 
+def test_rescore_history_with_current_weights(tmp_path):
+    """手动排序产生 sample 级新权重后，API 层按当前权重重算历史 trace 分数：
+
+    rescored=True + restoration_original 保留冻结分；总览 best/last 同步重算并带标记；
+    trajectory.jsonl 落盘数据不动（纯展示层重算）。
+    """
+    import shutil
+
+    from img_iter_agent.data.runstore import RunStore
+    from img_iter_agent.data.trajectory import TrajectoryReader, TrajectoryWriter
+    from img_iter_agent.data.weights import init_weights
+    from img_iter_agent.memory.schema import AttemptRecord, CriticVerdict, DimensionScore
+
+    # benchmark 拷进 tmp data_root（bench 加载走 settings.benchmarks_dir）
+    repo_data = Path(__file__).resolve().parents[1] / "data"
+    shutil.copytree(
+        repo_data / "benchmarks" / "furniture_product_whitebg",
+        tmp_path / "benchmarks" / "furniture_product_whitebg",
+    )
+    s = _settings(tmp_path)
+    bench = load_benchmark("furniture_product_whitebg", settings=s).bench
+    prior = init_weights(bench)
+
+    def mk_verdict(consistency_value: float) -> CriticVerdict:
+        """只有 consistency 有分、其余维度 0 分的 verdict（冻结 restoration=0.123）。"""
+        dims = [
+            DimensionScore(
+                dim=d,
+                scoring_type="binary" if d not in ("material_texture", "color_accuracy") else "continuous",
+                value=consistency_value if d == "consistency" else 0.0,
+            )
+            for d in ["consistency", "product_structure", "material_texture",
+                      "color_accuracy", "artifact_defect", "commercial_focus"]
+        ]
+        return CriticVerdict(sample_id="s001", dimensions=dims,
+                             weights_used=dict(prior), restoration=0.123)
+
+    loop_id = "furniture_product_whitebg-s001"
+    store = RunStore.create(loop_id, "furniture_product_whitebg", "test-model",
+                            settings=s, note="synthetic")
+    tw = TrajectoryWriter(store.trajectory_path)
+    for r, cv in [(1, mk_verdict(1.0)), (2, mk_verdict(0.5))]:
+        tw.append(AttemptRecord(
+            attempt_id=f"a{r:03d}_t", run_id=loop_id, round=r,
+            sample_id="s001", bench_id="furniture_product_whitebg", model="test-model",
+            gen_mode="image_edit", prompt=f"p{r}", size="2K",
+            output_image_refs=[f"out/a{r:03d}.png"], verdict=cv,
+        ))
+
+    # 基线：无校准文件，当前权重 == 冻结权重 → 不重算
+    detail = build_loop_detail(loop_id, settings=s)
+    assert detail.traces[0].verdict.rescored is False
+    assert abs(detail.traces[0].verdict.restoration - 0.123) < 1e-9
+
+    # 写 sample 级人工校准权重：consistency 0.9（Σw=1），其余维度 0 分
+    wpath = sample_weights_path(s, "furniture_product_whitebg", "s001")
+    wpath.write_text(
+        json.dumps({"weights": {
+            "consistency": 0.9, "product_structure": 0.02, "material_texture": 0.02,
+            "color_accuracy": 0.02, "artifact_defect": 0.02, "commercial_focus": 0.02,
+        }}),
+        encoding="utf-8",
+    )
+    try:
+        detail = build_loop_detail(loop_id, settings=s)
+        v1, v2 = detail.traces[0].verdict, detail.traces[1].verdict
+        assert v1.rescored is True and v2.rescored is True
+        assert abs(v1.restoration_original - 0.123) < 1e-9
+        assert abs(v1.restoration - 0.9) < 1e-6   # consistency=1.0 × w=0.9
+        assert abs(v2.restoration - 0.45) < 1e-6  # consistency=0.5 × w=0.9
+
+        # 总览摘要同步：best/last 按新权重重算 + rescored 标记
+        ov = build_overview(s)
+        bench_o = next(b for b in ov.benches if b.bench_id == "furniture_product_whitebg")
+        sample_o = next(sm for sm in bench_o.samples if sm.sample_id == "s001")
+        loop_sum = sample_o.loops[0]
+        assert loop_sum.rescored is True
+        assert abs(loop_sum.best_restoration - 0.9) < 1e-6
+        assert abs(loop_sum.last_restoration - 0.45) < 1e-6
+
+        # 落盘数据不动：trajectory 里冻结分保持 0.123
+        recs = TrajectoryReader(store.trajectory_path).read_all()
+        assert len(recs) == 2
+        assert all(abs(r.verdict.restoration - 0.123) < 1e-9 for r in recs)
+    finally:
+        wpath.unlink(missing_ok=True)
+
+
 def test_agent_config_externalization(repo_data_root, tmp_path):
     """写 agents_config/<agent>.md → load_system_prompt 读到，否则回退默认。"""
     s = _settings(repo_data_root)

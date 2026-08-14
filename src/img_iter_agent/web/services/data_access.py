@@ -12,6 +12,7 @@ from pathlib import Path
 from ...config import Settings, get_settings
 from ...data.benchmark import load_benchmark
 from ...data.runstore import RunStore, run_is_alive
+from ...data.weights import apply_weights, compute_features, load_weights, weighted_restoration
 from ...data.trajectory import TrajectoryReader
 from ...memory.schema import AttemptRecord, CriticVerdict
 from ..models import (
@@ -102,7 +103,12 @@ def load_human_ranks(settings: Settings, sample_id: str) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _verdict_to_out(verdict: CriticVerdict) -> VerdictOut:
+def _verdict_to_out(
+    verdict: CriticVerdict,
+    *,
+    rescored: bool = False,
+    restoration_original: float | None = None,
+) -> VerdictOut:
     dims: list[DimensionScoreOut] = []
     for d in verdict.dimensions:
         # 二分维度：透出全量逐项判定（含通过项 + reason），前端逐项 ✓/✗ 展示。
@@ -124,14 +130,30 @@ def _verdict_to_out(verdict: CriticVerdict) -> VerdictOut:
         )
     return VerdictOut(
         restoration=float(verdict.restoration),
+        rescored=rescored,
+        restoration_original=restoration_original,
         weights_used={k: float(v) for k, v in verdict.weights_used.items()},
         dimensions=dims,
     )
 
 
 def _trace_to_out(
-    rec: AttemptRecord, *, loop_id: str, human_rank: float | None = None
+    rec: AttemptRecord,
+    *,
+    loop_id: str,
+    human_rank: float | None = None,
+    weights_now: dict[str, float] | None = None,
 ) -> TraceOut:
+    """weights_now：当前生效权重。与 trace 冻结的 weights_used 不同时，restoration
+    按当前权重重算（rescored=True，原始分放 restoration_original），落盘数据不动。
+    """
+    verdict_out: VerdictOut | None = None
+    if rec.verdict is not None:
+        v, rescored, original = rec.verdict, False, None
+        if weights_now is not None and _weights_differ(weights_now, v.weights_used):
+            v = apply_weights(v, weights_now)
+            rescored, original = True, float(rec.verdict.restoration)
+        verdict_out = _verdict_to_out(v, rescored=rescored, restoration_original=original)
     return TraceOut(
         loop_id=loop_id,
         trace_id=rec.attempt_id,
@@ -147,7 +169,7 @@ def _trace_to_out(
         size=rec.size,
         output_image_refs=list(rec.output_image_refs),
         reference_image_refs=list(rec.reference_image_refs),
-        verdict=_verdict_to_out(rec.verdict) if rec.verdict else None,
+        verdict=verdict_out,
         lesson_ref=rec.lesson_ref,
         delta_note=rec.delta_note,
         human_rank=human_rank,
@@ -195,6 +217,35 @@ def _loop_bench_id(run_dir: Path) -> str:
         return traces[0].bench_id
     # 退化：从 meta 读
     return _loop_meta(run_dir).get("bench_id", "")
+
+
+def _weights_differ(a: dict[str, float], b: dict[str, float]) -> bool:
+    """权重是否实质不同（键集不同，或任一维差 > 1e-9）。
+
+    冻结的 weights_used 常带归一化浮点尘差（0.25000000000000006 vs 0.25），
+    直接 dict 比较会把「权重未变」误报成 rescored。
+    """
+    if set(a) != set(b):
+        return True
+    return any(abs(a[k] - b[k]) > 1e-9 for k in a)
+
+
+def _current_weights(
+    settings: Settings, bench_id: str | None, sample_id: str | None, *, run_dir: Path | None
+) -> dict[str, float] | None:
+    """取当前生效权重（run 级校准 > sample 级人工校准 > 先验，见 weights.load_weights）。
+
+    用于对历史 trace 冻结的 restoration 按当前权重重算：手动排序产生新权重后，
+    前端展示的历史分数随之更新（展示层重算，不动 trajectory.jsonl 落盘数据）。
+    bench 缺失/损坏时返回 None，调用方退回冻结分。
+    """
+    if not bench_id:
+        return None
+    try:
+        bench = load_benchmark(bench_id, settings=settings).bench
+        return load_weights(bench, run_dir=run_dir, sample_id=sample_id)
+    except Exception:  # noqa: BLE001, S110  bench 加载失败 → 不重算
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +440,19 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
         store = RunStore.open(ld.name, settings=settings)
         meta = store.meta
 
-        restorations = [t.verdict.restoration for t in traces if t.verdict]
+        # 按当前生效权重（含人工校准回灌）重算历史 restoration：手动排序产生新权重后，
+        # 总览的历史分数随之更新（展示层重算，trajectory.jsonl 冻结值不动）。
+        weights_now = _current_weights(settings, bench_id, sample_id, run_dir=ld)
+        rescored = False
+        restorations: list[float] = []
+        for t in traces:
+            if not t.verdict:
+                continue
+            if weights_now is not None and _weights_differ(weights_now, t.verdict.weights_used):
+                restorations.append(weighted_restoration(compute_features(t.verdict), weights_now))
+                rescored = True
+            else:
+                restorations.append(t.verdict.restoration)
         best = max(restorations) if restorations else None
         last = restorations[-1] if restorations else None
         thumbnail = traces[-1].output_image_refs[0] if traces and traces[-1].output_image_refs else None
@@ -427,6 +490,7 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
             n_traces=len(traces),
             best_restoration=best,
             last_restoration=last,
+            rescored=rescored,
             status=status,
             has_checkpoint=has_checkpoint,
             thumbnail=thumbnail,
@@ -500,11 +564,19 @@ def build_loop_detail(
     meta = store.meta
     traces = _read_traces(run_dir)
     sample_id = traces[0].sample_id if traces else ""
+    bench_id = traces[0].bench_id if traces else ""
 
     # 人工排序值（按 attempt_id 取）
     ranks = load_human_ranks(settings, sample_id) if sample_id else {}
 
-    trace_outs = [_trace_to_out(t, loop_id=loop_id, human_rank=ranks.get(t.attempt_id)) for t in traces]
+    # 当前生效权重：与 trace 冻结权重不同时，展示分按它重算（见 _trace_to_out）
+    weights_now = _current_weights(settings, bench_id or None, sample_id or None, run_dir=run_dir)
+    trace_outs = [
+        _trace_to_out(
+            t, loop_id=loop_id, human_rank=ranks.get(t.attempt_id), weights_now=weights_now
+        )
+        for t in traces
+    ]
 
     # 经验知识库（结构化 conclusions.json，替代原单轮 MD）
     from ...memory.knowledge import load_conclusions
@@ -516,7 +588,6 @@ def build_loop_detail(
     target_image = None
     target_md = None
     if traces:
-        bench_id = traces[0].bench_id
         try:
             lb = load_benchmark(bench_id, settings=settings)
             smp = lb.samples.get(sample_id)
