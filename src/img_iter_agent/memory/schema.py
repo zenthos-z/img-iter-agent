@@ -278,7 +278,7 @@ class AttemptRecord(BaseModel):
 # ---------------------------------------------------------------------------
 
 # 经验验证状态：由 Critic 前后 verdict 驱动判定（update_status_on_evidence 见 knowledge.py）
-ConclusionStatus = Literal["pending", "verified_effective", "ineffective"]
+ConclusionStatus = Literal["pending", "verified_effective", "ineffective", "refuted"]
 
 
 class CriticEvidence(BaseModel):

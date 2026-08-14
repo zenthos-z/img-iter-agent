@@ -106,6 +106,12 @@ class Summarizer:
         streak_changes = knowledge.update_fail_streaks(kb, cur_verdict=verdict)
         knowledge.apply_escalation(kb, cur_round=round)
 
+        # 2.5) 证伪（C）：本轮再次失败的 dim，早前判 verified_effective 的结论降为 refuted——
+        # 「有效」只在验证当时成立，后续复发说明改法没保住效果，不能再以「保持」身份误导 generator。
+        refuted_ids = knowledge.falsify_effective(kb, cur_verdict=verdict, cur_round=round)
+        if refuted_ids:
+            print(f"[summarizer] 证伪 {len(refuted_ids)} 条早前判定的有效经验：{refuted_ids}", flush=True)
+
         # 3) 登记本轮的失败维度为新 pending 结论（待下轮 Critic 验证）。
         #    不再以 delta_note 为门槛——delta_note 空时，change 从 Critic 的失败项理由派生。
         #    agent 模式下，把 agent 对该 dim 的 lesson 填进 pending（首轮裁判理解，下轮验证时更新）。
@@ -118,6 +124,12 @@ class Summarizer:
         # 4) 可选 LLM 富化（A）：仅旧模式跑；agent 模式下 agent 已写 lesson，跳过。
         if not use_agent and self.chat_model is not None and kb.conclusions:
             self._llm_refine(kb, langsmith_extra=ls_extra)
+
+        # 5) 每轮 LLM 智能压缩：增量重写 digest（唯一的消费面——user message 注入 +
+        #    query_experience 都只读它）。raw conclusions 全量保留作审计档，不做机械裁剪。
+        #    LLM 失败 → 保留旧 digest，绝不阻断闭环。
+        self._update_digest(kb, round=round, streak_changes=streak_changes,
+                            refuted_ids=refuted_ids)
 
         lesson_ref = str(knowledge.save_conclusions(run_dir, kb).relative_to(run_dir))
 
@@ -268,6 +280,71 @@ class Summarizer:
             reasons = [f"{it.id}: {it.reason}" for it in (d.items or []) if not it.passed]
             return "; ".join(reasons) or f"{dim} 未通过"
         return d.raw or f"{dim} 低分({d.value:.2f})"
+
+    @traceable(name="summarizer.update_digest", run_type="chain")
+    def _update_digest(
+        self, kb: knowledge.KnowledgeBase, *, round: int,
+        streak_changes: dict[str, str] | None = None, refuted_ids: list[str] | None = None,
+    ) -> str | None:
+        """每轮 LLM 智能压缩：把 raw conclusions 语义合并成 digest（经验摘要），增量重写。
+
+        背景：raw conclusions 只增不减（change=delta_note 全文，均长 1~2 千字符），34 条
+        全文渲染 12 万字符——一次性灌爆 agent 上下文，模型没有余力完整判断考题要求。
+        解法分两层：
+          - raw 层（conclusions.json）：机器验证的审计档，**全量保留不裁剪**；
+          - digest 层（kb.digest）：LLM 每轮增量重写的消费面——合并语义重复、同步证伪、
+            浓缩无效经验，篇幅靠 prompt 指令约束（源头就短，消费侧不做字符截断）。
+        「成功经验被证伪」由 falsify_effective 规则层降 refuted，这里负责把它移出「保持」区。
+
+        输入 = 旧 digest + 本轮增量（新登记/本轮验证/证伪/升级），LLM 输出新 digest 全文。
+        容错：invoke 异常或空输出 → 保留旧 digest（return None），闭环不炸。
+        返回新 digest 作为 LangSmith chain run output。
+        """
+        if self.chat_model is None:
+            return None
+        delta_lines: list[str] = []
+        for c in kb.conclusions:
+            if c.created_round == round or c.verified_round == round:
+                delta_lines.append(self._fact_line(kb, c))
+        for cid in refuted_ids or []:
+            c = kb.by_id(cid)
+            if c is not None:
+                delta_lines.append(
+                    f"- [{c.dim}] 证伪：改动「{c.change}」此前判有效，本轮该维度再次失败，已失效"
+                )
+        for dim, ch in (streak_changes or {}).items():
+            if ch == "escalated":
+                delta_lines.append(
+                    f"- [{dim}] 升级：已连续失败 {kb.fail_streaks.get(dim, 0)} 轮，疑似模型能力上限"
+                )
+        if not delta_lines and kb.digest:
+            return kb.digest  # 本轮经验无变化，digest 维持原样（省一次 LLM 调用）
+
+        prompt = (
+            "你是生图迭代 loop 的经验压缩器，维护「本题经验摘要」(digest)——下一轮 Generator "
+            "**唯一**读取的经验面，必须精炼且信息密度高。\n\n"
+            "== 当前摘要（可能为空）==\n" + (kb.digest or "（空，本轮从零构建）") +
+            "\n\n== 本轮增量事实（机器验证，不可篡改结论）==\n" + "\n".join(delta_lines) +
+            "\n\n== 压缩规则 ==\n"
+            "1. 合并语义重复：同维度同方向的改动/教训只留一条，取最新且最准确的表述\n"
+            "2. 「保持」区只放**仍成立**的有效经验；本轮证伪的立即移出，在该维度留一句「X 已被证伪」\n"
+            "3. 无效经验浓缩为「勿重复」一句话：只保留失败方向与原因，不保留过程细节\n"
+            "4. 已升级（连续失败≥2轮）的维度放「升级警示」区：说明撞到什么上限 + 建议的根本方向\n"
+            "5. 篇幅硬约束：每维度每区 ≤3 条、每条一句话（≤60字）、全文 ≤800 字；不新增事实、不改判定\n"
+            "\n只输出新 digest 的 markdown 正文，严格三节结构：\n"
+            "## 升级警示\n## 勿重复（已验证无效）\n## 保持（已验证有效）"
+        )
+        try:
+            resp = self.chat_model.invoke([HumanMessage(content=prompt)])  # type: ignore[union-attr]
+            content = resp.content
+            digest = (content if isinstance(content, str) else str(content)).strip()
+        except Exception:  # noqa: BLE001  LLM 失败不炸闭环，保留旧 digest
+            return None
+        if not digest:
+            return None
+        kb.digest = digest
+        kb.digest_round = round
+        return digest
 
     @traceable(name="summarizer.llm_refine", run_type="chain")
     def _llm_refine(self, kb: knowledge.KnowledgeBase) -> str | None:

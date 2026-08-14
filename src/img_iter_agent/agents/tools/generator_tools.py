@@ -40,40 +40,152 @@ def _size_from_str(s: str) -> SizeSpec:
     return SizeSpec(tier="2K")
 
 
-def _format_experience(run_dir: Path, dim: str | None = None) -> str:
-    """读 conclusions.json，格式化已验证有效/无效/已升级经验。
+def _clip(s: str | None, n: int) -> str:
+    """压平并截断：经验渲染的条目是「指引」不是档案，全文动辄上千字符会灌爆上下文。"""
+    s = (s or "").strip().replace("\n", "；")
+    return s if len(s) <= n else s[: n - 1] + "…"
 
-    escalated 分组（B 复发检测）：该 dim 连续失败已撞模型能力上限，标注连续失败轮数，
-    提示 generator 勿再 prompt 微调、需换根本方向。
+
+# query_experience 有界渲染：分组条数上限 + 每条截断 + 总字符预算。
+# 背景：无界版实测 34 条结论 → 12 万字符一次性进上下文，模型没有余力完整判断考题要求。
+_EXP_GROUP_CAPS = {"escalated": 4, "ineffective": 6, "effective": 4}
+_EXP_ENTRY_CLIP = {"change": 80, "lesson": 160}
+_EXP_CHAR_BUDGET = 3500
+
+
+def _digest_section(digest: str, dim: str) -> str:
+    """从 digest 提取与 dim 相关的条目（带所在小节标题），保持原文、不做截断。"""
+    out: list[str] = []
+    header = ""
+    for line in digest.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            header = s
+            continue
+        if s and (f"[{dim}]" in s or dim in s):
+            if header and (not out or out[-1] != header):
+                out.append(header)
+            out.append(s)
+    return "\n".join(out)
+
+
+def _format_experience(run_dir: Path, dim: str | None = None) -> str:
+    """本题经验查询——**只读 LLM 压缩面（kb.digest）**，不读 raw conclusions 全文。
+
+    digest 由 summarizer 每轮增量重写（语义合并/证伪同步/浓缩），篇幅由压缩 prompt 约束
+    （≤800 字）——有界靠「源头就短」，消费侧不做字符截断。dim 参数 → 提取对应维度小节。
+    旧 run 无 digest（summarizer 尚未跑过新代码）→ 一次性有界兜底渲染，下一轮即被 digest 取代。
     """
     kb = load_conclusions(run_dir)
+    if kb.digest:
+        if not dim:
+            return kb.digest
+        section = _digest_section(kb.digest, dim)
+        return section or f"（digest 中无 [{dim}] 相关条目；不传 dim 可看全部摘要）"
+    # —— legacy 兜底（无 digest 的旧 run，仅过渡一轮）——
+    # 有界：分组上限+条目截断+总预算。raw 全文动辄 12 万字符，直接灌入会淹掉考题要求。
     groups = kb.verified_for_generator()
-    effective = groups["effective"]
+    effective = groups["effective"]  # 已只含 verified_effective（refuted 不会进）
     ineffective = groups["ineffective"]
-    escalated = groups.get("escalated", [])
+    escalated = [c for c in groups.get("escalated", []) if c.status != "refuted"]
     if dim:
         effective = [c for c in effective if c.dim == dim]
         ineffective = [c for c in ineffective if c.dim == dim]
         escalated = [c for c in escalated if c.dim == dim]
     if not effective and not ineffective and not escalated:
         return "（暂无已验证经验）"
+
+    def _recency_key(c: Any) -> tuple[int, int]:
+        return (c.verified_round or c.created_round or 0, c.created_round or 0)
+
+    sections: list[tuple[str, list[Any]]] = [
+        ("escalated", escalated), ("ineffective", ineffective), ("effective", effective),
+    ]
+    headers = {
+        "escalated": "【已升级（连续失败疑似模型上限，勿重复微调，需换根本方向）】",
+        "ineffective": "【已验证无效（勿重复，需换思路）】",
+        "effective": "【已验证有效（建议保持）】",
+    }
     lines: list[str] = []
-    if escalated:
-        lines.append("【已升级（连续失败疑似模型上限，勿重复微调，需换根本方向）】")
-        for c in escalated:
+    omitted = 0
+    used = 0
+    for key, cs in sections:
+        if not cs:
+            continue
+        ranked = sorted(cs, key=_recency_key, reverse=True)
+        cap = _EXP_GROUP_CAPS[key]
+        take, drop = ranked[:cap], ranked[cap:]
+        omitted += len(drop)
+        entries: list[str] = []
+        for c in take:
             streak = kb.fail_streaks.get(c.dim, 0)
-            lines.append(f"- [{c.dim}] (连续失败 {streak} 轮) {c.change} → {c.lesson}")
-    if effective:
-        lines.append("【已验证有效（建议保持）】")
-        for c in effective:
-            lines.append(f"- [{c.dim}] {c.change} → {c.lesson}")
-    if ineffective:
-        lines.append("【已验证无效（勿重复，需换思路）】")
-        for c in ineffective:
-            streak = kb.fail_streaks.get(c.dim, 0)
-            tag = f" (连续失败 {streak} 轮)" if streak > 0 else ""
-            lines.append(f"- [{c.dim}]{tag} {c.change} → {c.lesson}")
+            tag = (f" (连续失败 {streak} 轮)" if key == "escalated"
+                   else f" (连续失败 {streak} 轮)" if (key == "ineffective" and streak > 0) else "")
+            entry = (f"- [{c.dim}]{tag} 「{_clip(c.change, _EXP_ENTRY_CLIP['change'])}」"
+                     f"→ {_clip(c.lesson, _EXP_ENTRY_CLIP['lesson'])}")
+            # 总预算：装不下的条目直接省略（保条目完整可读，不在句中腰斩）
+            if used + len(entry) > _EXP_CHAR_BUDGET:
+                omitted += len(take) - len(entries)
+                break
+            entries.append(entry)
+            used += len(entry) + 1
+        if entries:
+            lines.append(headers[key])
+            lines.extend(entries)
+    if omitted > 0:
+        lines.append(f"（已省略 {omitted} 条较早经验；传 dim='维度名' 可精查单维度，全文见 lessons/conclusions.json）")
     return "\n".join(lines)
+
+
+def build_ref_registry(sample: Sample) -> dict[str, Path]:
+    """{标识符: 路径}：target + 所有 input_assets。
+
+    供 generate_image 的 reference_images 解析 + generator 提示展示可用参考图清单。
+    image_edit/multiview 的 target 也在此注册（不再按 mode 单独强制注入工具）。
+    """
+    reg: dict[str, Path] = {}
+    if sample.target_path.exists():
+        reg["target"] = sample.target_path
+    task = sample.spec.task
+    if task and task.input_assets:
+        for a in task.input_assets:
+            p = sample.sample_dir / a
+            if p.exists():
+                reg.setdefault(p.stem, p)  # 'target' 已占位时不覆盖
+    return reg
+
+
+def _resolve_reference_images(
+    requested: list[str], ref_registry: dict[str, Path], sample_dir: Path,
+) -> tuple[list[Path], list[str]]:
+    """把 agent 传的参考图标识符/路径解析成实际 Path。
+
+    每项依次尝试：(1) ref_registry 标识符（如 'target'）；(2) 相对 sample 目录的路径；(3) 绝对路径。
+    解析不到的进 unknown（工具忽略并告警）。去重。返回 (resolved_paths, unknown_ids)。
+    """
+    resolved: list[Path] = []
+    unknown: list[str] = []
+    seen: set[Path] = set()
+    for ident in requested:
+        p: Path | None = None
+        if ident in ref_registry:
+            p = ref_registry[ident]
+        else:
+            cand = sample_dir / ident
+            if cand.exists():
+                p = cand
+            else:
+                ap = Path(ident)
+                if ap.exists():
+                    p = ap
+        if p is None or not p.exists():
+            unknown.append(ident)
+            continue
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            resolved.append(p)
+    return resolved, unknown
 
 
 class GenerateImageArgs(BaseModel):
@@ -88,10 +200,9 @@ class GenerateImageArgs(BaseModel):
     reference_images: list[str] = Field(
         default_factory=list,
         description=(
-            "【风格迁移场景可选】参考图标识符子集，如 ['hand-abacus', 'object-laptop']。"
-            "Gemini 把参考图作为 inline_data 风格条件。传 [] 或省略 = 纯文生图（合法且常更原创）。"
-            "推荐 0-2 张：>2 张会过度锚定到参考的具体 motif、压制原创（creativity 的 reference_independence "
-            "维度会扣分）。可用标识符见用户消息；未知标识符会被忽略并告警。"
+            "参考图标识符或路径（由你主动决定是否用、用哪几张）。传 [] 或省略 = 纯文生图（不传任何参考图）；"
+            "要用就给出标识符（如 ['target']）或图片路径，工具自动读取并上传给生图 API。可用标识符见用户消息。"
+            "image_edit/multiview 等需还原 target 的任务**建议**传入 target；未知标识符/路径会被忽略并告警。"
         ),
     )
     # --- 动作空间 A 的非 prompt 杠杆（哨兵默认值；各族尽力翻译，不支持静默忽略）---
@@ -128,8 +239,8 @@ def make_generate_image_tool(
     router: Router,
     out_dir: Path,
     run_dir: Path,
-    fallback_refs: list[Path],
-    ref_registry: dict[str, Path] | None,
+    sample_dir: Path,
+    ref_registry: dict[str, Path],
     model_hint: ModelFamily | None,
     sink: dict[str, Any],
     aspect_ratio: str | None = None,
@@ -137,9 +248,10 @@ def make_generate_image_tool(
 ) -> BaseTool:
     """生成三视图并落盘的工具。sink 用于把 model/family/ref/reference_ids/非prompt杠杆 回传给 generate_round。
 
-    - fallback_refs：image_edit/multiview 模式下作固定风格锚的参考（如 target）；style_transfer 不用。
-    - ref_registry：style_transfer 模式下「参考标识符(stem) → Path」映射，让 agent 通过工具参数
-      `reference_images` 主动选参考子集（解禁）；为 None 表示该模式不由 agent 控制参考（用 fallback_refs）。
+    - ref_registry：「参考标识符 → Path」映射（target + input_assets，见 build_ref_registry）。
+    - sample_dir：sample 目录，用于解析 agent 传的相对图片路径。
+    - 参考图**完全由 agent 决定**：reference_images 传标识符/路径 → 工具读取上传；[]/省略 = 纯文生图
+      （工具不再因 image_edit/multiview 模式自动塞 target）。
     - aspect_ratio：三视图等宽幅任务传 "16:9"，让 family D 用宽 aspectRatio（避免 1:1 把三视图挤变形）。
     - prev_image：上一版生成图路径（baseline_ref 解析）。edit_previous=True 时作 conversation_history
       传给 D 族多轮改图；为 None（首轮）则 edit_previous 退化为重新生成并告警。
@@ -156,7 +268,8 @@ def make_generate_image_tool(
         Args:
             prompt: 生图提示词（本轮最终采用的 prompt，应与最终结构化输出里的 prompt 一致）。
             size: 尺寸，如 '2K' 或 '2048x2048'；默认 '2K'（实际由考题决定，工具按传入值执行）。
-            reference_images: 风格迁移场景可选，传参考图标识符子集（如 ['hand-abacus']）。传 []/省略 = 纯文生图。
+            reference_images: 参考图标识符或路径（由你决定是否用、用哪几张）。传 []/省略 = 纯文生图
+                （不传任何参考图）；要用就给标识符（如 ['target']）或路径，工具自动读取上传。可用标识符见用户消息。
             model_id: 可选，显式选生图模型（限定用户消息给出的已配置集合）；空=按默认路由。
                 不同模型实际尺寸/比例行为不同（三视图 16:9 宽幅仅 Gemini 生效）。
             edit_previous: 可选，True=在上一版图基础上改图（仅 D/Gemini 生效；非 D 自动退化重画并告警）。
@@ -165,27 +278,36 @@ def make_generate_image_tool(
             steps: 可选，采样步数（当前各族均不支持，静默忽略）；-1=不设。
         返回生成图相对 run 目录的路径。
         """
+        # —— 出图熔断 ——
+        # 模型看不到生成的图、拿不到质量反馈，出图成功后常"换个 prompt 再试一版"打转
+        # （生产实测 round5 连续 4+ 次 generate_image，每次 45~350s，还撞 recursion_limit
+        # 后被 invoke_with_retry 整轮重放放大）。提示词的"只调一次"对 lite 模型不够硬，
+        # 这里工具级硬拦：成功一次后拒绝再出图、连续失败封顶，逼模型立即收尾出结构化结果。
+        if sink.get("ref"):
+            return (
+                f"本轮已成功生成图片（{sink['ref']}）。流程规定 generate_image 只成功调用一次，"
+                "再次出图已被拒绝。请立即停止调用任何工具，直接以最终回复输出 GeneratorOutput "
+                "JSON（prompt/meaning/delta_note/strategy_note）结束本轮。"
+            )
+        attempts = sink.get("generate_attempts", 0) + 1
+        sink["generate_attempts"] = attempts
+        if attempts > 3:
+            return (
+                f"generate_image 已连续失败 {attempts - 1} 次且无成功图，达到重试上限，不再出图。"
+                "请基于已有信息直接以最终回复输出 GeneratorOutput JSON"
+                "（prompt/meaning/delta_note/strategy_note）结束本轮。"
+            )
         size_spec = _size_from_str(size)
         if aspect_ratio:
             size_spec.ratio = aspect_ratio
-        # 解析参考图：style_transfer 由 agent 选标识符（ref_registry）；image_edit/multiview 用固定 fallback_refs
-        requested_ids = list(reference_images) if reference_images else []
-        if ref_registry is not None:
-            selected: list[Path] = []
-            unknown: list[str] = []
-            for ident in requested_ids:
-                p = ref_registry.get(ident)
-                if p is not None:
-                    selected.append(p)
-                else:
-                    unknown.append(ident)
-            if unknown:
-                sink.setdefault("warnings", []).append(
-                    f"generate_image: 未知参考标识符 {unknown}（可用：{sorted(ref_registry)}），已忽略"
-                )
-            refs_to_use = selected
-        else:
-            refs_to_use = list(fallback_refs)
+        # 参考图完全由 agent 决定：传标识符/路径 → 工具解析上传；[] = 纯文生图（不传任何参考图）
+        requested = list(reference_images) if reference_images else []
+        refs_to_use, unknown = _resolve_reference_images(requested, ref_registry, sample_dir)
+        if unknown:
+            sink.setdefault("warnings", []).append(
+                f"generate_image: 未识别的参考图 {unknown}（可用标识符：{sorted(ref_registry)}，"
+                "或给 sample 目录下的图片路径），已忽略"
+            )
         sink["reference_ids"] = [p.stem for p in refs_to_use]  # 供 trajectory + creativity tuner
 
         # 多轮改图（edit_previous）：把上一版图作 conversation_history 传入（仅 D 族消费）
@@ -269,19 +391,9 @@ def make_generator_tools(
     query_experience = 本 loop 单题经验（conclusions.json 全文钻取）。跨 loop 通用经验已改由
     本 benchmark 的蒸馏技能包承载（SkillsMiddleware 加载），不再走工具。
     """
-    # 参考：image_edit/multiview 用 target 作固定风格锚（fallback_refs）。
-    # style_transfer：解禁——agent 可通过 generate_image(reference_images=[...]) 主动选参考子集
-    # （ref_registry: 标识符(stem) → Path）；不强制传，[] = 纯文生图。创造力维度反制过度锚定。
-    fallback_refs: list[Path] = []
-    ref_registry: dict[str, Path] = {}
-    mode = sample.spec.task.mode if sample.spec.task else None
-    if mode in ("image_edit", "multiview") and sample.target_path.exists():
-        fallback_refs = [sample.target_path]
-    if mode == "style_transfer" and sample.spec.task and sample.spec.task.input_assets:
-        for a in sample.spec.task.input_assets:
-            p = sample.sample_dir / a
-            if p.exists():
-                ref_registry[p.stem] = p
+    # 参考图清单：target + input_assets → {标识符: 路径}。agent 经 generate_image(reference_images=[...])
+    # 主动决定用哪些（含 image_edit 是否带 target）；[] = 纯文生图。不再按 mode 强制注入 target。
+    ref_registry = build_ref_registry(sample)
     # 三视图单图 → 宽幅，避免 1:1 把三个视图挤变形（比例失真）
     layout = (sample.spec.task.output.get("layout")
               if sample.spec.task and sample.spec.task.output else None)
@@ -289,8 +401,8 @@ def make_generator_tools(
     return [
         make_generate_image_tool(
             router=router, out_dir=out_dir, run_dir=run_dir,
-            fallback_refs=fallback_refs,
-            ref_registry=ref_registry or None,
+            sample_dir=sample.sample_dir,
+            ref_registry=ref_registry,
             model_hint=model_hint, sink=sink,
             aspect_ratio=aspect_ratio,
             prev_image=prev_image,
@@ -300,6 +412,7 @@ def make_generator_tools(
 
 
 __all__ = [
+    "build_ref_registry",
     "make_generate_image_tool",
     "make_generator_tools",
     "make_query_experience_tool",

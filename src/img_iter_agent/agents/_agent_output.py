@@ -31,8 +31,42 @@ def provider_structured(schema: type | dict) -> ProviderStrategy:
     ``ProviderStrategy`` 改走 ``response_format={"type": "json_schema", ...}``，**不设 tool_choice**，
     绕开此限制（已用探针验证 qwen3.7-flash 经 dmxapi 支持 json_schema response_format）。对非 thinking
     模型同样安全（json_schema 是标准 OpenAI response_format）。
+
+    另：嵌套 pydantic 模型（如 CriticDimensionOutput.items 里嵌 CriticItemJudgment）的 json_schema
+    会带 ``$defs``/``$ref``。dmxapi 部分 Gemini 后端把 response_format 翻译成 Google 原生
+    ``generation_config.response_schema``，后者不认 ``$defs`` → 400 "Unknown name $defs"（后端路由
+    相关故偶发，生产实测 critic 整轮 5/5 重试全灭退兜底全 0 分）。这里把 ``$defs`` 递归内联成平化
+    schema 再发出——只改**发出**的 json_schema，解析侧（structured_response → pydantic 实例）不动。
     """
-    return ProviderStrategy(schema)
+    strategy = ProviderStrategy(schema)
+    if not isinstance(schema, dict):
+        strategy.schema_spec.json_schema = _dereference_defs(strategy.schema_spec.json_schema)
+    return strategy
+
+
+def _dereference_defs(schema: dict) -> dict:
+    """递归内联 JSON schema 里的 ``$defs``/``$ref``（平化，Gemini 原生 response_schema 兼容）。
+
+    解析规则：``{"$ref": "#/$defs/X", ...兄弟键}`` → 被引定义展开后兄弟键覆盖之。循环引用时
+    放弃内联原样保留（本项目 schema 无环，仅防御）。
+    """
+    defs = schema.pop("$defs", {}) or {}
+
+    def _inline(node, seen: frozenset):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.rsplit("/", 1)[-1]
+                if name not in defs or name in seen:
+                    return {k: v for k, v in node.items() if k != "$ref"}
+                target = _inline(defs[name], seen | {name})
+                return {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+            return {k: _inline(v, seen) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_inline(x, seen) for x in node]
+        return node
+
+    return _inline(schema, frozenset())
 
 
 class GeneratorOutput(BaseModel):

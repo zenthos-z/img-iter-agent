@@ -30,6 +30,11 @@ def file_to_data_uri(path: Path) -> str:
 # 4.2MB PNG 原图经此缩放 → ~0.1MB JPEG，单轮 trace 从 ~14MB 降到 ~1MB，避免上传超时。
 _VIEW_MAX_DIM = 1280
 
+# Critic 看的是「高清原图」——结构/部件比对需要细节，不能用 1280 的小图（会把结构瑕疵糊掉、
+# 导致 critic 看不清就放水判通过）。trace 体积由 compress_images_in_trace 在 LangSmith 上传侧压，
+# 不再靠这里缩图，故 critic 用高分辨率。2560 ≈ 原 three_view(2752) 几乎无损，且远低于各族 API 上限。
+_CRITIC_VIEW_MAX_DIM = 2560
+
 
 def resized_data_uri(path: Path, max_dim: int = _VIEW_MAX_DIM) -> str:
     """读图 → 等比缩到最长边 max_dim → JPEG(q85) data-URI。
@@ -55,6 +60,58 @@ def resized_data_uri(path: Path, max_dim: int = _VIEW_MAX_DIM) -> str:
         return f"data:image/jpeg;base64,{b64}"
     except Exception:  # noqa: BLE001
         return file_to_data_uri(path)
+
+
+# LangSmith 上传侧压缩：把 trace 里携带的 data-URI 图片缩到很小，**只影响 LangSmith 上报内容**，
+# 不影响真正喂给模型的图（模型拿的是 critic/generator 消息里的高清原图）。
+# 由 langsmith Client 的 hide_inputs/hide_outputs 调用（见 config._warm_langsmith_client）。
+_LS_TRACE_MAX_DIM = 512
+_LS_SKIP_BELOW_BYTES = 80_000  # 已小于 ~80KB 的图不再二次压缩（避免无谓重编码）
+
+
+def _shrink_data_uri(uri: str, max_dim: int = _LS_TRACE_MAX_DIM, quality: int = 80) -> str:
+    """单个 data-URI 图片 → 缩到 max_dim 的 JPEG data-URI。已是小图或解码失败则原样返回（绝不抛）。"""
+    if not uri.startswith("data:image/"):
+        return uri
+    try:
+        _header, _, b64 = uri.partition(",")
+        raw = base64.b64decode(b64)
+    except Exception:  # noqa: BLE001
+        return uri
+    if len(raw) < _LS_SKIP_BELOW_BYTES:
+        return uri
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        w, h = im.size
+        scale = max_dim / max(w, h)
+        if scale < 1:
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=quality)
+        out = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{out}"
+    except Exception:  # noqa: BLE001
+        return uri
+
+
+def compress_images_in_trace(obj, max_dim: int = _LS_TRACE_MAX_DIM):
+    """递归遍历 langsmith trace 的 inputs/outputs，把其中的 data-URI 图片缩小（仅用于上传压缩）。
+
+    被 ``Client(hide_inputs=compress_images_in_trace, hide_outputs=...)`` 调用：模型仍看高清原图，
+    只有上报到 LangSmith 的副本被压缩，从而把带大图的 trace 从十几 MB 压到 ~1MB 避免上传超时。
+    任何异常都回退原对象——trace 永不因压缩失败而中断。
+    """
+    try:
+        if isinstance(obj, dict):
+            return {k: compress_images_in_trace(v, max_dim) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [compress_images_in_trace(v, max_dim) for v in obj]
+        if isinstance(obj, str):
+            return _shrink_data_uri(obj, max_dim) if obj.startswith("data:image/") else obj
+    except Exception:  # noqa: BLE001
+        return obj
+    return obj
 
 
 def guess_mime(path: Path) -> str:
@@ -125,4 +182,10 @@ def _download(url: str, dest_dir: Path, name_hint: str, index: int) -> Path:
     return out
 
 
-__all__ = ["file_to_data_uri", "guess_mime", "resized_data_uri", "save_image_payload"]
+__all__ = [
+    "compress_images_in_trace",
+    "file_to_data_uri",
+    "guess_mime",
+    "resized_data_uri",
+    "save_image_payload",
+]

@@ -41,6 +41,11 @@ class KnowledgeBase(BaseModel):
     # 放 KnowledgeBase 而非每条 conclusion：复发是 per-dim 跨「不同 change」的累计——每轮 change=delta_note
     # 文本不同 → upsert 新建 conclusion；若存 conclusion 上，同 dim 多条各自 streak=1 看不出连续失败。
     fail_streaks: dict[str, int] = Field(default_factory=dict)
+    # LLM 智能压缩后的经验摘要（消费面：user message 注入 + query_experience 都只读它）。
+    # raw conclusions 全量保留作审计档；digest 由 summarizer 每轮增量重写（合并去重/浓缩/证伪同步），
+    # 靠 prompt 指令控制篇幅——源头就短，消费侧无需截断。
+    digest: str = ""
+    digest_round: int = 0
 
     def by_id(self, cid: str) -> KnowledgeConclusion | None:
         return next((c for c in self.conclusions if c.id == cid), None)
@@ -274,6 +279,40 @@ def apply_escalation(kb: KnowledgeBase, *, cur_round: int) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 证伪（C）：成功经验可被后续失败推翻
+# ---------------------------------------------------------------------------
+
+
+def falsify_effective(kb: KnowledgeBase, *, cur_verdict: CriticVerdict, cur_round: int) -> list[str]:
+    """成功经验证伪：本轮再次失败的 dim，其**早前**判 verified_effective 的结论降为 refuted。
+
+    「有效」只在验证当时成立——同一 dim 后来又失败，说明该改法没真正保住效果（或效果不稳）。
+    若继续以「保持」身份出现在经验里，会误导 generator 死守已失效的改法。refuted 不进
+    verified_for_generator 的任何分组（消费侧自然排除），仅留档可追溯。
+
+    本轮刚验证的不动（verified_round == cur_round：前后对比刚判过有效，本轮失败已被证据计入）。
+
+    返回被证伪的 conclusion id 列表。
+    """
+    failed = {d.dim for d in cur_verdict.dimensions if _dim_failed(cur_verdict, d.dim)}
+    refuted: list[str] = []
+    for c in kb.conclusions:
+        if (c.status == "verified_effective" and c.dim in failed
+                and (c.verified_round or 0) < cur_round):
+            c.status = "refuted"
+            c.lesson = (c.lesson or "") + f"（第 {cur_round} 轮 {c.dim} 再次失败，此前判定的有效性被证伪）"
+            refuted.append(c.id)
+    return refuted
+
+
+# ---------------------------------------------------------------------------
+# 每轮 LLM 智能压缩：digest 增量重写（见 summarizer._update_digest）
+# raw conclusions 只增不减会撑爆消费上下文（实测 34 条→全文渲染 12 万字符），
+# 但压缩走 LLM 语义合并（digest 层），不做机械条数裁剪——raw 全量留作审计档。
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # 精简渲染：供 Generator user message 自动注入（与 query_experience 工具的全文 _format_experience 区分）
 # ---------------------------------------------------------------------------
 
@@ -328,6 +367,7 @@ __all__ = [
     "ESCALATION_THRESHOLD",
     "KnowledgeBase",
     "apply_escalation",
+    "falsify_effective",
     "judge_status",
     "load_conclusions",
     "render_conclusions_brief",

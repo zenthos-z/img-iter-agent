@@ -12,6 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from img_iter_agent.agents.generator import Generator, PriorFeedback
+from img_iter_agent.agents.tools.generator_tools import build_ref_registry, make_generate_image_tool
 from img_iter_agent.config import Settings
 from img_iter_agent.data.benchmark import load_benchmark
 from img_iter_agent.data.runstore import RunStore
@@ -160,3 +161,36 @@ def test_build_user_content_injects_conclusions_brief(setup):
         conclusions_brief="",
     )
     assert "【本题已验证经验" not in content_no
+
+
+def test_generate_image_reference_images_agent_controlled(setup):
+    """image_edit 模式下 reference_images 完全由 agent 决定（问题一修复）：
+    [] = 纯文生图（工具不再因 image_edit 强制塞 target）；['target'] = 用 target。
+    回归保护：防止重新引入 image_edit 自动注入 target 的 fallback_refs 逻辑。
+    """
+    lb, store = setup
+    sample = lb.sample("s001")
+    assert sample.spec.task.mode == "image_edit"  # 前提：s001 是 image_edit
+    reg = build_ref_registry(sample)
+    assert "target" in reg
+
+    def _run(refs):
+        router = _FakeRouter()
+        sink: dict = {}
+        tool = make_generate_image_tool(
+            router=router, out_dir=store.run_dir / f"out_{abs(hash(tuple(refs)))}",
+            run_dir=store.run_dir, sample_dir=sample.sample_dir,
+            ref_registry=reg, model_hint=None, sink=sink,
+        )
+        tool.invoke({"prompt": "white bed three view", "size": "2K", "reference_images": refs})
+        return sink
+
+    empty = _run([])
+    assert empty["reference_ids"] == []  # 纯文生图：image_edit 也不再自动塞 target
+    assert empty.get("warnings") is None  # 空 refs 不应有告警
+    with_target = _run(["target"])
+    assert with_target["reference_ids"] == ["target"]
+    # 未知标识符 → 忽略 + 告警
+    bad = _run(["no-such-ref"])
+    assert bad["reference_ids"] == []
+    assert any("未识别" in w for w in bad.get("warnings", []))
