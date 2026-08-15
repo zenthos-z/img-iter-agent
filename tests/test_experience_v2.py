@@ -11,8 +11,8 @@ from img_iter_agent.memory.experience import (
     RenoItem,
     RenovationPlan,
 )
-from img_iter_agent.web.services.data_access import mutate_lesson
 from img_iter_agent.web.models import LessonEdit
+from img_iter_agent.web.services.data_access import mutate_lesson
 
 
 def _lesson(id, dim, conf, *, category="", status="active", applies_when="always", insight=None):
@@ -72,7 +72,7 @@ def test_merge_renovation_status_chain():
     # L2 被 revise → superseded 后**修剪掉**（修订历史不留，继承者携带信息）
     assert "L2" not in by_id
     # 继承者是 active，承接 dim/confidence
-    succ = [l for l in exp.lessons if l.dim == "artifact_defect" and l.status == "active"][0]
+    succ = next(l for l in exp.lessons if l.dim == "artifact_defect" and l.status == "active")
     assert succ.confidence == 0.85
     assert by_id["L9"].status == "refuted" and "证伪" in by_id["L9"].retire_reason
     # new 进来一条 material_texture active

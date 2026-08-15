@@ -153,8 +153,8 @@ DISTILLER_RECURSION_LIMIT: int = 120
 __all__ = [
     "AGENT_RECURSION_LIMIT",
     "DISTILLER_RECURSION_LIMIT",
-    "NarrowToolsMiddleware",
     "_GENERATOR_NARROW_EXCLUDED",
+    "NarrowToolsMiddleware",
     "invoke_with_retry",
     "narrow_tools_middleware",
 ]

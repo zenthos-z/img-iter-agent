@@ -41,7 +41,7 @@ def _slug(s: str) -> str:
 
 def _stable_id(dim: str, insight: str) -> str:
     """向后兼容：旧 lesson 无 id 时，按 dim+insight 哈希补一个稳定 id。"""
-    h = hashlib.sha1(f"{dim}|{insight}".encode("utf-8")).hexdigest()[:8]
+    h = hashlib.sha1(f"{dim}|{insight}".encode()).hexdigest()[:8]
     return f"{_slug(dim)}-{h}"
 
 
@@ -75,7 +75,7 @@ class DistilledLesson(BaseModel):
     retire_reason: str = Field(default="", description="refuted/superseded 时的理由")
 
     @model_validator(mode="after")
-    def _ensure_id(self) -> "DistilledLesson":
+    def _ensure_id(self) -> DistilledLesson:
         if not self.id:
             self.id = _stable_id(self.dim, self.insight)
         return self
@@ -531,7 +531,7 @@ def validate_skill_md(text: str) -> tuple[bool, str]:
         return False, "Invalid frontmatter format"
     try:
         fm = yaml.safe_load(m.group(1))
-    except yaml.YAMLError as e:  # noqa: PERF203
+    except yaml.YAMLError as e:
         return False, f"Invalid YAML in frontmatter: {e}"
     if not isinstance(fm, dict):
         return False, "Frontmatter must be a YAML dictionary"

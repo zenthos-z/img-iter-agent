@@ -90,7 +90,7 @@ class LoopEventEmitter(BaseCallbackHandler):
             try:
                 with self._path.open("a", encoding="utf-8") as f:
                     f.write(line + "\n")
-            except OSError:  # noqa: BLE001  写盘失败不阻塞 agent
+            except OSError:
                 pass
 
     # ---- LLM（ChatOpenAI 走 on_chat_model_start，复用 on_llm_end 收尾）----

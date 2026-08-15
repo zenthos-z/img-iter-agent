@@ -199,8 +199,11 @@ def test_distill_skill_dossier_enriched_anthropic(tmp_path):
     furniture（默认 bench_id）是 image_edit，不注入参考图；用 anthropic（style_transfer）验视觉注入。
     """
     from img_iter_agent.data.benchmark import load_benchmark
-
-    from img_iter_agent.memory.experience import DistilledLesson, GeneralExperience, skill_package_dir
+    from img_iter_agent.memory.experience import (
+        DistilledLesson,
+        GeneralExperience,
+        skill_package_dir,
+    )
 
     lb = load_benchmark("anthropic_og_style")
     d = ExperienceDistiller(
@@ -231,7 +234,6 @@ def test_distill_degrades_when_agent_fails(loaded, two_runs, monkeypatch):
     from img_iter_agent.agents import experience_distiller as _ed
     monkeypatch.setattr(_ed, "_build_skill_author_agent", _authoring_factory_that_writes(""))
 
-    bench = loaded.bench
     chat = FakeToolCallingChatModel(responses=[AIMessage(content="(no structured output)")])
     distiller = ExperienceDistiller(
         chat, run_dirs=list(two_runs), lb=loaded, data_root=two_runs[0].parent,

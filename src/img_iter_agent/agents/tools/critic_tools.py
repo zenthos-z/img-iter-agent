@@ -219,10 +219,10 @@ def make_query_experience_tool(*, run_dir: Path) -> BaseTool:
 
 
 __all__ = [
+    "_effective_checklist",
+    "_load_creativity_overlay",
     "make_critic_tools",
     "make_note_experience_tool",
     "make_query_experience_tool",
     "make_query_rubric_tool",
-    "_effective_checklist",
-    "_load_creativity_overlay",
 ]

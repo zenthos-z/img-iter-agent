@@ -9,11 +9,12 @@ Usage:
     python quick_validate.py <skill_directory>
 """
 
-import sys
-import os
 import re
-import yaml
+import sys
 from pathlib import Path
+
+import yaml
+
 
 def validate_skill(skill_path):
     """Basic validation of a skill"""

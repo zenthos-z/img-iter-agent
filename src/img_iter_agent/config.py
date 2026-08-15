@@ -120,7 +120,7 @@ def _warm_langsmith_client() -> None:
             hide_inputs=compress_images_in_trace,
             hide_outputs=compress_images_in_trace,
         )
-    except Exception:  # noqa: BLE001, S110  预热失败不阻断
+    except Exception:  # noqa: BLE001  预热失败不阻断
         pass
 
 
@@ -152,7 +152,7 @@ def _sync_langsmith_env(_unused: Settings = None) -> None:
                 k = k.strip()
                 if k in keys:
                     env_vals[k] = v.strip().strip('"').strip("'")
-    except Exception:  # noqa: BLE001, S110  .env 读取失败不阻断启动
+    except Exception:  # noqa: BLE001  .env 读取失败不阻断启动
         pass
     for k in keys:
         if not os.environ.get(k) and env_vals.get(k):

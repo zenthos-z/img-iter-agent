@@ -148,8 +148,8 @@ def cmd_distill(args: argparse.Namespace) -> int:
     """
     import glob
 
-    from .agents.experience_distiller import ExperienceDistiller
     from .agents.agent_config_loader import load_agent_model
+    from .agents.experience_distiller import ExperienceDistiller
     from .llm.chat_model import build_chat_model
     from .memory.experience import save_general_experience
 

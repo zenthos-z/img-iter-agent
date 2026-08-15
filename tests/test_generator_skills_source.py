@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from img_iter_agent.memory.experience import generator_skill_fs, generator_skills_source, slugify_bench
+from img_iter_agent.memory.experience import (
+    generator_skill_fs,
+    generator_skills_source,
+    slugify_bench,
+)
 
 
 def _make_skill_pkg(data_root: Path, bench_id: str) -> None:
@@ -16,7 +20,7 @@ def _make_skill_pkg(data_root: Path, bench_id: str) -> None:
     pkg = data_root / "experience" / bench_id / slugify_bench(bench_id)
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "SKILL.md").write_text(
-        "---\nname: {slug}\ndescription: test\n---\nbody\n".format(slug=slugify_bench(bench_id)),
+        f"---\nname: {slugify_bench(bench_id)}\ndescription: test\n---\nbody\n",
         encoding="utf-8",
     )
 
@@ -92,7 +96,7 @@ def test_skill_fs_readonly_denies_writes(tmp_path: Path) -> None:
     fs = generator_skill_fs(src)
     assert fs is not None
     _backend, permissions, _rel = fs
-    deny = [p for p in permissions if p.mode == "deny"][0]
+    deny = next(p for p in permissions if p.mode == "deny")
     assert "write" in deny.operations, "兜底 deny 必须含 write——Generator 永不写"
 
 

@@ -6,7 +6,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...config import get_settings
-from ..services.agent_config import AGENTS, get_agent_config, list_bench_ids, reset_agent_config, save_agent_config
+from ..services.agent_config import (
+    AGENTS,
+    get_agent_config,
+    list_bench_ids,
+    reset_agent_config,
+    save_agent_config,
+)
 
 router = APIRouter()
 

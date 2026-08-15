@@ -293,7 +293,7 @@ def test_resume_adopts_handleless_loop(setup, monkeypatch):
 
 def test_resume_unknown_loop_returns_false(setup, monkeypatch):
     """resume() 对盘上不存在的 loop_id 返回 False（→ 路由 404）。"""
-    _, lb, bench_id = setup
+    _, lb, _ = setup
     _patch_build_app(monkeypatch, lb, setup[0])
     runner = get_runner()
     assert runner.resume("nope-not-exist", "continue") is False

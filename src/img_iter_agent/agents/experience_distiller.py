@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +29,6 @@ from ..data.trajectory import TrajectoryReader
 from ..memory.experience import (
     DistilledLesson,
     GeneralExperience,
-    RenoItem,
     RenovationPlan,
     finalize_skill_package,
     new_lesson_id,
@@ -40,7 +38,6 @@ from ..memory.experience import (
     slugify_bench,
 )
 from ..memory.knowledge import load_conclusions
-from ..memory.schema import Benchmark
 from ._agent_output import provider_structured
 from ._narrow_tools import DISTILLER_RECURSION_LIMIT, invoke_with_retry, narrow_tools_middleware
 from .agent_config_loader import load_system_prompt
@@ -624,10 +621,12 @@ class ExperienceDistiller:
             "## 输出指令（按 skill-author skill 流程编写，write_file 落盘）",
             f"- **输出目录 `<output_dir>`**：`/{out_rel}/`（虚拟路径，相对你的工作区根）。",
             f"- **slug（= frontmatter `name` = 目录名）**：`{slug}`。",
-            "- **流程**：① `read_file` 加载 skill-author skill（读 SKILL.md 全文，按需读 references/）→ "
-            "② 通读下方输入数据（已全量给你，无需 ls/glob/grep）→ ③ 起草 → "
-            "④ `read_file references/quality_checklist.md` 自审 → ⑤ `write_file` 到 `<output_dir>/SKILL.md` "
-            "与 `<output_dir>/references/*.md`（**禁写 lessons.md / assets/**），写完回一句话确认即终止。",
+            (
+                "- **流程**：① `read_file` 加载 skill-author skill（读 SKILL.md 全文，按需读 references/）→ "
+                "② 通读下方输入数据（已全量给你，无需 ls/glob/grep）→ ③ 起草 → "
+                "④ `read_file references/quality_checklist.md` 自审 → ⑤ `write_file` 到 `<output_dir>/SKILL.md` "
+                "与 `<output_dir>/references/*.md`（**禁写 lessons.md / assets/**），写完回一句话确认即终止。"
+            ),
             f"- 若要核对原文，可 `read_file` 源目录：bench `/{bench_rel}/`"
             + (f"、sample `/{sample_rel}/`。" if sample_rel else "。"),
             f"## 场景\n{bench.scene or bench.description or ''}",

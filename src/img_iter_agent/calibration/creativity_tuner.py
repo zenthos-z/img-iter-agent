@@ -37,7 +37,7 @@ from ..config import Settings, get_settings
 from ..data.benchmark import LoadedBenchmark, load_benchmark
 from ..data.trajectory import TrajectoryReader
 from ..llm.chat_model import build_chat_model
-from ..memory.schema import AttemptRecord, Benchmark, CheckItem, ContinuousRubric
+from ..memory.schema import AttemptRecord, Benchmark, ContinuousRubric
 
 # 创造力的两个固定维度
 CREATIVITY_DIMS = ("creative_departure", "reference_independence")
@@ -497,8 +497,8 @@ def tune_creativity(
 
 __all__ = [
     "CREATIVITY_DIMS",
-    "CreativityRenovation",
     "CreativityRenoItem",
+    "CreativityRenovation",
     "collect_records",
     "current_criteria",
     "extract_signals",

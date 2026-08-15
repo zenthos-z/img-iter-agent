@@ -13,8 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from img_iter_agent.agents.experience_distiller import (
     _REPO_ROOT,
     _SKILL_AUTHOR_PARENT,
@@ -56,7 +54,7 @@ def test_quick_validate_runs_and_self_validates():
     """原样复制的 quick_validate.py 能跑，且 skill-author 自身合法。"""
     result = subprocess.run(
         [sys.executable, str(QUICK_VALIDATE), str(SKILL_AUTHOR)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, f"quick_validate 失败：{result.stdout}\n{result.stderr}"
     assert "valid" in result.stdout.lower()

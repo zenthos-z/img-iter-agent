@@ -388,7 +388,8 @@ class Summarizer:
         这是「agent 自己设标准、少人参与」的机制：critic 自主对照参考发现的偏差，
         被提炼成持久标准，generator 提前避免。
         """
-        import json, re
+        import json
+        import re
         findings = [c.finding for c in kb.conclusions if c.finding]
         if len(findings) < 2:
             return None

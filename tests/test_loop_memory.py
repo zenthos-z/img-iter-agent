@@ -29,12 +29,12 @@ def _verdict_binary(resto: float, dim: str, items: list[tuple[str, bool]]) -> Cr
 
 
 def _outcome(**kw) -> GenOutcome:
-    base = dict(
-        attempt_id="a001", test_variable="prompt", baseline_ref=None,
-        gen_mode="text_to_image", prompt="clean three-view product shot", size="2K",
-        reference_image_refs=[], reference_ids=[], output_image_refs=["out/a001/three_view.png"],
-        model="gemini-3.1-flash-image", model_family="D",
-    )
+    base = {
+        "attempt_id": "a001", "test_variable": "prompt", "baseline_ref": None,
+        "gen_mode": "text_to_image", "prompt": "clean three-view product shot", "size": "2K",
+        "reference_image_refs": [], "reference_ids": [], "output_image_refs": ["out/a001/three_view.png"],
+        "model": "gemini-3.1-flash-image", "model_family": "D",
+    }
     base.update(kw)
     return GenOutcome(**base)
 

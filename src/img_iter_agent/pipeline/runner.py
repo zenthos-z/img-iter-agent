@@ -23,8 +23,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from ..agents.agent_config_loader import load_agent_model
 from ..agent_events import LoopEventEmitter
+from ..agents.agent_config_loader import load_agent_model
 from ..agents.critic import Critic
 from ..agents.generator import Generator
 from ..config import Settings, get_settings
@@ -77,7 +77,7 @@ def close_checkpointer(saver: object | None) -> None:
         return
     try:
         saver.conn.close()  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001, S110
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -162,14 +162,14 @@ def round_trace_context(root: object | None):
         try:
             root.end(error=str(e))  # type: ignore[attr-defined]
             root.patch()  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001, S110  tracing 收尾失败不影响业务异常
+        except Exception:  # noqa: BLE001  tracing 收尾失败不影响业务异常
             pass
         raise
     else:
         try:
             root.end(outputs={})  # type: ignore[attr-defined]
             root.patch()  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001
             pass
 
 

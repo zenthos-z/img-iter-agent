@@ -60,5 +60,10 @@ packages = ["src/img_iter_agent"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# S110/S112（try-except-pass/continue）：静默兜底是本库的明确风格——
+# 「读失败兜底为空、绝不中断闭环」，非疏忽。其余规则保持默认全开。
+ignore = ["S110", "S112"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

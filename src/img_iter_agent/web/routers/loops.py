@@ -9,7 +9,13 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from ...config import get_settings
-from ..models import HintCreateRequest, HintOut, LoopControlRequest, LoopStartRequest, MemoryWriteRequest
+from ..models import (
+    HintCreateRequest,
+    HintOut,
+    LoopControlRequest,
+    LoopStartRequest,
+    MemoryWriteRequest,
+)
 from ..services.data_access import build_loop_detail, read_events_since
 from ..services.loop_runner import LoopBusyError, get_runner
 

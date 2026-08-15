@@ -49,4 +49,4 @@ def load_agent_model(agent: str, default: str = "") -> str:
     return model or default
 
 
-__all__ = ["load_system_prompt", "load_agent_model"]
+__all__ = ["load_agent_model", "load_system_prompt"]

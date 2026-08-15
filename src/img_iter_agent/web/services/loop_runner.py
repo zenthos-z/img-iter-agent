@@ -628,7 +628,7 @@ class LoopRunner:
         if handle.store is not None:
             try:
                 handle.store.mark_error(msg)
-            except Exception:  # noqa: BLE001, S110  持久化失败不影响错误上报
+            except Exception:  # noqa: BLE001  持久化失败不影响错误上报
                 pass
 
     def _submit(self, handle: LoopHandle, task) -> None:

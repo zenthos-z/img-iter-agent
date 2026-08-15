@@ -4,8 +4,8 @@ import pytest
 
 from img_iter_agent.calibration import creativity_tuner as ct
 from img_iter_agent.calibration.creativity_tuner import (
-    CreativityRenovation,
     CreativityRenoItem,
+    CreativityRenovation,
     extract_signals,
     merge_criteria,
     merge_weights,

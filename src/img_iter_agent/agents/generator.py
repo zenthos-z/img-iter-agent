@@ -33,8 +33,8 @@ from ..memory.loop_memory import load_memory_brief
 from ..memory.schema import CriticItemJudgment, TestVariable
 from ._agent_output import GeneratorOutput, provider_structured
 from ._narrow_tools import (
-    AGENT_RECURSION_LIMIT,
     _GENERATOR_NARROW_EXCLUDED,
+    AGENT_RECURSION_LIMIT,
     invoke_with_retry,
     narrow_tools_middleware,
 )

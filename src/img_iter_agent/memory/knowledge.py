@@ -339,15 +339,14 @@ def render_conclusions_brief(
 
     def _rank(cs: list[KnowledgeConclusion]) -> list[KnowledgeConclusion]:
         # failed_dims 命中优先；再按 created_round 近期优先（降序）
-        return sorted(cs, key=lambda c: (c.dim not in failed, -((c.created_round or 0))))
+        return sorted(cs, key=lambda c: (c.dim not in failed, -(c.created_round or 0)))
 
     def _line(c: KnowledgeConclusion) -> str:
         change = c.change or "(无改动说明)"
         lesson = (c.lesson or "").strip()
         # lesson 形如 "[dim] 改动无效（…）：why" —— 去掉 "[dim] " 前缀避免与行首重复
         prefix = f"[{c.dim}] "
-        if lesson.startswith(prefix):
-            lesson = lesson[len(prefix):]
+        lesson = lesson.removeprefix(prefix)
         tail = f"：{lesson}" if lesson else ""
         return f"- [{c.dim}] 「{change}」{tail}"
 

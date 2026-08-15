@@ -79,8 +79,8 @@ def test_image_gen_traces_as_tool_and_returns_real_response(captured_runs):
 def test_image_gen_truncates_nested_base64(captured_runs):
     """嵌套在 list/dict 里的 base64（D 族 contents[].parts[].inline_data.data）也要截断——
     早期版本只截顶层 str，base64 整段进 trace 体积爆炸。inputs 里能看到 prompt 与截断占位。"""
-    from img_iter_agent.generation.client import _trace_image_call
     from img_iter_agent.generation.base import ModelFamily
+    from img_iter_agent.generation.client import _trace_image_call
 
     body = {"contents": [{"role": "user", "parts": [
         {"text": "a chair"},
@@ -214,7 +214,9 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
     # Generator：fake tool-calling chat model 驱动（确定性出图 + 结构化输出）
     gen_chat = FakeToolCallingChatModel(responses=[
         AIMessage(content="", tool_calls=[{"name": "generate_image", "type": "tool_call",
-                                           "id": "g1", "args": {"prompt": "p", "size": "2K"}}]),
+                                           "id": "g1",
+                                           "args": {"prompt": "p", "size": "2K",
+                                                    "reference_images": ["target"]}}]),
         AIMessage(content="", tool_calls=[{"name": "GeneratorOutput", "type": "tool_call",
                                            "id": "s1",
                                            "args": {"prompt": "p", "delta_note": "d"}}]),
@@ -260,8 +262,8 @@ def test_graph_trace_hierarchy(captured_runs, tmp_path, bench_id):
 
     # 断言：router.generate 的 inputs 可见完整请求摘要（prompt + 参考图路径 + 尺寸等），
     # 而不是 null——参考图传没传要在 LangSmith UI 里直接能看到。
-    # （本测试走的是 generator 兜底出图路径：fake agent 的工具调用未产出 sink ref，
-    # image_edit 模式兜底自动 target 锚定 → reference_images 应含 target.jpg 真实路径。）
+    # （本测试走 generate_image 工具路径：image_edit 的参考图由 agent 自决，fake agent
+    # 显式传 ['target'] → 工具解析成 target.jpg 真实路径出现在 req_summary 里。）
     rg = next(r for r in captured_runs if r["name"] == "router.generate")
     rs = rg["inputs"]["req_summary"]
     assert rs["prompt"]

@@ -14,13 +14,13 @@ from fastapi.staticfiles import StaticFiles
 
 from ..config import get_settings
 from .routers import (
+    benchmarks as benchmarks_router,
+)
+from .routers import (
     config as config_router,
 )
 from .routers import (
     experience as experience_router,
-)
-from .routers import (
-    benchmarks as benchmarks_router,
 )
 from .routers import (
     loops as loops_router,

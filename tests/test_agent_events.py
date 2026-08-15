@@ -21,7 +21,6 @@ from langchain_core.tools import tool
 
 from img_iter_agent.agent_events import LoopEventEmitter
 from img_iter_agent.web.services.data_access import read_events_since
-
 from tests._fakes import FakeToolCallingChatModel
 
 

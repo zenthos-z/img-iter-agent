@@ -65,7 +65,7 @@ def test_llm_failure_degrades_gracefully(tmp_path):
     (run_dir / "lessons").mkdir(parents=True)
 
     class _RaisingModel:
-        def invoke(self, msgs):  # noqa: ANN001
+        def invoke(self, msgs):
             raise RuntimeError("boom")
 
     summ = Summarizer(chat_model=_RaisingModel())  # type: ignore[arg-type]

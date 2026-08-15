@@ -12,8 +12,8 @@ from pathlib import Path
 from ...config import Settings, get_settings
 from ...data.benchmark import load_benchmark
 from ...data.runstore import RunStore, run_is_alive
-from ...data.weights import apply_weights, compute_features, load_weights, weighted_restoration
 from ...data.trajectory import TrajectoryReader
+from ...data.weights import apply_weights, compute_features, load_weights, weighted_restoration
 from ...memory.schema import AttemptRecord, CriticVerdict
 from ..models import (
     BenchOverview,
@@ -63,7 +63,7 @@ def read_events_since(run_dir: Path, since: int = 0) -> tuple[list[dict], int]:
             continue
         try:
             events.append(json.loads(s))
-        except json.JSONDecodeError:  # noqa: PERF203  坏行跳过（不丢其他行）
+        except json.JSONDecodeError:
             continue
     return events, total
 
@@ -244,7 +244,7 @@ def _current_weights(
     try:
         bench = load_benchmark(bench_id, settings=settings).bench
         return load_weights(bench, run_dir=run_dir, sample_id=sample_id)
-    except Exception:  # noqa: BLE001, S110  bench 加载失败 → 不重算
+    except Exception:  # noqa: BLE001  bench 加载失败 → 不重算
         return None
 
 
@@ -339,7 +339,7 @@ def _detect_running_loop_ids() -> set[str]:
 
         out = subprocess.run(
             ["ps", "-ax", "-ww", "-o", "command="],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, check=False,
         ).stdout
     except Exception:  # noqa: BLE001  ps 不可用/超时 → 跳过，靠 pid 文件
         return set()
@@ -401,7 +401,7 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
                 continue
             try:
                 lb = load_benchmark(bd.name, settings=settings)
-            except Exception:  # noqa: BLE001, S112  损坏的 bench 目录跳过，不影响总览
+            except Exception:  # noqa: BLE001  损坏的 bench 目录跳过，不影响总览
                 continue
             bench = benches.setdefault(
                 lb.bench.bench_id,
@@ -412,7 +412,7 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
                     bench.samples.append(
                         SampleOverview(sample_id=sid, product=smp.spec.product, category=smp.spec.category)
                     )
-    except Exception:  # noqa: BLE001, S110  benchmarks 目录容错，无则不预填
+    except Exception:  # noqa: BLE001  benchmarks 目录容错，无则不预填
         pass
 
     # 预读 bench 描述
@@ -540,7 +540,7 @@ def build_overview(settings: Settings | None = None) -> OverviewResponse:
                 if smp:
                     sample.product = smp.spec.product
                     sample.category = smp.spec.category
-            except Exception:  # noqa: BLE001, S110  benchmark 元信息容错，失败不影响总览
+            except Exception:  # noqa: BLE001  benchmark 元信息容错，失败不影响总览
                 pass
 
     return OverviewResponse(benches=list(benches.values()))
@@ -596,7 +596,7 @@ def build_loop_detail(
                     target_image = str(smp.target_path.resolve())
                 if smp.target_md_path and smp.target_md_path.exists():
                     target_md = smp.target_md_path.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001, S110  target 图/说明容错，失败则不显示
+        except Exception:  # noqa: BLE001  target 图/说明容错，失败则不显示
             pass
 
     status = "finished" if (meta and meta.finished_at) else "unknown"

@@ -31,7 +31,6 @@ from img_iter_agent.web.services.benchmark_service import (
 )
 from img_iter_agent.web.services.loop_runner import LoopBusyError, LoopHandle, LoopRunner
 
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
