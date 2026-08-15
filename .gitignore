@@ -31,6 +31,17 @@ data/runs/*
 data/analyses/*
 !data/analyses/.gitkeep
 data/experience/*
+# 人工排序校准产物 / 人工纠偏提示：运行时按需生成，不入库
+data/calibration/*
+data/human_hints/*
+# 未整理的原始素材
+data/benchmarks/**/samples/_unsorted/
+
+# 个人工作流目录（设计稿源文件、参考资料下载件等，仅本地保留）
+.zcode/
+.design/
+docs/图片素材/
+docs/anthropic_style_refs/
 
 # Large models / checkpoints (never commit)
 *.safetensors
