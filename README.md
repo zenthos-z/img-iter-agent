@@ -31,15 +31,25 @@ AI 生图的效果高度依赖人工 prompt 试错，且有三个结构性问题
 
 ## 系统总览
 
+三个 Agent 构成**双闭环**：loop 内 Generator × Critic 对抗博弈、逐轮沉淀**机器验证**的结论；
+离线 ExperienceDistiller 跨 loop 把这些结论与完整轨迹蒸馏成通用经验和技能包，回注 Generator。
+
 ```mermaid
 flowchart LR
-  START([start]) --> G["<b>Generator</b><br/>读经验 → 改 prompt/调参数 → 出图"]
-  G --> C["<b>Critic</b><br/>对照 target 逐维度判分<br/>＋ 前后 verdict 对比判有效性"]
-  C --> R{{"<b>human_review</b><br/>interrupt() 人工裁决<br/>continue / 调方向 / stop"}}
-  R -- continue --> G
-  R -- stop --> END([end])
-  C --> KB[("经验知识库<br/>conclusions.json")]
-  KB --> G
+  subgraph inloop["loop 内 · 一题一 loop（每轮在线）"]
+    START([start]) --> G["<b>Generator</b><br/>读经验 → 改 prompt/调参数 → 出图"]
+    G -->|"生成图"| C["<b>Critic</b><br/>对照 target 逐维度判分<br/>＋ 前后 verdict 对比判有效性"]
+    C -->|"verdict"| R{{"<b>human_review</b><br/>interrupt() 人工裁决"}}
+    R -->|"continue / 调方向"| G
+    R -.->|"stop"| DONE([end])
+    C -->|"沉淀已验证结论"| CJ[("conclusions.json<br/>本题经验")]
+    CJ -->|"query_experience"| G
+  end
+  subgraph crossloop["跨 loop · 离线（跨 run 蒸馏）"]
+    D["<b>ExperienceDistiller</b><br/>读完整 trajectory ＋ 已验证结论"] --> GJ[("general.json ＋ 蒸馏技能包<br/>per-benchmark")]
+  end
+  CJ -->|"蒸馏素材"| D
+  GJ -->|"query_general_experience<br/>＋ 技能包自动激活"| G
 ```
 
 - **一题一 loop**：LangGraph 状态图驱动 `generator → critic → human_review(interrupt)` 三节点循环，
