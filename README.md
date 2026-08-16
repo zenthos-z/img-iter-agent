@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/cover.png" alt="img-iter-agent cover" width="100%">
+</p>
+
 # img-iter-agent
 
 **A benchmark-driven, self-iterating agent system for AI image generation** — two LLM agents
