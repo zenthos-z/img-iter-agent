@@ -15,7 +15,7 @@ only at key checkpoints.
 还原度收敛。
 
 > [!NOTE]
-> 这是一个为 **AIGC 视觉工程师岗位**定制的 demo 项目，用来验证一个命题：
+> 这是一个 实验性项目，用于尝试一个命题：
 > **prompt 工程能否从人工试错，变成 Agent 自动跑 benchmark、自动试错、自动蒸馏经验的自动化流程。**
 
 [![overview](docs/ui-overview.png)](docs/ui-overview.png)
