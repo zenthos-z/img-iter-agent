@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/cover.webp" alt="img-iter-agent cover" width="100%">
+  <img src="docs/cover.jpg" alt="img-iter-agent cover" width="100%">
 </p>
 
 # img-iter-agent
